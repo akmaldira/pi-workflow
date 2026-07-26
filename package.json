@@ -1,0 +1,14 @@
+{
+  "name": "pi-workflow",
+  "version": "0.1.0",
+  "description": "Pi extension for delegating tasks to specialized subagents",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./extensions"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
