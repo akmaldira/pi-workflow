@@ -1,8 +1,12 @@
 /**
- * Subagent Tool - Delegate tasks to specialized subagents
+ * pi-workflow - Subagent delegation + dynamic workflow orchestration
  *
- * Simple version: single and parallel modes only (no chains).
- * Spawns separate `pi --mode json` processes for isolated contexts.
+ * Tools:
+ * - subagent: Delegate tasks to named subagents (single + parallel modes)
+ * - workflow: Execute dynamic JavaScript workflows that orchestrate subagents
+ *
+ * Commands:
+ * - /agents: List available subagents
  */
 
 import { spawn } from "node:child_process";
@@ -10,9 +14,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import { createWorkflowTool } from "./workflow-tool.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -107,34 +112,26 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
 	return results;
 }
 
-async function runSingleAgent(
-	defaultCwd: string,
-	agents: AgentConfig[],
-	agentName: string,
-	task: string,
-	cwd: string | undefined,
-	signal: AbortSignal | undefined,
-	agentConfig?: AgentConfig,
-): Promise<SingleResult> {
-	const agent = agentConfig || agents.find((a) => a.name === agentName);
-
-	if (!agent) {
-		const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
-		return {
-			agent: agentName,
-			agentSource: "unknown",
-			task,
-			exitCode: 1,
-			messages: [],
-			stderr: `Unknown agent: "${agentName}". Available agents: ${available}.`,
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-		};
-	}
-
+/**
+ * Build pi CLI args from an agent config, mapping frontmatter attributes to flags.
+ * Based on pi-subagents' pi-args.ts buildPiArgs function.
+ */
+function buildPiArgs(agent: AgentConfig, task: string): { args: string[]; tmpDirs: string[] } {
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	const tmpDirs: string[] = [];
 
-	// Model configuration
-	if (agent.model) args.push("--model", agent.model);
+	// Model configuration (with thinking suffix)
+	let modelArg: string | undefined;
+	if (agent.model) {
+		if (agent.thinking) {
+			const colonIdx = agent.model.lastIndexOf(":");
+			const hasThinkingLevel = colonIdx !== -1 && ["low", "medium", "high"].includes(agent.model.substring(colonIdx + 1));
+			modelArg = hasThinkingLevel ? `${agent.model.slice(0, colonIdx)}:${agent.thinking}` : `${agent.model}:${agent.thinking}`;
+		} else {
+			modelArg = agent.model;
+		}
+		args.push("--model", modelArg);
+	}
 
 	// Tool configuration
 	if (agent.tools && agent.tools.length > 0) {
@@ -159,17 +156,6 @@ async function runSingleAgent(
 		}
 	}
 
-	// Thinking level
-	if (agent.thinking) {
-		const modelWithThinking = agent.model?.includes(":") ? agent.model : `${agent.model}:${agent.thinking}`;
-		const modelIndex = args.indexOf("--model");
-		if (modelIndex >= 0) {
-			args[modelIndex + 1] = modelWithThinking;
-		} else {
-			args.push("--model", modelWithThinking);
-		}
-	}
-
 	// Skills configuration
 	if (agent.inheritSkills === false) {
 		args.push("--no-skills");
@@ -187,13 +173,68 @@ async function runSingleAgent(
 		}
 	}
 
-	// Default reads (read files before running)
+	// Inherit project context
+	if (agent.inheritProjectContext === false) {
+		args.push("--no-context-files");
+	}
+
+	// Default reads (prepend file reading instructions to task)
 	if (agent.defaultReads && agent.defaultReads.length > 0) {
 		task = agent.defaultReads.map((f) => `\n\n[Reading ${f}]\n`).join("") + task;
 	}
 
+	// System prompt
 	let tmpPromptDir: string | null = null;
-	let tmpPromptPath: string | null = null;
+	if (agent.systemPrompt.trim()) {
+		const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
+		tmpPromptDir = tmp.dir;
+		tmpDirs.push(tmp.dir);
+		if (agent.systemPromptMode === "replace") {
+			args.push("--system-prompt", tmp.filePath);
+		} else {
+			args.push("--append-system-prompt", tmp.filePath);
+		}
+	}
+
+	// Task argument (truncate if too long)
+	const TASK_ARG_LIMIT = 8000;
+	if (task.length > TASK_ARG_LIMIT) {
+		const tmp = await writePromptToTempFile(agent.name, `Task: ${task}`);
+		tmpDirs.push(tmp.dir);
+		args.push(`@${tmp.filePath}`);
+	} else {
+		args.push(`Task: ${task}`);
+	}
+
+	return { args, tmpDirs };
+}
+
+/**
+ * Run a single subagent and return the full result object.
+ */
+async function runSingleAgent(
+	defaultCwd: string,
+	agents: AgentConfig[],
+	agentName: string,
+	task: string,
+	cwd: string | undefined,
+	signal: AbortSignal | undefined,
+	agentConfig?: AgentConfig,
+): Promise<SingleResult> {
+	const agent = agentConfig || agents.find((a) => a.name === agentName);
+
+	if (!agent) {
+		const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
+		return {
+			agent: agentName,
+			agentSource: "unknown",
+			task,
+			exitCode: 1,
+			messages: [],
+			stderr: `Unknown agent: "${agentName}". Available agents: ${available}.`,
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+		};
+	}
 
 	const result: SingleResult = {
 		agent: agentName,
@@ -206,33 +247,10 @@ async function runSingleAgent(
 		model: agent.model,
 	};
 
+	let tmpDirs: string[] = [];
 	try {
-		if (agent.systemPrompt.trim()) {
-			const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
-			tmpPromptDir = tmp.dir;
-			tmpPromptPath = tmp.filePath;
-			args.push("--append-system-prompt", tmpPromptPath);
-		}
-
-		// System prompt mode
-		if (agent.systemPromptMode !== "replace" || agent.systemPrompt.trim()) {
-			const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
-			tmpPromptDir = tmp.dir;
-			tmpPromptPath = tmp.filePath;
-			args.push("--append-system-prompt", tmpPromptPath);
-		}
-
-		// Inherit project context
-		if (agent.inheritProjectContext === false) {
-			args.push("--no-context-files");
-		}
-
-		// Default context (fresh vs fork)
-		if (agent.defaultContext === "fresh") {
-			args.push("--no-session"); // already added
-		}
-
-		args.push(`Task: ${task}`);
+		const { args, tmpDirs: dirs } = await buildPiArgs(agent, task);
+		tmpDirs = dirs;
 
 		const invocation = getPiInvocation(args);
 		const proc = spawn(invocation.command, invocation.args, {
@@ -303,15 +321,31 @@ async function runSingleAgent(
 		result.errorMessage = (e as Error).message;
 		result.stopReason = "error";
 	} finally {
-		if (tmpPromptDir)
+		for (const dir of tmpDirs) {
 			try {
-				fs.rmSync(tmpPromptDir, { recursive: true, force: true });
+				fs.rmSync(dir, { recursive: true, force: true });
 			} catch {
 				/* ignore */
 			}
+		}
 	}
 
 	return result;
+}
+
+/**
+ * Run a single subagent and return just the output text.
+ * Used by the workflow tool's agent() global.
+ */
+async function runSubagentForWorkflow(
+	cwd: string,
+	agent: AgentConfig,
+	task: string,
+	signal: AbortSignal | undefined,
+): Promise<string> {
+	const agents: AgentConfig[] = [agent];
+	const result = await runSingleAgent(cwd, agents, agent.name, task, cwd, signal, agent);
+	return getResultOutput(result);
 }
 
 const TaskItem = Type.Object({
@@ -337,6 +371,7 @@ const SubagentParams = Type.Object({
 });
 
 export default function (pi: ExtensionAPI) {
+	// --- Subagent Tool ---
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
@@ -490,6 +525,14 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// --- Workflow Tool ---
+	const workflowTool = createWorkflowTool({
+		cwd: undefined, // will use ctx.cwd at execution time
+		runSingleAgent: runSubagentForWorkflow,
+	});
+	pi.registerTool(workflowTool);
+
+	// --- Commands ---
 	pi.registerCommand("agents", {
 		description: "List available subagents",
 		handler: async (_args, ctx) => {
@@ -524,5 +567,13 @@ export default function (pi: ExtensionAPI) {
 			}
 			ctx.ui.setWidget("agents", lines);
 		},
+	});
+
+	// --- Session start: activate workflow tool ---
+	pi.on("session_start", () => {
+		const active = pi.getActiveTools();
+		if (!active.includes(workflowTool.name)) {
+			pi.setActiveTools([...active, workflowTool.name]);
+		}
 	});
 }

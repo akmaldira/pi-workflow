@@ -1,11 +1,12 @@
 # pi-workflow
 
-A [pi](https://pi.dev) extension for delegating tasks to specialized subagents with isolated contexts.
+A [pi](https://pi.dev) extension for delegating tasks to specialized subagents with isolated contexts, plus dynamic workflow orchestration inspired by [Claude Code's dynamic workflows](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code).
 
 ## Features
 
 - **Single mode**: Delegate one task to one agent
 - **Parallel mode**: Run multiple agents concurrently (max 8 tasks, 4 concurrent)
+- **Dynamic workflows**: Write JavaScript that fans out work across subagents
 - **Agent discovery**: Load agents from `~/.pi/agent/agents/*.md` and `.pi/agents/*.md`
 - **Rich agent configuration**: Support for all standard subagent attributes
 
@@ -40,7 +41,7 @@ You are a codebase scout. Search and explore files efficiently.
 Return brief summaries focused on the task at hand.
 ```
 
-### Use the Tool
+### Use the Subagent Tool
 
 ```typescript
 // Single mode
@@ -53,9 +54,120 @@ subagent(tasks: [
 ])
 ```
 
+### Use the Workflow Tool
+
+```typescript
+workflow(script: `
+export const meta = {
+  name: 'inspect_project',
+  description: 'Inspect a repository and summarize the main modules'
+}
+
+phase('Scan')
+const inventory = await agent('Inspect the repository structure.', { label: 'repo inventory' })
+
+phase('Analyze')
+const summary = await agent(
+  'Summarize the main modules from this inventory:\n' + inventory,
+  { label: 'module summary' }
+)
+
+return { inventory, summary }
+`)
+```
+
 ### Commands
 
 - `/agents` — List available subagents with their configurations
+
+## Dynamic Workflows
+
+The `workflow` tool lets you write a small JavaScript script that fans out work across multiple subagents, then synthesizes the results.
+
+### Workflow Script Format
+
+A workflow script is plain JavaScript. The first statement must export literal metadata:
+
+```js
+export const meta = {
+  name: 'short_snake_case',  // required
+  description: 'non-empty description',  // required
+  whenToUse: 'When to use this workflow',  // optional
+  phases: [  // optional documentation
+    { title: 'Scan' },
+    { title: 'Analyze' }
+  ]
+}
+```
+
+After the metadata, write plain JavaScript using the available globals.
+
+### Available Globals
+
+| Global | Description |
+|--------|-------------|
+| `agent(prompt, opts)` | Spawn an isolated subagent. Returns its final text output. |
+| `parallel(thunks)` | Run an array of `() => agent(...)` thunks concurrently. Results in input order. |
+| `pipeline(items, ...stages)` | Run each item through sequential stages while items fan out. |
+| `phase(title)` | Mark the current phase for progress grouping. |
+| `log(message)` | Append a workflow-level log line. |
+| `args` | Optional JSON value passed via the tool's `args` parameter. |
+| `cwd`, `process.cwd()` | Current working directory for subagents. |
+| `budget` | `{ total, spent(), remaining() }` token budget tracker. |
+
+### Agent Resolution
+
+The `agent()` global can resolve named agents from your agent definitions by prefixing the prompt with the agent name:
+
+```js
+// Uses the "researcher" agent's frontmatter attributes
+const findings = await agent('researcher: Find security vulnerabilities in this codebase', {
+  label: 'security research'
+})
+```
+
+If the agent name matches a discovered agent, its frontmatter attributes (model, tools, skills, system prompt, etc.) are applied automatically.
+
+### Determinism Rules
+
+Workflow scripts are evaluated inside a Node `vm` sandbox. The following are unavailable:
+
+- `Date.now()`, `new Date()`
+- `Math.random()`
+- `require`, `import`, `fs`, network APIs
+- Spreads, computed keys, template interpolation, function calls inside `meta`
+
+### Parallel and Pipeline Examples
+
+```js
+// Parallel: fan out across multiple agents
+phase('Research')
+const results = await parallel([
+  () => agent('researcher: Find API documentation', { label: 'api docs' }),
+  () => agent('researcher: Find security issues', { label: 'security scan' }),
+  () => agent('researcher: Find performance bottlenecks', { label: 'perf scan' })
+])
+
+// Pipeline: process items through stages
+phase('Review')
+const reviews = await pipeline(
+  ['file1.ts', 'file2.ts', 'file3.ts'],
+  (file) => agent(`reviewer: Review ${file} for quality`, { label: `review ${file}` }),
+  (review) => agent('planner: Create fix plan from review', { label: 'fix plan' })
+)
+```
+
+### Error Handling
+
+Failed `agent()`, `parallel()`, or `pipeline()` branches return `null` and log the failure. Check for nulls before synthesizing conclusions:
+
+```js
+const result = await agent('scout: Find auth code', { label: 'auth scan' })
+if (!result) {
+  log('Auth scan failed, using fallback approach')
+  // ... fallback logic
+}
+```
 
 ## Agent Frontmatter Attributes
 
@@ -193,6 +305,8 @@ You are an auditor. Complete within 15 turns max.
 
 ## Tool Parameters
 
+### subagent
+
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `agent` | string | Agent name (single mode) |
@@ -201,6 +315,14 @@ You are an auditor. Complete within 15 turns max.
 | `agentScope` | `"user"` \| `"project"` \| `"both"` | Agent discovery scope (default: `"user"`) |
 | `confirmProjectAgents` | boolean | Confirm before running project agents (default: `true`) |
 | `cwd` | string | Working directory for agent process |
+
+### workflow
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `script` | string | Required JavaScript workflow script |
+| `args` | any | Optional JSON value exposed as `args` global |
+| `agentScope` | string | Agent discovery scope (default: `"user"`) |
 
 ## Agent Locations
 
@@ -212,3 +334,5 @@ You are an auditor. Complete within 15 turns max.
 Project-local agents (`.pi/agents/*.md`) can instruct the model to read files, run bash commands, etc.
 
 By default, you're prompted before running project agents. Only enable project agents for repositories you trust.
+
+Workflow scripts run in a deterministic VM sandbox with no filesystem, network, or time access.
