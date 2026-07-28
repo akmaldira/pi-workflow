@@ -120,7 +120,7 @@ export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body:
 		throw new Error("meta export must declare only `meta`");
 	}
 
-	const declarator = declaration.declarators[0] as AnyNode;
+	const declarator = declaration.declarations[0] as AnyNode;
 	if (declarator.id?.type !== "Identifier" || declarator.id.name !== "meta") {
 		throw new Error("meta export must declare `meta`");
 	}

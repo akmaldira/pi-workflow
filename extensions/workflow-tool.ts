@@ -328,6 +328,7 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 					},
 				});
 			} catch (error) {
+				console.error("[Workflow Error]", error);
 				if (signal?.aborted || isAbortError(error)) {
 					for (const agent of snapshot.agents) {
 						if (agent.status === "running") {

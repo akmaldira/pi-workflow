@@ -49,6 +49,7 @@ import { buildSkillInjection, resolveSkillsWithFallback } from "./skills.ts";
 import { buildAgentMemoryInjection } from "./agent-memory.ts";
 import { evaluateCompletionMutationGuard } from "./completion-guard.ts";
 import { getPiSpawnCommand } from "./pi-spawn.ts";
+import * as fs from "fs";
 import { createJsonlWriter } from "./jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "./post-exit-stdio-guard.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir, resolvePiLaunchToolPlan } from "./pi-args.ts";
@@ -355,6 +356,11 @@ async function runSingleAttempt(
 		shell: false,
 		stdio: ["ignore", "pipe", "pipe"],
 		env: spawnEnv,
+	});
+
+	fs.appendFileSync("/tmp/subagent.log", `CMD: ${spawnSpec.command} ${spawnSpec.args.join(" ")}\n`);
+	proc.stderr?.on("data", (data) => {
+		fs.appendFileSync("/tmp/subagent.log", `STDERR: ${data}\n`);
 	});
 
 	const stdoutReader = createBoundedLineReader({
