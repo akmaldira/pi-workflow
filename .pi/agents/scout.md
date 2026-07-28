@@ -1,4 +1,6 @@
 ---
+name: scout
+description: Lightweight exploration agent that finds security issues and code smells.
 model: google/gemini-2.5-flash
 tools: read, grep, bash
 maxTurns: 5

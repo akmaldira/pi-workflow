@@ -1,4 +1,6 @@
 ---
+name: worker
+description: Implementation agent that writes clean, production-quality code and tests.
 model: google/gemini-2.5-pro
 tools: read, write, edit, bash, grep
 maxTurns: 15
