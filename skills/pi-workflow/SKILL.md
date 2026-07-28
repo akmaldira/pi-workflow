@@ -54,10 +54,14 @@ workflow(script="export const meta = { name: 'audit', description: 'Security aud
 
 ## Creating Agents
 
-Create agent files in `~/.pi/agent/agents/*.md` (user scope) or `.pi/agents/*.md` (project scope):
+Create agent files in `~/.pi/agent/agents/*.md` (user scope) or `.pi/agents/*.md` (project scope).
+
+**CRITICAL REQUIREMENT:** Every agent file *must* include `name` and `description` in the YAML frontmatter block, otherwise the agent will be silently ignored!
 
 ```markdown
 ---
+name: scout
+description: Lightweight exploration agent that finds security issues and code smells.
 model: google/gemini-2.5-flash
 tools: read, grep, bash
 maxTurns: 5
@@ -74,6 +78,8 @@ Find security issues and code smells. Keep responses concise.
 
 | Attribute | Description |
 |-----------|-------------|
+| `name` | **Required.** Name of the agent (used to spawn it) |
+| `description` | **Required.** Short description of what the agent does |
 | `model` | Model to use (e.g., google/gemini-2.5-pro) |
 | `tools` | Tool allowlist (comma-separated or YAML list) |
 | `maxTurns` | Maximum conversation turns |
