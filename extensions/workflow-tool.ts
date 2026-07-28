@@ -27,8 +27,8 @@ const workflowToolSchema = Type.Object({
 	),
 	agentScope: Type.Optional(
 		Type.String({
-			description: 'Which agent directories to use. Default: "user". Use "both" to include project-local agents.',
-			default: "user",
+			description: 'Which agent directories to use. Default: "both".',
+			default: "both",
 		}),
 	),
 });
@@ -261,7 +261,7 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const script = normalizeWorkflowScript(params.script);
 			const parsed = parseWorkflowScript(script);
-			const agentScope: AgentScope = (params.agentScope as AgentScope) ?? "user";
+			const agentScope: AgentScope = (params.agentScope as AgentScope) ?? "both";
 
 			let snapshot: WorkflowSnapshot = createWorkflowSnapshot(parsed.meta);
 			const displayOptions = { maxAgents: 4, maxLogs: 1, showResultPreviews: false };

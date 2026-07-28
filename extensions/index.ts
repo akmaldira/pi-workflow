@@ -83,8 +83,8 @@ const TaskItem = Type.Object({
 });
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
-	description: 'Which agent directories to use. Default: "user". Use "both" to include project-local agents.',
-	default: "user",
+	description: 'Which agent directories to use. Default: "both".',
+	default: "both",
 });
 
 const SubagentParams = Type.Object({
@@ -123,13 +123,12 @@ export default function (pi: ExtensionAPI) {
 		description: [
 			"Delegate tasks to specialized subagents with isolated context.",
 			"Modes: single (agent + task), parallel (tasks array).",
-			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
-			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
+			`Discovers agents from both ${path.join(getAgentDir(), "agents")} (user) and ${CONFIG_DIR_NAME}/agents (project).`,
 		].join(" "),
 		parameters: SubagentParams,
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const agentScope: AgentScope = params.agentScope ?? "user";
+			const agentScope: AgentScope = params.agentScope ?? "both";
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
 			const confirmProjectAgents = params.confirmProjectAgents ?? true;
@@ -298,11 +297,11 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("agents", {
 		description: "List available subagents",
 		handler: async (_args, ctx) => {
-			const discovery = discoverAgents(ctx.cwd, "user");
+			const discovery = discoverAgents(ctx.cwd, "both");
 			const agents = discovery.agents;
 
 			if (agents.length === 0) {
-				ctx.ui.notify("No agents found. Create agent files in ~/.pi/agent/agents/*.md", "info");
+				ctx.ui.notify("No agents found. Create agent files in ~/.pi/agent/agents/*.md or .pi/agents/*.md", "info");
 				return;
 			}
 
