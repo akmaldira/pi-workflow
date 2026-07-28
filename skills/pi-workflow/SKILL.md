@@ -110,12 +110,22 @@ if (findings.critical) {
 return { status: 'done' };
 ```
 
-### Workflow with parallel fan-out
-```javascript
-export const meta = { name: 'multi_review', description: 'Multi-perspective review' };
-const results = await parallel([
-  () => agent('reviewer: Review auth module', { label: 'auth' }),
-  () => agent('reviewer: Review API module', { label: 'api' }),
-]);
-return { results };
+### Running Without a TUI (IDE / Headless Mode)
+
+If you are running `pi` without an interactive terminal (like via an IDE extension, API, or `--mode json`) and you have `pi-permission-system` installed, it will automatically block the `subagent` and `workflow` tools because it cannot prompt the user for permission.
+
+You must configure your `pi-permission-system` settings (`~/.pi/agent/settings.json`) to explicitly allow these tools, or allow all tools:
+
+```json
+{
+  "extensionsConfig": {
+    "pi-permission-system": {
+      "policy": {
+        "subagent": "allow",
+        "workflow": "allow",
+        "*": "allow" // Or configure specifically
+      }
+    }
+  }
+}
 ```
