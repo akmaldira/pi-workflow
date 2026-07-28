@@ -106,11 +106,12 @@ async function runSubagentForWorkflow(
 	cwd: string,
 	agent: AgentConfig,
 	task: string,
-	signal: AbortSignal | undefined,
+	options: { signal?: AbortSignal; parentSessionId?: string },
 ): Promise<string> {
 	const result = await runSingleAgent(cwd, agent, task, {
 		runId: `workflow-${Date.now()}`,
-		signal,
+		signal: options.signal,
+		parentSessionId: options.parentSessionId,
 	});
 	return getResultOutput(result);
 }
@@ -218,6 +219,7 @@ export default function (pi: ExtensionAPI) {
 								runId: `parallel-${Date.now()}-${_index}`,
 								cwd: t.cwd,
 								signal,
+								parentSessionId: ctx.session?.id,
 							},
 						);
 					},
@@ -261,6 +263,7 @@ export default function (pi: ExtensionAPI) {
 						runId: `single-${Date.now()}`,
 						cwd: params.cwd,
 						signal,
+						parentSessionId: ctx.session?.id,
 					},
 				);
 				const isError = isFailedResult(result);

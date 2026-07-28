@@ -55,8 +55,9 @@ function createWorkflowAgentRunner(
 		cwd: string,
 		agent: AgentConfig,
 		task: string,
-		signal: AbortSignal | undefined,
+		options: { signal?: AbortSignal; parentSessionId?: string },
 	) => Promise<string>,
+	parentSessionId?: string,
 ): WorkflowAgentRunner {
 	return {
 		async resolveAgent(agentName: string | undefined, cwd?: string): Promise<AgentConfig> {
@@ -80,7 +81,7 @@ function createWorkflowAgentRunner(
 			const effectiveConfig = options.modelOverride
 				? { ...agentConfig, model: options.modelOverride }
 				: agentConfig;
-			return runSingleAgent(options.cwd ?? defaultCwd, effectiveConfig, prompt, options.signal);
+			return runSingleAgent(options.cwd ?? defaultCwd, effectiveConfig, prompt, { signal: options.signal, parentSessionId });
 		},
 	};
 }
@@ -224,7 +225,7 @@ export interface WorkflowToolOptionsFull extends WorkflowToolOptions {
 		cwd: string,
 		agent: AgentConfig,
 		task: string,
-		signal: AbortSignal | undefined,
+		options: { signal?: AbortSignal; parentSessionId?: string },
 	) => Promise<string>;
 }
 
@@ -285,6 +286,7 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 				options.cwd ?? ctx.cwd,
 				agentScope,
 				options.runSingleAgent,
+				ctx.session?.id,
 			);
 
 			let result: WorkflowRunResult;
