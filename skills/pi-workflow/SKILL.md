@@ -1,47 +1,87 @@
 ---
 name: pi-workflow
-description: Subagent delegation and dynamic workflow orchestration for pi. Spawn specialized agents with full frontmatter support, run parallel subagents, execute deterministic JS workflow scripts, and manage structured output with acceptance criteria.
+description: Subagent delegation and dynamic workflow orchestration for pi. Use the subagent tool to delegate tasks to specialized agents with frontmatter support, and the workflow tool to orchestrate multi-agent deterministic workflows.
 ---
 
 # Pi Workflow Skill
 
-This skill provides subagent delegation and dynamic workflow orchestration for pi.
+This skill teaches you how to use the pi-workflow extension's tools: `subagent` and `workflow`.
 
-## Setup
+## Available Tools
 
-After installing the `pi-workflow` extension (via `pi install git:github.com/bejorock/pi-workflow`), create agent definition files and workflow scripts.
+### 1. `subagent` Tool
 
-## Agent Files
+Delegates tasks to specialized subagents with isolated context.
 
-Create agent markdown files in one of these locations:
+**Parameters:**
+- `tasks` (array, required): Array of task objects, each with:
+  - `agent` (string): Agent name (must exist in ~/.pi/agent/agents/*.md or .pi/agents/*.md)
+  - `task` (string): Task description/prompt
+  - `label` (string, optional): Unique label for the subagent
+  - `model` (string, optional): Override the agent's model
+  - `maxTurns` (number, optional): Override max turns
+  - `maxToolCalls` (number, optional): Override max tool calls
+- `mode` (string, optional): "single" or "parallel" (default: "single")
+- `agentScope` (string, optional): "user", "project", or "both" (default: "user")
 
-- **User scope:** `~/.pi/agent/agents/*.md`
-- **Project scope:** `.pi/agents/*.md`
-
-### Agent Frontmatter
-
-```markdown
----
-model: google/gemini-2.5-pro       # Optional: model to use
-tools: read, write, edit, bash      # Optional: tool allowlist (comma-separated or YAML list)
-maxTurns: 10                        # Optional: max conversation turns
-maxToolCalls: 30                    # Optional: max tool calls
-temperature: 0.1                    # Optional: model temperature
-acceptance:
-  level: checked                    # none | checked | auto
-  evidence:                         # Required evidence kinds
-    - code-exists
-    - tests-added
----
-
-# Agent Name
-
-Your instructions here. Be specific about the agent's role and responsibilities.
+**Usage:**
+```
+subagent(tasks=[{"agent": "scout", "task": "Find security issues in the auth module"}], mode="single")
 ```
 
-### Example Agents
+**Parallel mode:**
+```
+subagent(tasks=[{"agent": "scout", "task": "Review auth"}, {"agent": "scout", "task": "Review payments"}], mode="parallel")
+```
 
-**scout.md** — Lightweight exploration agent:
+### 2. `workflow` Tool
+
+Executes a deterministic JavaScript workflow that orchestrates multiple subagents.
+
+**Parameters:**
+- `script` (string, required): Raw JavaScript workflow script
+- `args` (any, optional): Arguments exposed as `args` global
+- `agentScope` (string, optional): "user" or "both" (default: "user")
+
+**Script format:**
+```javascript
+export const meta = { name: 'security_audit', description: 'Find and fix security issues' };
+
+// Use phase() to group work
+phase('Discovery');
+const findings = await agent('scout: Find security issues in the codebase');
+
+// Conditional branching
+if (findings.critical) {
+  phase('Remediation');
+  await agent('worker: Fix all critical security issues');
+}
+
+// Parallel execution
+const [auth, payments] = await parallel([
+  () => agent('scout: Review auth module', { label: 'auth review' }),
+  () => agent('scout: Review payment module', { label: 'payment review' })
+]);
+
+return { status: 'complete', findings };
+```
+
+**Available globals in workflow scripts:**
+- `agent(prompt, opts)` — Spawn a subagent (prompt format: "agentName: task description")
+- `parallel(thunks)` — Run multiple agent calls concurrently (takes functions, not promises)
+- `pipeline(items, ...stages)` — Run items through sequential stages
+- `phase(title)` — Create a progress group
+- `log(message)` — Log a message
+- `args` — Arguments passed to the workflow
+- `cwd` — Current working directory
+
+## Creating Agents
+
+Agents are markdown files with YAML frontmatter. Create them in:
+- User scope: `~/.pi/agent/agents/*.md`
+- Project scope: `.pi/agents/*.md`
+
+**Example agent file (scout.md):**
 ```markdown
 ---
 model: google/gemini-2.5-flash
@@ -50,135 +90,70 @@ maxTurns: 5
 acceptance:
   level: none
 ---
-# Scout
 
-Find security issues and code smells. Keep responses concise.
+# Scout Agent
+
+You are a scout agent. Explore codebases quickly and report findings.
+Focus on security issues, code smells, and key patterns.
 ```
 
-**worker.md** — Code implementation agent:
-```markdown
----
-model: google/gemini-2.5-pro
-tools: read, write, edit, bash, grep
-maxTurns: 15
-acceptance:
-  level: checked
-  evidence:
-    - code-exists
-    - tests-added
----
-# Worker
+**Agent frontmatter attributes:**
+- `model` — Model to use (e.g., google/gemini-2.5-pro)
+- `tools` — Tool allowlist (comma-separated or YAML list)
+- `maxTurns` — Maximum conversation turns
+- `maxToolCalls` — Maximum tool calls
+- `temperature` — Model temperature
+- `acceptance.level` — none, checked, or auto
+- `acceptance.evidence` — Required evidence kinds (code-exists, tests-added)
+- `acceptance.criteria` — Acceptance criteria
+- `acceptance.verify` — Verification steps
+- `acceptance.review` — Review configuration
 
-Implement code changes. Write tests. Verify changes work.
+## When to Use Each Tool
+
+**Use `subagent` when:**
+- Delegating a single task to a specialized agent
+- Running a few agents in parallel (2-5)
+- You need quick, one-off delegation
+
+**Use `workflow` when:**
+- Orchestrating multiple agents with conditional logic
+- Running 5+ agents with complex dependencies
+- You need deterministic, repeatable multi-step processes
+- You want progress tracking with phases
+
+## Examples
+
+### Single Subagent
+```
+subagent(tasks=[{"agent": "researcher", "task": "Analyze the authentication module for security issues"}], mode="single")
+```
+
+### Parallel Subagents
+```
+subagent(tasks=[{"agent": "scout", "task": "Review auth"}, {"agent": "scout", "task": "Review payments"}, {"agent": "scout", "task": "Review API"}], mode="parallel")
+```
+
+### Workflow Script
+```javascript
+export const meta = { name: 'code_review', description: 'Multi-perspective code review' };
+
+phase('Review');
+const [auth, api, payments] = await parallel([
+  () => agent('reviewer: Review auth module', { label: 'auth review' }),
+  () => agent('reviewer: Review API module', { label: 'api review' }),
+  () => agent('reviewer: Review payment module', { label: 'payment review' })
+]);
+
+phase('Synthesis');
+const summary = await agent('worker: Combine review findings into a summary', { label: 'synthesis' });
+
+return { reviews: [auth, api, payments], summary };
 ```
 
 ## Commands
 
-### List Agents
-```
-/agents
-```
-Lists all discovered agents from both user and project scopes.
-
-### Run a Single Subagent
-```
-/subagent <agent-name>: <task description>
-```
-Example:
-```
-/subagent scout: Find security issues in the authentication module
-```
-
-### Run Parallel Subagents
-```
-/subagent-parallel <agent-name>: <task 1> | <agent-name>: <task 2> | ...
-```
-Example:
-```
-/subagent-parallel scout: Review auth module | scout: Review payment module
-```
-
-## Workflow Scripts
-
-Create workflow scripts in `.pi/workflows/*.js`.
-
-### Basic Workflow
-
-```javascript
-// .pi/workflows/security-audit.js
-const findings = await agent('scout: Find security issues in the codebase');
-
-if (findings.critical) {
-  await agent('researcher: Investigate critical findings and provide remediation steps');
-}
-
-return { status: 'complete', findings };
-```
-
-### Run a Workflow
-
-```
-/workflow <script-name>
-```
-Example:
-```
-/workflow security-audit
-```
-
-### Workflow API
-
-| Function | Description |
-|----------|-------------|
-| `agent('name: prompt')` | Spawn a named subagent with the given prompt |
-| `await agent(...)` | Returns the subagent's structured output |
-| `return { ... }` | Return final workflow result |
-
-### Advanced Workflow Features
-
-```javascript
-// Parallel execution
-const [a, b] = await Promise.all([
-  agent('scout: Review auth'),
-  agent('scout: Review payments')
-]);
-
-// Conditional branching
-const findings = await agent('researcher: Analyze the codebase');
-if (findings.issues.length > 5) {
-  await agent('worker: Fix all critical issues');
-}
-
-// Structured output
-return {
-  summary: 'Security audit complete',
-  issuesFound: findings.issues.length,
-  criticalCount: findings.critical,
-};
-```
-
-## Agent Frontmatter Attributes
-
-| Attribute | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `model` | string | auto | Model to use (e.g., `google/gemini-2.5-pro`) |
-| `tools` | string/array | all | Tool allowlist (comma-separated or YAML list) |
-| `maxTurns` | number | 10 | Maximum conversation turns |
-| `maxToolCalls` | number | 30 | Maximum tool calls |
-| `temperature` | number | 0.1 | Model temperature |
-| `acceptance.level` | string | auto | Acceptance level: `none`, `checked`, `auto` |
-| `acceptance.evidence` | array | [] | Required evidence kinds |
-| `acceptance.criteria` | array | [] | Acceptance criteria |
-| `acceptance.verify` | array | [] | Verification steps |
-| `acceptance.review` | object | - | Review configuration |
-
-## Testing
-
-Run the test suite:
-```bash
-npm test
-```
-
-Run tests in watch mode:
-```bash
-npm run test:watch
-```
+- `/agents` — List all available subagents
+- `/subagent <agent>: <task>` — Run a single subagent (slash command)
+- `/subagent-parallel <agent>: <task1> | <agent>: <task2>` — Run parallel subagents
+- `/workflow <script-name>` — Run a workflow from .pi/workflows/
