@@ -286,7 +286,7 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 				options.cwd ?? ctx.cwd,
 				agentScope,
 				options.runSingleAgent,
-				ctx.session?.id,
+				ctx.sessionManager.getSessionId(),
 			);
 
 			let result: WorkflowRunResult;

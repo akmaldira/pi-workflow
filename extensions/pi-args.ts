@@ -6,6 +6,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { encodeNestedPathEnv, parseNestedPathEnv, type NestedPathEntry } from "./nested-path.ts";
 import { resolveMcpDirectToolSelections, type ResolvedMcpDirectToolSelection } from "./mcp-direct-tool-allowlist.ts";
 import { resolvePiPackageRoot, PI_CODING_AGENT_PACKAGE_ROOT_ENV } from "./pi-spawn.ts";
@@ -17,6 +18,7 @@ import { CHILD_TOOL_DIAGNOSTIC_PATH_ENV, MCP_DIRECT_CHILD_TOOLS_ENV, REQUIRED_CH
 import { SUBAGENT_CAPABILITY_CEILING_ENV, decodeSubagentCapabilityCeiling, encodeSubagentCapabilityCeiling, intersectSubagentCapabilityCeilings, type ResolvedSubagentCapabilityCeiling, type SubagentCapabilityAudit } from "./capability-ceiling.ts";
 
 const TASK_ARG_LIMIT = 8000;
+const PROMPT_RUNTIME_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-prompt-runtime.ts");
 
 export const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 export const SUBAGENT_ORCHESTRATOR_TARGET_ENV = "PI_SUBAGENT_ORCHESTRATOR_TARGET";
@@ -35,6 +37,7 @@ export const SUBAGENT_PARENT_DEPTH_ENV = "PI_SUBAGENT_PARENT_DEPTH";
 export const SUBAGENT_PARENT_PATH_ENV = "PI_SUBAGENT_PARENT_PATH";
 export const SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV = "PI_SUBAGENT_PARENT_CAPABILITY_TOKEN";
 export const SUBAGENT_PARENT_SESSION_ENV = "PI_SUBAGENT_PARENT_SESSION";
+export const WAIT_TOOL_ENABLED_ENV = "PI_SUBAGENT_WAIT_TOOL_ENABLED";
 
 export interface BuildPiArgsInput {
 	parentSessionId?: string;
@@ -77,6 +80,7 @@ export interface BuildPiArgsInput {
 	toolBudget?: ResolvedToolBudget;
 	allowZeroToolBudget?: boolean;
 	capabilityCeiling?: ResolvedSubagentCapabilityCeiling;
+	waitToolEnabled?: boolean;
 }
 
 export interface BuildPiArgsResult {
@@ -162,8 +166,8 @@ export function resolvePiLaunchToolPlan(input: ResolvePiLaunchToolPlanInput): Pi
 		...internalTools,
 	])] : [];
 	const runtimeExtensions = fanoutAuthorized
-		? []
-		: [];
+		? [PROMPT_RUNTIME_EXTENSION_PATH]
+		: [PROMPT_RUNTIME_EXTENSION_PATH];
 	const disableAmbientExtensions = capabilityCeiling?.denyExtensions === true || input.extensions !== undefined;
 	const configuredExtensions = capabilityCeiling?.denyExtensions ? [] : [...toolExtensionPaths, ...(input.extensions ?? []), ...(input.subagentOnlyExtensions ?? [])];
 	const extensionArgs = disableAmbientExtensions
@@ -282,6 +286,9 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	env[MCP_DIRECT_CHILD_TOOLS_ENV] = toolPlan.effectiveMcpTools.length > 0 ? JSON.stringify(toolPlan.effectiveMcpTools) : undefined;
 	env[SUBAGENT_CHILD_ENV] = "1";
 	env[SUBAGENT_FANOUT_CHILD_ENV] = toolPlan.fanoutAuthorized ? "1" : "0";
+	if (input.waitToolEnabled !== undefined) {
+		env[WAIT_TOOL_ENABLED_ENV] = input.waitToolEnabled ? "true" : "false";
+	}
 
 	const inheritedNestedRoute = Boolean(process.env[SUBAGENT_PARENT_EVENT_SINK_ENV] && process.env[SUBAGENT_PARENT_ROOT_RUN_ID_ENV] && process.env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV]);
 	const parentRunId = input.parentRunId ?? input.runId ?? (inheritedNestedRoute ? process.env[SUBAGENT_RUN_ID_ENV] : undefined) ?? process.env[SUBAGENT_PARENT_RUN_ID_ENV] ?? "";

@@ -1,7 +1,6 @@
 ---
 name: researcher
 description: Deep research agent that investigates topics thoroughly and provides detailed analysis.
-model: google/gemini-2.5-pro
 tools: read, grep, web-fetch, web-search
 maxTurns: 10
 maxToolCalls: 30

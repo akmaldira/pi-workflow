@@ -1,10 +1,23 @@
-// Example workflow: Security audit
-// This workflow uses the scout and researcher agents to perform a security audit
+export const meta = {
+  name: 'security_audit',
+  description: 'Security audit workflow using scout and researcher agents'
+};
 
-const findings = await agent('scout: Find security issues in the codebase, focusing on authentication, input validation, and data handling');
+phase('Scouting');
+const resultText = await agent('scout: Find security issues in the codebase, focusing on authentication, input validation, and data handling. Respond ONLY with valid JSON in this format: { "critical": true/false, "findings": "details..." }', { label: 'find security issues' });
+
+let findings;
+try {
+  findings = JSON.parse(resultText);
+} catch (e) {
+  // fallback if agent didn't return pure JSON
+  findings = { critical: true, findings: resultText };
+}
 
 if (findings.critical) {
-  await agent('researcher: Investigate the critical security findings and provide detailed remediation steps');
+  phase('Researching Remediation');
+  const remediation = await agent('researcher: Investigate the following critical security findings and provide detailed remediation steps. Findings: ' + JSON.stringify(findings), { label: 'remediation steps' });
+  findings.remediation = remediation;
 }
 
 return {

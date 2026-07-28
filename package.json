@@ -13,7 +13,8 @@
     ]
   },
   "dependencies": {
-    "acorn": "^8.16.0"
+    "acorn": "^8.16.0",
+    "node-pty": "^1.1.0"
   },
   "devDependencies": {
     "vitest": "^3.2.7"
@@ -28,5 +29,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
   }
 }

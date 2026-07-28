@@ -1,7 +1,6 @@
 ---
 name: reviewer
 description: Review agent that provides actionable feedback on code quality, security, and performance.
-model: google/gemini-2.5-flash
 tools: read, grep
 maxTurns: 8
 maxToolCalls: 20

@@ -219,7 +219,7 @@ export default function (pi: ExtensionAPI) {
 								runId: `parallel-${Date.now()}-${_index}`,
 								cwd: t.cwd,
 								signal,
-								parentSessionId: ctx.session?.id,
+								parentSessionId: ctx.sessionManager.getSessionId(),
 							},
 						);
 					},
@@ -263,7 +263,7 @@ export default function (pi: ExtensionAPI) {
 						runId: `single-${Date.now()}`,
 						cwd: params.cwd,
 						signal,
-						parentSessionId: ctx.session?.id,
+						parentSessionId: ctx.sessionManager.getSessionId(),
 					},
 				);
 				const isError = isFailedResult(result);

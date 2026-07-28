@@ -251,6 +251,7 @@ async function runSingleAttempt(
 		toolBudget: options.toolBudget,
 		allowZeroToolBudget: options.allowZeroToolBudget,
 		childWatchdog,
+		waitToolEnabled: options.waitToolEnabled,
 		capabilityCeiling: options.capabilityCeiling,
 	});
 
