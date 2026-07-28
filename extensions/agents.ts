@@ -186,8 +186,9 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 
 		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
 
-		const name = (frontmatter.name as string) || path.basename(filePath, ".md");
-		const description = (frontmatter.description as string) || `Agent defined in ${path.basename(filePath)}`;
+		if (!frontmatter.name || !frontmatter.description) {
+			continue;
+		}
 
 		// Parse array/list fields (comma-separated or YAML list)
 		const tools = parseStringOrArray(frontmatter.tools);
@@ -261,8 +262,8 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 		}
 
 		agents.push({
-			name,
-			description,
+			name: String(frontmatter.name),
+			description: String(frontmatter.description),
 			package: frontmatter.package ? String(frontmatter.package) : undefined,
 			tools: tools && tools.length > 0 ? tools : undefined,
 			mcpDirectTools: mcpDirectTools.length > 0 ? mcpDirectTools : undefined,
