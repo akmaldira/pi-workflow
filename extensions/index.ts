@@ -9,58 +9,24 @@
  * - /agents: List available subagents
  */
 
-import { spawn } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { CONFIG_DIR_NAME, getAgentDir, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { createWorkflowTool } from "./workflow-tool.ts";
+import { runSingleAgent } from "./execution.ts";
+import type { SingleResult } from "./types.ts";
+import { getFinalOutput } from "./utils.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
-
-interface UsageStats {
-	input: number;
-	output: number;
-	cacheRead: number;
-	cacheWrite: number;
-	cost: number;
-	contextTokens: number;
-	turns: number;
-}
-
-interface SingleResult {
-	agent: string;
-	agentSource: "user" | "project" | "unknown";
-	task: string;
-	exitCode: number;
-	messages: any[];
-	stderr: string;
-	usage: UsageStats;
-	model?: string;
-	stopReason?: string;
-	errorMessage?: string;
-}
 
 interface SubagentDetails {
 	mode: "single" | "parallel";
 	agentScope: AgentScope;
 	results: SingleResult[];
-}
-
-function getFinalOutput(messages: any[]): string {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (msg.role === "assistant") {
-			for (const part of msg.content) {
-				if (part.type === "text") return part.text;
-			}
-		}
-	}
-	return "";
 }
 
 function isFailedResult(result: SingleResult): boolean {
@@ -69,9 +35,9 @@ function isFailedResult(result: SingleResult): boolean {
 
 function getResultOutput(result: SingleResult): string {
 	if (isFailedResult(result)) {
-		return result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
+		return result.error || result.errorMessage || getFinalOutput(result.messages ?? []) || "(no output)";
 	}
-	return getFinalOutput(result.messages) || "(no output)";
+	return result.finalOutput || getFinalOutput(result.messages ?? []) || "(no output)";
 }
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
@@ -83,12 +49,10 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 }
 
 async function writePromptToTempFile(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
-	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
+	const tmpDir = await fs.promises.mkdtemp(path.join(require("node:os").tmpdir(), "pi-subagent-"));
 	const safeName = agentName.replace(/[^\w.-]+/g, "_");
 	const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
-	await withFileMutationQueue(filePath, async () => {
-		await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
-	});
+	await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
 	return { dir: tmpDir, filePath: path.relative(process.cwd(), filePath) };
 }
 
@@ -112,242 +76,6 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
 	return results;
 }
 
-/**
- * Build pi CLI args from an agent config, mapping frontmatter attributes to flags.
- * Based on pi-subagents' pi-args.ts buildPiArgs function.
- */
-function buildPiArgs(agent: AgentConfig, task: string): { args: string[]; tmpDirs: string[] } {
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
-	const tmpDirs: string[] = [];
-
-	// Model configuration (with thinking suffix)
-	let modelArg: string | undefined;
-	if (agent.model) {
-		if (agent.thinking) {
-			const colonIdx = agent.model.lastIndexOf(":");
-			const hasThinkingLevel = colonIdx !== -1 && ["low", "medium", "high"].includes(agent.model.substring(colonIdx + 1));
-			modelArg = hasThinkingLevel ? `${agent.model.slice(0, colonIdx)}:${agent.thinking}` : `${agent.model}:${agent.thinking}`;
-		} else {
-			modelArg = agent.model;
-		}
-		args.push("--model", modelArg);
-	}
-
-	// Tool configuration
-	if (agent.tools && agent.tools.length > 0) {
-		args.push("--tools", agent.tools.join(","));
-	}
-
-	// Extension configuration
-	if (agent.extensions !== undefined) {
-		if (agent.extensions.length === 0) {
-			args.push("--no-extensions");
-		} else {
-			for (const ext of agent.extensions) {
-				args.push("--extension", ext);
-			}
-		}
-	}
-
-	// Subagent-only extensions (loaded only for child sessions)
-	if (agent.subagentOnlyExtensions) {
-		for (const ext of agent.subagentOnlyExtensions) {
-			args.push("--extension", ext);
-		}
-	}
-
-	// Skills configuration
-	if (agent.inheritSkills === false) {
-		args.push("--no-skills");
-	}
-	if (agent.skills && agent.skills.length > 0) {
-		for (const skill of agent.skills) {
-			args.push("--skill", skill);
-		}
-	}
-
-	// Skill paths
-	if (agent.skillPath) {
-		for (const sp of agent.skillPath) {
-			args.push("--skill", sp);
-		}
-	}
-
-	// Inherit project context
-	if (agent.inheritProjectContext === false) {
-		args.push("--no-context-files");
-	}
-
-	// Default reads (prepend file reading instructions to task)
-	if (agent.defaultReads && agent.defaultReads.length > 0) {
-		task = agent.defaultReads.map((f) => `\n\n[Reading ${f}]\n`).join("") + task;
-	}
-
-	// System prompt
-	let tmpPromptDir: string | null = null;
-	if (agent.systemPrompt.trim()) {
-		const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
-		tmpPromptDir = tmp.dir;
-		tmpDirs.push(tmp.dir);
-		if (agent.systemPromptMode === "replace") {
-			args.push("--system-prompt", tmp.filePath);
-		} else {
-			args.push("--append-system-prompt", tmp.filePath);
-		}
-	}
-
-	// Task argument (truncate if too long)
-	const TASK_ARG_LIMIT = 8000;
-	if (task.length > TASK_ARG_LIMIT) {
-		const tmp = await writePromptToTempFile(agent.name, `Task: ${task}`);
-		tmpDirs.push(tmp.dir);
-		args.push(`@${tmp.filePath}`);
-	} else {
-		args.push(`Task: ${task}`);
-	}
-
-	return { args, tmpDirs };
-}
-
-/**
- * Run a single subagent and return the full result object.
- */
-async function runSingleAgent(
-	defaultCwd: string,
-	agents: AgentConfig[],
-	agentName: string,
-	task: string,
-	cwd: string | undefined,
-	signal: AbortSignal | undefined,
-	agentConfig?: AgentConfig,
-): Promise<SingleResult> {
-	const agent = agentConfig || agents.find((a) => a.name === agentName);
-
-	if (!agent) {
-		const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
-		return {
-			agent: agentName,
-			agentSource: "unknown",
-			task,
-			exitCode: 1,
-			messages: [],
-			stderr: `Unknown agent: "${agentName}". Available agents: ${available}.`,
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-		};
-	}
-
-	const result: SingleResult = {
-		agent: agentName,
-		agentSource: agent.source,
-		task,
-		exitCode: 0,
-		messages: [],
-		stderr: "",
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-		model: agent.model,
-	};
-
-	let tmpDirs: string[] = [];
-	try {
-		const { args, tmpDirs: dirs } = await buildPiArgs(agent, task);
-		tmpDirs = dirs;
-
-		const invocation = getPiInvocation(args);
-		const proc = spawn(invocation.command, invocation.args, {
-			cwd: cwd ?? defaultCwd,
-			shell: false,
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-
-		const abortHandler = () => {
-			proc.kill("SIGKILL");
-		};
-		signal?.addEventListener("abort", abortHandler);
-
-		let stdout = "";
-		let stderr = "";
-		let stderrBuffer = "";
-
-		proc.stdout.on("data", (chunk) => {
-			stdout += chunk.toString();
-		});
-
-		proc.stderr.on("data", (chunk) => {
-			stderrBuffer += chunk.toString();
-			const lines = stderrBuffer.split("\n");
-			stderrBuffer = lines.pop() ?? "";
-			stderr += lines.join("\n") + "\n";
-		});
-
-		result.exitCode = await new Promise<number>((resolve) => {
-			proc.on("close", (code) => {
-				resolve(code ?? 1);
-			});
-			proc.on("error", () => {
-				resolve(1);
-			});
-		});
-
-		signal?.removeEventListener("abort", abortHandler);
-
-		// Parse JSON output
-		for (const line of stdout.split("\n").filter(Boolean)) {
-			try {
-				const event = JSON.parse(line);
-				if (event.type === "message") {
-					result.messages.push(event.message);
-				}
-				if (event.type === "error") {
-					result.errorMessage = event.message;
-					result.stopReason = "error";
-				}
-				if (event.type === "done") {
-					result.usage = event.usage || result.usage;
-					result.stopReason = event.stopReason || "end";
-				}
-				if (event.type === "abort") {
-					result.stopReason = "aborted";
-				}
-			} catch {
-				// ignore parse errors
-			}
-		}
-
-		if (result.stopReason === "aborted") {
-			result.exitCode = 130; // SIGINT exit code
-		}
-	} catch (e) {
-		result.exitCode = 1;
-		result.errorMessage = (e as Error).message;
-		result.stopReason = "error";
-	} finally {
-		for (const dir of tmpDirs) {
-			try {
-				fs.rmSync(dir, { recursive: true, force: true });
-			} catch {
-				/* ignore */
-			}
-		}
-	}
-
-	return result;
-}
-
-/**
- * Run a single subagent and return just the output text.
- * Used by the workflow tool's agent() global.
- */
-async function runSubagentForWorkflow(
-	cwd: string,
-	agent: AgentConfig,
-	task: string,
-	signal: AbortSignal | undefined,
-): Promise<string> {
-	const agents: AgentConfig[] = [agent];
-	const result = await runSingleAgent(cwd, agents, agent.name, task, cwd, signal, agent);
-	return getResultOutput(result);
-}
-
 const TaskItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
 	task: Type.String({ description: "Task to delegate to the agent" }),
@@ -369,6 +97,23 @@ const SubagentParams = Type.Object({
 	),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
 });
+
+/**
+ * Run a single subagent and return just the output text.
+ * Used by the workflow tool's agent() global.
+ */
+async function runSubagentForWorkflow(
+	cwd: string,
+	agent: AgentConfig,
+	task: string,
+	signal: AbortSignal | undefined,
+): Promise<string> {
+	const result = await runSingleAgent(cwd, agent, task, {
+		runId: `workflow-${Date.now()}`,
+		signal,
+	});
+	return getResultOutput(result);
+}
 
 export default function (pi: ExtensionAPI) {
 	// --- Subagent Tool ---
@@ -457,9 +202,25 @@ export default function (pi: ExtensionAPI) {
 					async (t, _index) => {
 						const agent = agents.find((a) => a.name === t.agent);
 						if (!agent) {
-							throw new Error(`Unknown agent: ${t.agent}`);
+							return {
+								agent: t.agent,
+								task: t.task,
+								exitCode: 1,
+								messages: [],
+								usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+								error: `Unknown agent: ${t.agent}`,
+							} as SingleResult;
 						}
-						return await runSingleAgent(ctx.cwd, agents, t.agent, t.task, t.cwd, signal, agent);
+						return await runSingleAgent(
+							ctx.cwd,
+							agent,
+							t.task,
+							{
+								runId: `parallel-${Date.now()}-${_index}`,
+								cwd: t.cwd,
+								signal,
+							},
+						);
 					},
 				);
 
@@ -495,12 +256,13 @@ export default function (pi: ExtensionAPI) {
 				}
 				const result = await runSingleAgent(
 					ctx.cwd,
-					agents,
-					params.agent,
-					params.task,
-					params.cwd,
-					signal,
 					agent,
+					params.task,
+					{
+						runId: `single-${Date.now()}`,
+						cwd: params.cwd,
+						signal,
+					},
 				);
 				const isError = isFailedResult(result);
 				if (isError) {
@@ -512,7 +274,7 @@ export default function (pi: ExtensionAPI) {
 					};
 				}
 				return {
-					content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
+					content: [{ type: "text", text: getResultOutput(result) }],
 					details: makeDetails("single")([result]),
 				};
 			}

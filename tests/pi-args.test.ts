@@ -1,0 +1,420 @@
+/**
+ * Tests for pi-args.ts — CLI argument builder
+ */
+
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	applyThinkingSuffix,
+	buildPiArgs,
+	resolvePiLaunchToolPlan,
+} from "../extensions/pi-args.ts";
+
+describe("pi-args", () => {
+	describe("applyThinkingSuffix", () => {
+		it("should return model unchanged when thinking is falsy", () => {
+			expect(applyThinkingSuffix("google/gemini", undefined)).toBe("google/gemini");
+			expect(applyThinkingSuffix("google/gemini", false)).toBe("google/gemini");
+			expect(applyThinkingSuffix("google/gemini", "")).toBe("google/gemini");
+		});
+
+		it("should append thinking suffix when no existing suffix", () => {
+			expect(applyThinkingSuffix("google/gemini", "high")).toBe("google/gemini:high");
+		});
+
+		it("should replace existing thinking suffix when replaceExisting is true", () => {
+			expect(applyThinkingSuffix("google/gemini:low", "high", true)).toBe("google/gemini:high");
+		});
+
+		it("should not duplicate thinking suffix when replaceExisting is false", () => {
+			expect(applyThinkingSuffix("google/gemini:low", "high", false)).toBe("google/gemini:low");
+		});
+
+		it("should return undefined when model is undefined", () => {
+			expect(applyThinkingSuffix(undefined, "high")).toBeUndefined();
+		});
+	});
+
+	describe("resolvePiLaunchToolPlan", () => {
+		it("should handle no tools/extensions", () => {
+			const plan = resolvePiLaunchToolPlan({});
+			expect(plan.requestedBuiltinTools).toEqual([]);
+			expect(plan.declaredBuiltinTools).toEqual([]);
+			expect(plan.explicitToolAllowlist).toBe(false);
+			expect(plan.fanoutAuthorized).toBe(false);
+		});
+
+		it("should handle tools array", () => {
+			const plan = resolvePiLaunchToolPlan({ tools: ["read", "write", "bash"] });
+			expect(plan.requestedBuiltinTools).toEqual(["read", "write", "bash"]);
+			expect(plan.declaredBuiltinTools).toEqual(["read", "write", "bash"]);
+			expect(plan.explicitToolAllowlist).toBe(true);
+			expect(plan.effectiveToolAllowlist).toContain("read");
+			expect(plan.effectiveToolAllowlist).toContain("write");
+			expect(plan.effectiveToolAllowlist).toContain("bash");
+		});
+
+		it("should authorize fanout when subagent tool is present", () => {
+			const plan = resolvePiLaunchToolPlan({ tools: ["read", "subagent"] });
+			expect(plan.fanoutAuthorized).toBe(true);
+		});
+
+		it("should handle extensions", () => {
+			const plan = resolvePiLaunchToolPlan({ extensions: ["/path/to/ext.ts"] });
+			expect(plan.configuredExtensions).toContain("/path/to/ext.ts");
+		});
+
+		it("should handle subagentOnlyExtensions", () => {
+			const plan = resolvePiLaunchToolPlan({ subagentOnlyExtensions: ["/path/to/sub.ts"] });
+			expect(plan.configuredExtensions).toContain("/path/to/sub.ts");
+		});
+
+		it("should handle structured output", () => {
+			const plan = resolvePiLaunchToolPlan({ structuredOutput: true });
+			expect(plan.internalTools).toContain("structured_output");
+			expect(plan.effectiveToolAllowlist).toContain("structured_output");
+		});
+
+		it("should handle capability ceiling with allowedTools", () => {
+			const plan = resolvePiLaunchToolPlan({
+				tools: ["read", "write", "bash", "subagent"],
+				capabilityCeiling: { allowedTools: ["read", "write"], denyExtensions: false },
+			});
+			expect(plan.effectiveToolAllowlist).toContain("read");
+			expect(plan.effectiveToolAllowlist).toContain("write");
+			expect(plan.effectiveToolAllowlist).not.toContain("bash");
+			expect(plan.effectiveToolAllowlist).not.toContain("subagent");
+			expect(plan.fanoutAuthorized).toBe(false);
+		});
+
+		it("should handle capability ceiling with denyExtensions", () => {
+			const plan = resolvePiLaunchToolPlan({
+				tools: ["read"],
+				extensions: ["/path/to/ext.ts"],
+				capabilityCeiling: { denyExtensions: true },
+			});
+			expect(plan.disableAmbientExtensions).toBe(true);
+			expect(plan.configuredExtensions).toEqual([]);
+		});
+
+		it("should add read tool when requireReadTool is true", () => {
+			const plan = resolvePiLaunchToolPlan({
+				tools: ["write"],
+				requireReadTool: true,
+			});
+			expect(plan.declaredBuiltinTools).toContain("read");
+			expect(plan.declaredBuiltinTools).toContain("write");
+		});
+	});
+
+	describe("buildPiArgs", () => {
+		const originalEnv = { ...process.env };
+
+		beforeEach(() => {
+			// Clean up env vars that might interfere
+			delete process.env.PI_SUBAGENT_CAPABILITY_CEILING_V1;
+			delete process.env.PI_SUBAGENT_CHILD;
+		});
+
+		afterEach(() => {
+			process.env = { ...originalEnv };
+		});
+
+		it("should build basic args with mode json and prompt", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "Hello world",
+				sessionEnabled: false,
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+
+			expect(result.args).toContain("--mode");
+			expect(result.args).toContain("json");
+			expect(result.args).toContain("-p");
+			expect(result.args).toContain("--no-session");
+			expect(result.args).toContain("Task: Hello world");
+		});
+
+		it("should add --no-session when sessionEnabled is false", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.args).toContain("--no-session");
+		});
+
+		it("should add --session when sessionFile is provided", () => {
+			const tmpDir = path.join(require("node:os").tmpdir(), "pi-test-session");
+			fs.mkdirSync(tmpDir, { recursive: true });
+			const sessionFile = path.join(tmpDir, "session.json");
+
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: true,
+				sessionFile,
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+
+			expect(result.args).toContain("--session");
+			expect(result.args).toContain(sessionFile);
+
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		});
+
+		it("should add --model when model is provided", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				model: "google/gemini",
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.args).toContain("--model");
+			expect(result.args).toContain("google/gemini");
+		});
+
+		it("should add thinking suffix to model", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				model: "google/gemini",
+				thinking: "high",
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.args).toContain("google/gemini:high");
+		});
+
+		it("should add --tools when tools are provided", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				tools: ["read", "write"],
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.args).toContain("--tools");
+			expect(result.args).toContain("read,write");
+		});
+
+		it("should add --no-tools when tools array is empty", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				tools: [],
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.args).toContain("--no-tools");
+		});
+
+		it("should add --no-skills when inheritSkills is false", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				inheritProjectContext: true,
+				inheritSkills: false,
+			});
+			expect(result.args).toContain("--no-skills");
+		});
+
+		it("should set PI_SUBAGENT_INHERIT_PROJECT_CONTEXT to 0 when false", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				inheritProjectContext: false,
+				inheritSkills: true,
+			});
+			expect(result.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT).toBe("0");
+		});
+
+		it("should add --extension for each extension", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				extensions: ["/path/to/ext1.ts", "/path/to/ext2.ts"],
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.args).toContain("--extension");
+			expect(result.args).toContain("/path/to/ext1.ts");
+			expect(result.args).toContain("/path/to/ext2.ts");
+		});
+
+		it("should add --no-extensions when extensions is empty array", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				extensions: [],
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.args).toContain("--no-extensions");
+		});
+
+		it("should write system prompt to temp file", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				systemPrompt: "You are a helpful assistant.",
+				systemPromptMode: "append",
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.args).toContain("--append-system-prompt");
+			expect(result.tempDir).toBeDefined();
+		});
+
+		it("should use --system-prompt when systemPromptMode is replace", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				systemPrompt: "You are a helpful assistant.",
+				systemPromptMode: "replace",
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.args).toContain("--system-prompt");
+		});
+
+		it("should use @file for long tasks", () => {
+			const longTask = "A".repeat(9000);
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: longTask,
+				sessionEnabled: false,
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.args.some((arg) => arg.startsWith("@"))).toBe(true);
+		});
+
+		it("should set PI_SUBAGENT_CHILD env var", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.env.PI_SUBAGENT_CHILD).toBe("1");
+		});
+
+		it("should set PI_SUBAGENT_FANOUT_CHILD when fanout authorized", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				tools: ["read", "subagent"],
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.env.PI_SUBAGENT_FANOUT_CHILD).toBe("1");
+		});
+
+		it("should set PI_SUBAGENT_INHERIT_PROJECT_CONTEXT", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT).toBe("1");
+		});
+
+		it("should set PI_SUBAGENT_INHERIT_SKILLS", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				inheritProjectContext: true,
+				inheritSkills: false,
+			});
+			expect(result.env.PI_SUBAGENT_INHERIT_SKILLS).toBe("0");
+		});
+
+		it("should set structured output env vars", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				inheritProjectContext: true,
+				inheritSkills: true,
+				structuredOutput: {
+					schema: { type: "object" },
+					schemaPath: "/tmp/schema.json",
+					outputPath: "/tmp/output.json",
+				},
+			});
+			expect(result.env.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA).toBe("/tmp/schema.json");
+			expect(result.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE).toBe("/tmp/output.json");
+		});
+
+		it("should set tool budget env var", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				inheritProjectContext: true,
+				inheritSkills: true,
+				toolBudget: { hard: 50, block: ["read"] },
+			});
+			expect(result.env.PI_SUBAGENT_TOOL_BUDGET).toBeDefined();
+			expect(JSON.parse(result.env.PI_SUBAGENT_TOOL_BUDGET!)).toEqual({ hard: 50, block: ["read"] });
+		});
+
+		it("should set run ID env var", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				runId: "test-run-123",
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.env.PI_SUBAGENT_RUN_ID).toBe("test-run-123");
+		});
+
+		it("should set child agent name env var", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				childAgentName: "researcher",
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.env.PI_SUBAGENT_CHILD_AGENT).toBe("researcher");
+		});
+
+		it("should set child index env var", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				childIndex: 3,
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.env.PI_SUBAGENT_CHILD_INDEX).toBe("3");
+		});
+	});
+});
