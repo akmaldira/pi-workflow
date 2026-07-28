@@ -362,26 +362,34 @@ async function runSingleAttempt(
 		onLine: (line) => {
 			try {
 				const event = JSON.parse(line);
-				if (event.type === "message") {
+				if (event.type === "message_end" || event.type === "tool_result_end") {
 					result.messages?.push(event.message);
-					appendRecentOutput(progress, extractTextFromContent(event.message));
+					if (event.message?.role === "assistant") {
+						appendRecentOutput(progress, extractTextFromContent(event.message));
+					}
 				}
 				if (event.type === "error") {
-					result.errorMessage = event.message;
+					result.errorMessage = event.error || event.message;
 					result.stopReason = "error";
 				}
-				if (event.type === "done") {
-					result.usage = event.usage || result.usage;
-					result.stopReason = event.stopReason || "end";
+				if (event.type === "turn_end") {
+					result.usage = event.message?.usage || result.usage;
+					result.stopReason = event.message?.stopReason || "end";
 					if (event.turnCount !== undefined) progress.turnCount = event.turnCount;
+				}
+				if (event.type === "agent_end") {
+					if (event.messages && event.messages.length > 0) {
+						// Ensure we capture all messages at the end in case we missed some
+						result.messages = event.messages;
+					}
 				}
 				if (event.type === "abort") {
 					result.stopReason = "aborted";
 				}
-				if (event.type === "tool_call") {
+				if (event.type === "tool_execution_start") {
 					progress.toolCount++;
 					progress.recentTools.push({
-						tool: event.tool || "unknown",
+						tool: event.toolName || event.tool || "unknown",
 						args: extractToolArgsPreview(event),
 						endMs: Date.now(),
 					});
