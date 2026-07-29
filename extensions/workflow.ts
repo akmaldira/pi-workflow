@@ -61,6 +61,12 @@ export interface WorkflowRunResult<T = unknown> {
  */
 export interface WorkflowAgentRunner {
 	/**
+	 * Resolve an agent name (parsed from the task prompt or explicit option) to
+	 * a discovered AgentConfig. Falls back to a default agent config when the
+	 * name does not match a discovered agent.
+	 */
+	resolveAgent(agentName: string | undefined, cwd?: string): Promise<AgentConfig>;
+	/**
 	 * Run a subagent task.
 	 * @param prompt The task prompt
 	 * @param agentConfig The resolved agent config (from pi-subagents discovery)
