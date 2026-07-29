@@ -31,17 +31,33 @@ const workflowToolSchema = Type.Object({
 			default: "both",
 		}),
 	),
+	maxAgents: Type.Optional(
+		Type.Number({ description: "Max number of agents to spawn in this workflow. Default: unlimited." }),
+	),
+	tokenBudget: Type.Optional(
+		Type.Number({ description: "Token budget for this workflow. Warnings at 80% and 100%. Default: unlimited." }),
+	),
+	scriptTimeoutMs: Type.Optional(
+		Type.Number({ description: "Script execution timeout in milliseconds. Default: unlimited." }),
+	),
 });
 
 export type WorkflowToolInput = {
 	script: string;
 	args?: unknown;
 	agentScope?: string;
+	maxAgents?: number;
+	tokenBudget?: number;
+	scriptTimeoutMs?: number;
 };
 
 export interface WorkflowToolOptions {
 	cwd?: string;
 	concurrency?: number;
+	maxConcurrent?: number;
+	maxAgents?: number;
+	tokenBudget?: number;
+	scriptTimeoutMs?: number;
 }
 
 /**
@@ -296,6 +312,10 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 					args: params.args,
 					signal,
 					concurrency: options.concurrency,
+					maxConcurrent: options.maxConcurrent,
+					maxAgents: params.maxAgents,
+					tokenBudget: params.tokenBudget,
+					scriptTimeoutMs: params.scriptTimeoutMs,
 					agentRunner,
 					onLog(message) {
 						snapshot.logs.push(message);

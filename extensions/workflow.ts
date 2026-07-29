@@ -38,6 +38,9 @@ export interface WorkflowRunOptions {
 	agentRunner?: WorkflowAgentRunner;
 	concurrency?: number;
 	tokenBudget?: number | null;
+	maxAgents?: number;
+	maxConcurrent?: number;
+	scriptTimeoutMs?: number;
 	signal?: AbortSignal;
 	cwd?: string;
 	onLog?: (message: string) => void;
@@ -91,6 +94,11 @@ interface RuntimeState {
 	phases: string[];
 	agentCount: number;
 	spent: number;
+	totalTokens: number;
+	startTime: number;
+	maxAgents?: number;
+	scriptTimeoutMs?: number;
+	tokenBudget?: number | null;
 }
 
 type AnyNode = Node & { [key: string]: any; start: number; end: number };
@@ -151,13 +159,26 @@ export async function runWorkflow<T = unknown>(
 ): Promise<WorkflowRunResult<T>> {
 	const started = Date.now();
 	const { meta, body } = parseWorkflowScript(script);
-	const state: RuntimeState = { logs: [], phases: [], agentCount: 0, spent: 0 };
+	const state: RuntimeState = {
+		logs: [],
+		phases: [],
+		agentCount: 0,
+		spent: 0,
+		totalTokens: 0,
+		startTime: started,
+		maxAgents: options.maxAgents,
+		scriptTimeoutMs: options.scriptTimeoutMs,
+		tokenBudget: options.tokenBudget,
+	};
 	const agentRunner = options.agentRunner;
-	const concurrency = Math.max(
+	const maxConcurrent = Math.max(
 		1,
-		Math.min(options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2), 16),
+		Math.min(
+			options.maxConcurrent ?? options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2),
+			16,
+		),
 	);
-	const limiter = createLimiter(concurrency);
+	const limiter = createLimiter(maxConcurrent);
 	const pendingAgentRuns = new Set<Promise<unknown>>();
 
 	const log = (message: string) => {
@@ -183,6 +204,17 @@ export async function runWorkflow<T = unknown>(
 		if (options.signal?.aborted) throw new Error("workflow aborted");
 	};
 
+	const checkLimits = () => {
+		throwIfAborted();
+		if (state.maxAgents && state.agentCount >= state.maxAgents) {
+			throw new Error(`Max agents limit exceeded (${state.maxAgents})`);
+		}
+		if (state.scriptTimeoutMs && Date.now() - state.startTime > state.scriptTimeoutMs) {
+			throwIfAborted();
+			throw new Error(`Script timeout (${state.scriptTimeoutMs}ms)`);
+		}
+	};
+
 	/**
 	 * agent() global: spawn a subagent.
 	 *
@@ -191,7 +223,7 @@ export async function runWorkflow<T = unknown>(
 	 * agent, its frontmatter attributes are applied to the subagent execution.
 	 */
 	const agent = async (prompt: unknown, agentOptions: unknown = {}): Promise<string> => {
-		throwIfAborted();
+		checkLimits();
 		if (budget.total !== null && budget.remaining() <= 0) throw new Error("workflow token budget exhausted");
 		const taskPrompt = requireString(prompt, "agent prompt");
 		const normalizedOptions = normalizeAgentOptions(agentOptions);
@@ -211,6 +243,9 @@ export async function runWorkflow<T = unknown>(
 		const assignedPhase = normalizedOptions.phase ?? state.currentPhase;
 		const requestedLabel = normalizedOptions.label?.trim();
 		const run = limiter(async () => {
+			if (state.maxAgents && state.agentCount >= state.maxAgents) {
+				throw new Error(`Max agents limit reached (${state.maxAgents})`);
+			}
 			state.agentCount++;
 			const label = requestedLabel || defaultAgentLabel(assignedPhase, state.agentCount);
 			options.onAgentStart?.({ label, phase: assignedPhase, prompt: taskPrompt, agentName: agentName ?? "default" });
@@ -228,7 +263,21 @@ export async function runWorkflow<T = unknown>(
 					modelOverride: normalizedOptions.model,
 				});
 				throwIfAborted();
-				state.spent += estimateTokens(result);
+				const tokens = estimateTokens(result);
+				state.spent += tokens;
+				state.totalTokens += tokens;
+
+				// Warn at budget thresholds
+				if (state.tokenBudget !== null && state.tokenBudget !== undefined) {
+					const used = state.totalTokens;
+					const budget_val = state.tokenBudget;
+					if (used >= budget_val) {
+						log(`⚠ Token budget exceeded: ${used}/${budget_val}`);
+					} else if (used >= budget_val * 0.8) {
+						log(`⚠ Token budget 80%: ${used}/${budget_val}`);
+					}
+				}
+
 				options.onAgentEnd?.({ label, phase: assignedPhase, result, agentName: agentName ?? "default" });
 				return result;
 			} catch (error) {
@@ -247,7 +296,7 @@ export async function runWorkflow<T = unknown>(
 	};
 
 	const parallel = async (thunks: Array<() => Promise<unknown>>): Promise<unknown[]> => {
-		throwIfAborted();
+		checkLimits();
 		if (!Array.isArray(thunks)) throw new TypeError("parallel() expects an array of functions");
 		if (thunks.some((thunk) => typeof thunk !== "function")) {
 			throw new TypeError("parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)");
@@ -259,7 +308,7 @@ export async function runWorkflow<T = unknown>(
 				} catch (error) {
 					if (options.signal?.aborted) throw error;
 					log(`parallel[${index}] failed: ${error instanceof Error ? error.message : String(error)}`);
-					return null;
+					return { error: error instanceof Error ? error.message : String(error), ok: false };
 				}
 			}),
 		);
@@ -269,7 +318,7 @@ export async function runWorkflow<T = unknown>(
 		items: unknown[],
 		...stages: Array<(prev: unknown, original: unknown, index: number) => unknown>
 	): Promise<unknown[]> => {
-		throwIfAborted();
+		checkLimits();
 		if (!Array.isArray(items)) throw new TypeError("pipeline() expects an array as the first argument");
 		if (stages.some((stage) => typeof stage !== "function")) {
 			throw new TypeError("pipeline() stages must be functions: pipeline(items, item => ..., result => ...)");
@@ -279,13 +328,13 @@ export async function runWorkflow<T = unknown>(
 				let value: unknown = item;
 				for (const stage of stages) {
 					try {
-						throwIfAborted();
+						checkLimits();
 						value = await stage(value, item, index);
-						throwIfAborted();
+						checkLimits();
 					} catch (error) {
 						if (options.signal?.aborted) throw error;
 						log(`pipeline[${index}] failed: ${error instanceof Error ? error.message : String(error)}`);
-						return null;
+						return { error: error instanceof Error ? error.message : String(error), ok: false };
 					}
 				}
 				return value;
