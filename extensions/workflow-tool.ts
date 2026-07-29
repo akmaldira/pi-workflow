@@ -40,6 +40,12 @@ const workflowToolSchema = Type.Object({
 	scriptTimeoutMs: Type.Optional(
 		Type.Number({ description: "Script execution timeout in milliseconds. Default: unlimited." }),
 	),
+	journalDir: Type.Optional(
+		Type.String({ description: "Directory to store JSONL run journals for persistence and resume. If not provided, journaling is disabled." }),
+	),
+	resumeRunId: Type.Optional(
+		Type.String({ description: "Run ID to resume from a prior journal. Script must match (validated by hash) or cache is invalidated." }),
+	),
 });
 
 export type WorkflowToolInput = {
@@ -49,6 +55,8 @@ export type WorkflowToolInput = {
 	maxAgents?: number;
 	tokenBudget?: number;
 	scriptTimeoutMs?: number;
+	journalDir?: string;
+	resumeRunId?: string;
 };
 
 export interface WorkflowToolOptions {
@@ -58,6 +66,7 @@ export interface WorkflowToolOptions {
 	maxAgents?: number;
 	tokenBudget?: number;
 	scriptTimeoutMs?: number;
+	journalDir?: string;
 }
 
 /**

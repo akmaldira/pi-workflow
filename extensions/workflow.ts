@@ -11,6 +11,8 @@ import vm from "node:vm";
 import type { Node } from "acorn";
 import { parse } from "acorn";
 import type { AgentConfig } from "./agents.ts";
+import { RunJournal, hashString, agentCallKey } from "./journal.ts";
+import type { JournalResumeState } from "./journal-types.ts";
 
 export interface WorkflowMetaPhase {
 	title: string;
@@ -43,6 +45,9 @@ export interface WorkflowRunOptions {
 	scriptTimeoutMs?: number;
 	signal?: AbortSignal;
 	cwd?: string;
+	journal?: RunJournal;
+	journalDir?: string;
+	resumeRunId?: string;
 	onLog?: (message: string) => void;
 	onPhase?: (title: string) => void;
 	onAgentStart?: (event: { label: string; phase?: string; prompt: string; agentName: string }) => void;
