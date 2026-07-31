@@ -9,6 +9,11 @@ A [pi](https://pi.dev) extension for delegating tasks to specialized subagents w
 - **Dynamic workflows**: Write JavaScript that fans out work across subagents
 - **Agent discovery**: Load agents from `~/.pi/agent/agents/*.md` and `.pi/agents/*.md`
 - **Rich agent configuration**: Support for all standard subagent attributes
+- **Journaling & Resume** — Cache agent results and resume interrupted workflows with intelligent script-change detection
+- **Git Worktree Isolation** — Run parallel file-mutating agents in safe throwaway git worktrees
+- **Budget Tracking** — Track agent count, token usage, and script timeout with configurable limits
+- **Error Resilience** — Graceful degradation with partial failure handling
+- **Real-Time Display** — Workflow snapshots and progress rendering for TUI monitoring
 
 ## Install
 
@@ -169,6 +174,85 @@ if (!result) {
 }
 ```
 
+### Advanced: Workflow Options
+
+The `workflow` tool accepts optional parameters that control execution behavior:
+
+```typescript
+workflow(script, {
+  args: { repo: 'github.com/bejorock/pi-workflow' },  // Exposed as `args` global
+  agentScope: 'both',                                  // Discover agents from both user & project
+  cwd: '/path/to/project',                            // Working directory
+  journalDir: '/tmp/pi-workflow-journals',            // Enable journaling/resume
+  resumeRunId: 'run-abc123',                          // Resume a previous run by ID
+})
+```
+
+#### Journaling & Resume
+
+Enable persistent caching of agent results by providing a `journalDir`. Subsequent calls with the same `runId` can skip cached agents automatically:
+
+```js
+export const meta = { name: 'build_docs', description: 'Generate project documentation' }
+
+// If journalDir + resumeRunId provided, cached results are reused
+const overview = await agent('scout: Map the codebase structure', { label: 'overview' })
+// If this agent ran before with the same script hash, it returns instantly from cache
+const analysis = await agent('researcher: Analyze the modules', { label: 'analysis' })
+
+return { overview, analysis }
+```
+
+The journal tracks: script hash (for cache invalidation on edits), total agents spawned, total tokens, and per-agent cached results. When the script changes, the cache is automatically invalidated.
+
+### Git Worktree Isolation
+
+For parallel agents that write files, use `isolation: 'worktree'` to run in throwaway git worktrees:
+
+```js
+phase('Implementation')
+const results = await parallel([
+  () => agent('worker: Implement file A', { isolation: 'worktree', label: 'file A' }),
+  () => agent('worker: Implement file B', { isolation: 'worktree', label: 'file B' })
+])
+```
+
+Each worktree-isolated agent gets its own git branch in `/tmp/`, preventing concurrent file conflicts. Diffs are captured per-agent and can be applied back to the main tree after verification.
+
+### Budget Tracking
+
+The workflow runtime tracks agent usage and can enforce optional limits:
+
+```js
+// In agent options:
+const result = await agent('task', {
+  maxAgents: 10,           // Hard limit on total agents (throws if exceeded)
+  scriptTimeoutMs: 60000,  // Max script runtime
+  tokenBudget: 100000,     // Warn at 80%/100%, tracked only (no hard enforcement)
+  maxConcurrent: 4,        // Max concurrent agents in parallel()
+})
+```
+
+| Parameter | Limit Type | Behavior |
+|-----------|-----------|----------|
+| `maxAgents` | Hard | Throws error if exceeded |
+| `scriptTimeoutMs` | Hard | Throws if exceeded |
+| `tokenBudget` | Soft (tracking only) | Warns at 80%/100%, workflow continues |
+| `maxConcurrent` | Soft | Limits parallelization, doesn't reduce result set |
+
+### Real-Time Display
+
+Access the `WorkflowSnapshot` API for custom TUI rendering:
+
+```typescript
+import { createWorkflowSnapshot, renderWorkflowText, getSnapshotStats } from 'pi-workflow/extensions/workflow-display'
+
+const snapshot = createWorkflowSnapshot({ name: 'my_workflow', description: 'desc' })
+// ... recordAgent, updatePhaseStatus, finalizeSnapshot ...
+const text = renderWorkflowText(snapshot, { compact: false, showTokens: true })
+console.log(text)
+```
+
 ## Agent Frontmatter Attributes
 
 ### Required
@@ -201,12 +285,12 @@ if (!result) {
 | `async` | boolean | Default to background mode |
 | `timeoutMs` | number | Runtime deadline in milliseconds |
 | `turnBudget` | object | `{"maxTurns": 20, "graceTurns": 2}` |
-| `acceptance` | string or object | Acceptance level or `{level, reason}` |
+| `acceptance` | string or object | Acceptance level or `{level, reason} |
 | `acceptanceRole` | `read-only` \| `writer` | Role for acceptance inference |
 | `completionGuard` | boolean | Auto-detect implementation (default: true) |
 | `interactive` | boolean | Parsed for compatibility |
 | `maxSubagentDepth` | number | Nested delegation limit |
-| `memory` | object | `{scope: "project"|"user", path: "<name>"}` |
+| `memory` | object | `{scope: "project"\|"user", path: "<name>"}` |
 
 ## Example Agents
 
@@ -323,6 +407,9 @@ You are an auditor. Complete within 15 turns max.
 | `script` | string | Required JavaScript workflow script |
 | `args` | any | Optional JSON value exposed as `args` global |
 | `agentScope` | string | Agent discovery scope (default: `"user"`) |
+| `cwd` | string | Working directory for subagents (default: project root) |
+| `journalDir` | string | Directory for Journaling & Resume persistence |
+| `resumeRunId` | string | Resume ID for cached results (used with journalDir) |
 
 ## Agent Locations
 
@@ -336,3 +423,14 @@ Project-local agents (`.pi/agents/*.md`) can instruct the model to read files, r
 By default, you're prompted before running project agents. Only enable project agents for repositories you trust.
 
 Workflow scripts run in a deterministic VM sandbox with no filesystem, network, or time access.
+
+## Testing
+
+This project includes a comprehensive test suite:
+
+```bash
+npm test                    # Run all tests
+npm test -- name.filter     # Run tests matching filter
+```
+
+**Current: 378 tests passing across 17 test files** — covering workflow parsing, runtime execution, subagent spawning, agent discovery, budget controls, journaling, worktree isolation, error resilience, and real-time display.
