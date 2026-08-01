@@ -19,6 +19,9 @@ import { createWorkflowTool } from "./workflow-tool.ts";
 import { runSingleAgent } from "./execution.ts";
 import type { SingleResult } from "./types.ts";
 import { getFinalOutput } from "./utils.ts";
+import { WorkflowManager } from "./workflow-manager.ts";
+import { openWorkflowNavigator } from "./workflow-ui.ts";
+import { registerTaskPanel } from "./task-panel.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -117,6 +120,8 @@ async function runSubagentForWorkflow(
 }
 
 export default function (pi: ExtensionAPI) {
+	const globalWorkflowManager = new WorkflowManager();
+
 	// --- Subagent Tool ---
 	pi.registerTool({
 		name: "subagent",
@@ -297,6 +302,17 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(workflowTool);
 
 	// --- Commands ---
+	pi.registerCommand("workflows", {
+		description: "Open the interactive /workflows navigator overlay",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("The /workflows navigator requires an interactive TUI session.", "warning");
+				return;
+			}
+			await openWorkflowNavigator(pi, globalWorkflowManager, ctx.ui);
+		},
+	});
+
 	pi.registerCommand("agents", {
 		description: "List available subagents",
 		handler: async (_args, ctx) => {
@@ -333,11 +349,14 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// --- Session start: activate workflow tool ---
-	pi.on("session_start", () => {
+	// --- Session start: activate workflow tool & task panel ---
+	pi.on("session_start", (_event, ctx) => {
 		const active = pi.getActiveTools();
 		if (!active.includes(workflowTool.name)) {
 			pi.setActiveTools([...active, workflowTool.name]);
+		}
+		if (ctx && ctx.ui) {
+			registerTaskPanel(pi, globalWorkflowManager, ctx.ui);
 		}
 	});
 }

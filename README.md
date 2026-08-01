@@ -83,6 +83,7 @@ return { inventory, summary }
 
 ### Commands
 
+- `/workflows` — Open the interactive Claude Code-style dynamic workflow TUI navigator (runs ──▶ phases ──▶ agents ──▶ agent detail)
 - `/agents` — List available subagents with their configurations
 
 ## Dynamic Workflows
