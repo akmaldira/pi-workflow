@@ -12,6 +12,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseWorkflowScript, runWorkflow, type WorkflowAgentRunner, type WorkflowRunResult } from "./workflow.ts";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import type { WorkflowManager } from "./workflow-manager.ts";
 
 const workflowToolSchema = Type.Object({
 	script: Type.String({
@@ -242,6 +243,8 @@ function renderWorkflowText(snapshot: WorkflowSnapshot, completed = false, optio
 }
 
 export interface WorkflowToolOptionsFull extends WorkflowToolOptions {
+	/** Optional WorkflowManager for registering and updating live runs. */
+	workflowManager?: WorkflowManager;
 	/**
 	 * Function to run a single subagent. This is injected by the extension
 	 * and reuses the existing CLI-based subagent spawning logic.
@@ -292,6 +295,17 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 			let snapshot: WorkflowSnapshot = createWorkflowSnapshot(parsed.meta);
 			const displayOptions = { maxAgents: 4, maxLogs: 1, showResultPreviews: false };
 
+			const workflowManager = options.workflowManager;
+			const runId = params.resumeRunId || `wf-${Date.now()}`;
+			if (workflowManager) {
+				if (params.journalDir) workflowManager.setJournalDir(params.journalDir);
+				const abortController = new AbortController();
+				if (signal) {
+					signal.addEventListener("abort", () => abortController.abort());
+				}
+				workflowManager.registerRun(runId, parsed.meta, abortController);
+			}
+
 			const update = () => {
 				snapshot = recomputeWorkflowSnapshot(snapshot);
 				if (onUpdate) {
@@ -328,23 +342,30 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 					agentRunner,
 					onLog(message) {
 						snapshot.logs.push(message);
+						if (workflowManager) workflowManager.log(runId, message);
 						update();
 					},
 					onPhase(title) {
 						snapshot.currentPhase = title;
 						recordPhase(title);
+						const phaseIdx = snapshot.phases.indexOf(title);
+						if (workflowManager) workflowManager.markPhase(runId, Math.max(0, phaseIdx), title);
 						update();
 					},
 					onAgentStart(event) {
 						if (signal?.aborted) throw new Error("Workflow was aborted");
 						recordPhase(event.phase);
-						snapshot.agents.push({
-							id: snapshot.agents.length + 1,
+						const agentId = snapshot.agents.length + 1;
+						const agentSnapshot = {
+							id: agentId,
 							label: event.label,
 							phase: event.phase,
 							prompt: event.prompt,
-							status: "running",
-						});
+							status: "running" as const,
+						};
+						snapshot.agents.push(agentSnapshot);
+						const phaseIdx = event.phase ? snapshot.phases.indexOf(event.phase) : 0;
+						if (workflowManager) workflowManager.markAgentStart(runId, Math.max(0, phaseIdx), agentSnapshot);
 						update();
 					},
 					onAgentEnd(event) {
@@ -354,12 +375,18 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 						if (agent) {
 							agent.status = event.result === null ? "error" : "done";
 							agent.resultPreview = preview(event.result);
+							if (workflowManager) {
+								workflowManager.markAgentEnd(runId, agent.id, agent.status === "error" ? "error" : "done", event.result);
+							}
 						}
 						update();
 					},
 				});
 			} catch (error) {
 				console.error("[Workflow Error]", error);
+				if (workflowManager) {
+					workflowManager.completeRun(runId, undefined, error instanceof Error ? error.message : String(error));
+				}
 				if (signal?.aborted || isAbortError(error)) {
 					for (const agent of snapshot.agents) {
 						if (agent.status === "running") {
@@ -388,6 +415,9 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 			snapshot.result = result.result;
 			snapshot.durationMs = result.durationMs;
 			snapshot = recomputeWorkflowSnapshot(snapshot);
+			if (workflowManager) {
+				workflowManager.completeRun(runId, result.result);
+			}
 			if (onUpdate) {
 				onUpdate({
 					content: [{ type: "text" as const, text: renderWorkflowText(snapshot, true, displayOptions) }],

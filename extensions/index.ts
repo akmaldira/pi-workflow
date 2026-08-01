@@ -298,6 +298,7 @@ export default function (pi: ExtensionAPI) {
 	const workflowTool = createWorkflowTool({
 		cwd: undefined, // will use ctx.cwd at execution time
 		runSingleAgent: runSubagentForWorkflow,
+		workflowManager: globalWorkflowManager,
 	});
 	pi.registerTool(workflowTool);
 

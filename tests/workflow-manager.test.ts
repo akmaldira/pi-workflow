@@ -129,4 +129,28 @@ describe("WorkflowManager", () => {
 		expect(names).toContain("active_wf");
 		expect(names).toContain("persisted_wf");
 	});
+
+	it("updates WorkflowManager events when workflow tool executes", async () => {
+		const { createWorkflowTool } = await import("../extensions/workflow-tool.ts");
+		const tool = createWorkflowTool({
+			workflowManager: manager,
+			runSingleAgent: async () => "agent output",
+		});
+
+		const script = `
+			export const meta = { name: "integration_test", description: "test" };
+			phase("Phase 1");
+			await agent("test agent", { label: "agent 1" });
+		`;
+
+		await tool.execute("call-1", { script }, undefined, undefined, { cwd: tempDir, sessionManager: { getSessionId: () => "s1" } } as any);
+
+		const runs = manager.listRuns();
+		expect(runs.length).toBe(1);
+		expect(runs[0].workflowName).toBe("integration_test");
+		expect(runs[0].status).toBe("completed");
+		expect(runs[0].agents.length).toBe(1);
+		expect(runs[0].agents[0].label).toBe("agent 1");
+		expect(runs[0].agents[0].status).toBe("done");
+	});
 });
