@@ -313,11 +313,10 @@ export type NavAction =
 	| { type: "resume" }
 	| { type: "none" };
 
-export function keyToAction(keyStr: string, kind: ViewKind): NavAction {
-	const key = parseKey(keyStr);
-	const name = key?.name || keyStr;
+export function keyToAction(data: string, kind: ViewKind): NavAction {
+	const keyId = parseKey(data) || data;
 
-	switch (name) {
+	switch (keyId) {
 		case "up":
 		case "k":
 			return { type: "move", delta: -1 };

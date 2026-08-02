@@ -104,19 +104,23 @@ describe("NavigatorState", () => {
 });
 
 describe("keyToAction", () => {
-	it("maps arrow keys and vim keys to actions", () => {
+	it("maps raw terminal input sequences and key names to actions", () => {
+		// Raw terminal escape sequences
+		expect(keyToAction("\r", "runs")).toEqual({ type: "drill" });
+		expect(keyToAction("\n", "runs")).toEqual({ type: "drill" });
+		expect(keyToAction("\x1b[A", "runs")).toEqual({ type: "move", delta: -1 });
+		expect(keyToAction("\x1b[B", "runs")).toEqual({ type: "move", delta: 1 });
+		expect(keyToAction("\x1b", "runs")).toEqual({ type: "back" });
+
+		// Named keys
 		expect(keyToAction("up", "runs")).toEqual({ type: "move", delta: -1 });
 		expect(keyToAction("k", "runs")).toEqual({ type: "move", delta: -1 });
-
 		expect(keyToAction("down", "runs")).toEqual({ type: "move", delta: 1 });
 		expect(keyToAction("j", "runs")).toEqual({ type: "move", delta: 1 });
-
 		expect(keyToAction("enter", "runs")).toEqual({ type: "drill" });
 		expect(keyToAction("return", "runs")).toEqual({ type: "drill" });
-
 		expect(keyToAction("escape", "runs")).toEqual({ type: "back" });
 		expect(keyToAction("left", "runs")).toEqual({ type: "back" });
-
 		expect(keyToAction("q", "runs")).toEqual({ type: "close" });
 		expect(keyToAction("x", "runs")).toEqual({ type: "stop" });
 		expect(keyToAction("p", "runs")).toEqual({ type: "pause" });
