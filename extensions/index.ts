@@ -109,12 +109,13 @@ async function runSubagentForWorkflow(
 	cwd: string,
 	agent: AgentConfig,
 	task: string,
-	options: { signal?: AbortSignal; parentSessionId?: string },
+	options: { signal?: AbortSignal; parentSessionId?: string; onEvent?: (event: Record<string, unknown>) => void },
 ): Promise<string> {
 	const result = await runSingleAgent(cwd, agent, task, {
 		runId: `workflow-${Date.now()}`,
 		signal: options.signal,
 		parentSessionId: options.parentSessionId,
+		onEvent: options.onEvent,
 	});
 	return getResultOutput(result);
 }

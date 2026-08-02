@@ -50,6 +50,13 @@ export interface SavedOutputReference {
 	message: string;
 }
 
+export type AgentHistoryEntry =
+	| { role: "user"; text: string }
+	| { role: "assistant"; text: string; kind?: "text" }
+	| { role: "assistant"; kind: "toolCall"; toolName: string; args: string; path?: string; text: string }
+	| { role: "tool"; toolName: string; text: string; diff?: string }
+	| { role: "assistant"; kind: "error"; text: string };
+
 export interface TruncationResult {
 	text: string;
 	truncated: boolean;
@@ -376,6 +383,7 @@ export interface NestedRouteInfo {
 
 export interface RunSyncOptions {
 	parentSessionId?: string;
+	onEvent?: (event: Record<string, unknown>) => void;
 	context?: "fresh" | "fork";
 	cwd?: string;
 	signal?: AbortSignal;

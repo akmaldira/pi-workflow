@@ -8,101 +8,163 @@
  *       On runs: p pause · x stop · r resume · q quit
  */
 
-import { type ExtensionAPI, type ExtensionUIContext, type Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { parseKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { WorkflowManager, PersistedRun, ManagedRun } from "./workflow-manager.ts";
-import type { WorkflowAgentSnapshot } from "./workflow-display-types.ts";
+import type { WorkflowAgentSnapshot, AgentHistoryEntry } from "./workflow-display-types.ts";
 
 export type ViewKind = "runs" | "phases" | "agents" | "detail";
 
-export interface Action {
-	type:
-		| "move"
-		| "page"
-		| "jump"
-		| "drill"
-		| "back"
-		| "close"
-		| "stop"
-		| "pause"
-		| "resume"
-		| "toggleTail"
-		| "none";
-	delta?: number;
-	direction?: "up" | "down";
-	edge?: "top" | "bottom";
-}
-
-export class NavigatorState {
-	kind: ViewKind = "runs";
-	cursor = 0;
+export interface StackFrame {
+	kind: ViewKind;
+	cursor: number;
 	runId?: string;
 	phase?: string;
 	agentId?: number;
-	tailOutput = true;
+}
 
-	private historyStack: Array<{ kind: ViewKind; cursor: number; runId?: string; phase?: string; agentId?: number }> = [];
+export class NavigatorState {
+	private stack: StackFrame[] = [{ kind: "runs", cursor: 0 }];
+	scroll = 0;
+	tailing = false;
+	pagerOpen = false;
+	private pageSize = 5;
 
-	move(delta: number, maxCount: number): void {
-		if (maxCount <= 0) {
+	private top(): StackFrame {
+		return this.stack[this.stack.length - 1];
+	}
+
+	get kind(): ViewKind {
+		return this.top().kind;
+	}
+
+	get cursor(): number {
+		return this.top().cursor;
+	}
+
+	set cursor(val: number) {
+		this.top().cursor = val;
+	}
+
+	get runId(): string | undefined {
+		return this.top().runId;
+	}
+
+	get phase(): string | undefined {
+		return this.top().phase;
+	}
+
+	get agentId(): number | undefined {
+		return this.top().agentId;
+	}
+
+	get depth(): number {
+		return this.stack.length;
+	}
+
+	clamp(count: number): void {
+		const t = this.top();
+		t.cursor = count <= 0 ? 0 : Math.max(0, Math.min(t.cursor, count - 1));
+	}
+
+	move(delta: number, count: number): void {
+		if (this.kind === "detail") {
+			this.pagerOpen = true;
+			if (delta < 0) this.tailing = false;
+			this.scroll = Math.max(0, this.scroll + delta);
+			return;
+		}
+		if (count <= 0) {
 			this.cursor = 0;
 			return;
 		}
-		this.cursor = Math.max(0, Math.min(maxCount - 1, this.cursor + delta));
+		const t = this.top();
+		t.cursor = Math.max(0, Math.min(count - 1, t.cursor + delta));
 	}
 
-	movePage(direction: "up" | "down", maxCount: number, pageSize = 5): void {
-		const delta = direction === "up" ? -pageSize : pageSize;
-		this.move(delta, maxCount);
+	setPageSize(rows: number): void {
+		this.pageSize = Math.max(1, rows);
 	}
 
-	jump(edge: "top" | "bottom", maxCount: number): void {
-		if (maxCount <= 0) {
-			this.cursor = 0;
+	movePage(direction: -1 | 1 | "up" | "down", count: number, pageSize?: number): void {
+		const dir = direction === "up" || direction === -1 ? -1 : 1;
+		const delta = dir * (pageSize ?? Math.max(1, this.pageSize - 1));
+		if (this.kind === "detail") {
+			this.pagerOpen = true;
+			if (dir < 0) this.tailing = false;
+			this.scroll = Math.max(0, this.scroll + delta);
 			return;
 		}
-		this.cursor = edge === "top" ? 0 : maxCount - 1;
+		if (count > 0) this.cursor = Math.max(0, Math.min(count - 1, this.cursor + delta));
 	}
 
-	toggleTail(): void {
-		this.tailOutput = !this.tailOutput;
+	jump(edge: "start" | "end" | "top" | "bottom", count: number): void {
+		const isEnd = edge === "end" || edge === "bottom";
+		if (this.kind === "detail") {
+			this.pagerOpen = true;
+			this.tailing = isEnd;
+			this.scroll = isEnd ? Number.MAX_SAFE_INTEGER : 0;
+			return;
+		}
+		this.cursor = !isEnd || count <= 0 ? 0 : count - 1;
+	}
+
+	openPager(): boolean {
+		if (this.kind !== "detail") return false;
+		if (!this.pagerOpen) {
+			this.pagerOpen = true;
+			this.scroll = 0;
+		}
+		return true;
+	}
+
+	togglePager(): boolean {
+		if (this.kind !== "detail") return false;
+		if (!this.pagerOpen) return this.openPager();
+		this.pagerOpen = false;
+		this.scroll = 0;
+		this.tailing = false;
+		return false;
+	}
+
+	toggleTail(): boolean {
+		if (this.kind !== "detail") return false;
+		this.pagerOpen = true;
+		this.tailing = !this.tailing;
+		if (this.tailing) this.scroll = Number.MAX_SAFE_INTEGER;
+		return this.tailing;
 	}
 
 	drill(model: NavigatorModel): boolean {
-		if (this.kind === "runs") {
+		const t = this.top();
+		if (t.kind === "runs") {
 			const runs = model.runs();
-			const selected = runs[this.cursor];
-			if (!selected) return false;
+			if (t.cursor < runs.length) {
+				const run = runs[t.cursor];
+				if (!run) return false;
+				this.stack.push({ kind: "phases", cursor: 0, runId: run.runId });
+				return true;
+			}
+			return false;
+		}
 
-			this.pushStack();
-			this.kind = "phases";
-			this.runId = selected.runId;
-			this.cursor = 0;
+		if (t.kind === "phases" && t.runId) {
+			const phases = model.phases(t.runId);
+			const ph = phases[t.cursor];
+			if (!ph) return false;
+			this.stack.push({ kind: "agents", cursor: 0, runId: t.runId, phase: ph.title });
 			return true;
 		}
 
-		if (this.kind === "phases" && this.runId) {
-			const phases = model.phases(this.runId);
-			const selected = phases[this.cursor];
-			if (!selected) return false;
-
-			this.pushStack();
-			this.kind = "agents";
-			this.phase = selected.title;
-			this.cursor = 0;
-			return true;
-		}
-
-		if (this.kind === "agents" && this.runId && this.phase) {
-			const agents = model.agents(this.runId, this.phase);
-			const selected = agents[this.cursor];
-			if (!selected) return false;
-
-			this.pushStack();
-			this.kind = "detail";
-			this.agentId = selected.id;
-			this.cursor = 0;
+		if (t.kind === "agents" && t.runId && t.phase) {
+			const agents = model.agents(t.runId, t.phase);
+			const ag = agents[t.cursor];
+			if (!ag) return false;
+			this.scroll = 0;
+			this.tailing = false;
+			this.pagerOpen = false;
+			this.stack.push({ kind: "detail", cursor: 0, runId: t.runId, phase: t.phase, agentId: ag.id });
 			return true;
 		}
 
@@ -110,25 +172,18 @@ export class NavigatorState {
 	}
 
 	back(): boolean {
-		const prev = this.historyStack.pop();
-		if (!prev) return false;
-
-		this.kind = prev.kind;
-		this.cursor = prev.cursor;
-		this.runId = prev.runId;
-		this.phase = prev.phase;
-		this.agentId = prev.agentId;
+		if (this.kind === "detail" && this.pagerOpen) {
+			this.pagerOpen = false;
+			this.scroll = 0;
+			this.tailing = false;
+			return true;
+		}
+		if (this.stack.length <= 1) return false;
+		this.stack.pop();
+		this.scroll = 0;
+		this.tailing = false;
+		this.pagerOpen = false;
 		return true;
-	}
-
-	private pushStack(): void {
-		this.historyStack.push({
-			kind: this.kind,
-			cursor: this.cursor,
-			runId: this.runId,
-			phase: this.phase,
-			agentId: this.agentId,
-		});
 	}
 }
 
@@ -149,6 +204,10 @@ export interface PhaseRow {
 	tokens: number;
 }
 
+function asText(v: unknown): string {
+	return typeof v === "string" ? v : String(v ?? "");
+}
+
 export class NavigatorModel {
 	constructor(private manager: WorkflowManager) {}
 
@@ -158,8 +217,8 @@ export class NavigatorModel {
 			const doneCount = agents.filter((a) => a.status === "done").length;
 			return {
 				runId: r.runId,
-				name: r.workflowName,
-				status: r.status,
+				name: asText(r.workflowName),
+				status: asText(r.status),
 				done: doneCount,
 				total: agents.length,
 				totalTokens: r.totalTokens || 0,
@@ -175,7 +234,7 @@ export class NavigatorModel {
 				const done = p.agents.filter((a) => a.status === "done").length;
 				const tokens = p.agents.reduce((sum, a) => sum + (a.outputTokens || 0), 0);
 				return {
-					title: p.title || `Phase ${p.index + 1}`,
+					title: asText(p.title || `Phase ${p.index + 1}`),
 					done,
 					total: p.agents.length,
 					tokens,
@@ -186,10 +245,9 @@ export class NavigatorModel {
 		const persisted = this.manager.listRuns().find((r) => r.runId === runId);
 		if (!persisted) return [];
 
-		// Group agents by phase if available
 		const byPhase = new Map<string, { done: number; total: number; tokens: number }>();
 		for (const agent of persisted.agents) {
-			const phaseName = agent.phase || "Phase 1";
+			const phaseName = asText(agent.phase || "Phase 1");
 			const entry = byPhase.get(phaseName) || { done: 0, total: 0, tokens: 0 };
 			entry.total++;
 			if (agent.status === "done") entry.done++;
@@ -208,13 +266,17 @@ export class NavigatorModel {
 	agents(runId: string, phase: string): WorkflowAgentSnapshot[] {
 		const live = this.manager.getRun(runId);
 		if (live) {
-			return live.snapshot.agents.filter((a) => (a.phase || "Phase 1") === phase || live.snapshot.phases.length <= 1);
+			return live.snapshot.agents.filter(
+				(a) => asText(a.phase || "Phase 1") === phase || live.snapshot.phases.length <= 1,
+			);
 		}
 
 		const persisted = this.manager.listRuns().find((r) => r.runId === runId);
 		if (!persisted) return [];
 
-		return (persisted.agents || []).filter((a) => (a.phase || "Phase 1") === phase || true);
+		return (persisted.agents || []).filter(
+			(a) => asText(a.phase || "Phase 1") === phase || true,
+		);
 	}
 
 	agentDetail(runId: string, agentId: number): WorkflowAgentSnapshot | undefined {
@@ -228,7 +290,22 @@ export class NavigatorModel {
 	}
 }
 
-export function keyToAction(keyStr: string, kind: ViewKind): Action {
+export type NavAction =
+	| { type: "move"; delta: number }
+	| { type: "page"; direction: -1 | 1 }
+	| { type: "jump"; edge: "start" | "end" }
+	| { type: "toggleTail" }
+	| { type: "togglePager" }
+	| { type: "openPager" }
+	| { type: "drill" }
+	| { type: "back" }
+	| { type: "close" }
+	| { type: "pause" }
+	| { type: "stop" }
+	| { type: "resume" }
+	| { type: "none" };
+
+export function keyToAction(keyStr: string, kind: ViewKind): NavAction {
 	const key = parseKey(keyStr);
 	const name = key?.name || keyStr;
 
@@ -239,18 +316,30 @@ export function keyToAction(keyStr: string, kind: ViewKind): Action {
 		case "down":
 		case "j":
 			return { type: "move", delta: 1 };
-		case "pageup":
-			return { type: "page", direction: "up" };
-		case "pagedown":
-			return { type: "page", direction: "down" };
+		case "pageUp":
+		case "ctrl+u":
+		case "ctrl+b":
+			return { type: "page", direction: -1 };
+		case "pageDown":
+		case "ctrl+d":
+		case "ctrl+f":
+			return { type: "page", direction: 1 };
 		case "home":
-			return { type: "jump", edge: "top" };
+		case "g":
+			return { type: "jump", edge: "start" };
 		case "end":
-			return { type: "jump", edge: "bottom" };
+		case "G":
+		case "shift+g":
+			return { type: "jump", edge: "end" };
+		case "t":
+			return kind === "detail" ? { type: "toggleTail" } : { type: "none" };
 		case "return":
 		case "enter":
+			if (kind === "detail") return { type: "togglePager" };
+			return { type: "drill" };
 		case "right":
 		case "l":
+			if (kind === "detail") return { type: "openPager" };
 			return { type: "drill" };
 		case "escape":
 		case "esc":
@@ -265,92 +354,157 @@ export function keyToAction(keyStr: string, kind: ViewKind): Action {
 			return { type: "stop" };
 		case "r":
 			return { type: "resume" };
-		case "t":
-			return { type: "toggleTail" };
 		default:
 			return { type: "none" };
 	}
 }
 
-export function renderNavigatorText(state: NavigatorState, model: NavigatorModel, width = 80): string[] {
+// ───────────────────────────────────────────────────────────────────────────
+// Two-Pane Split Layout Renderer (Claude Code Parity)
+// ───────────────────────────────────────────────────────────────────────────
+
+const BX = { h: "─", v: "│", tl: "┌", tr: "┐", bl: "└", br: "┘", tj: "┬", bj: "┴" } as const;
+const CARET = "›";
+const DOT = "●";
+
+export function renderNavigatorText(
+	state: NavigatorState,
+	model: NavigatorModel,
+	width = 80,
+	viewportRows = 24,
+): string[] {
 	const lines: string[] = [];
-	const innerWidth = Math.max(20, width - 4);
+	state.setPageSize(Math.max(1, viewportRows - 5));
 
 	if (state.kind === "runs") {
-		lines.push("┌─ Workflow Runs ────────────────────────────────────────────────────────┐");
-		lines.push("│ ↑/↓ select · Enter drill in · p pause · x stop · r resume · q quit    │");
+		const runs = model.runs();
+		state.clamp(runs.length);
+
+		lines.push("┌─ Workflows ────────────────────────────────────────────────────────────┐");
+		lines.push("│ ↑/↓ select · Enter open · p pause · x stop · r resume · q quit         │");
 		lines.push("├────────────────────────────────────────────────────────────────────────┤");
 
-		const runs = model.runs();
 		if (runs.length === 0) {
 			lines.push("│   (No active or recorded workflow runs found)                          │");
 		} else {
 			runs.forEach((r, idx) => {
 				const isSelected = idx === state.cursor;
-				const prefix = isSelected ? "> " : "  ";
+				const prefix = isSelected ? `${CARET} ` : "  ";
 				const icon = statusIcon(r.status);
 				const lineStr = `${prefix}${icon} ${r.name} (${r.runId.slice(0, 8)}) — ${r.done}/${r.total} agents · ${r.totalTokens}t`;
-				lines.push(`│ ${padRight(truncateToWidth(lineStr, innerWidth), innerWidth)} │`);
+				lines.push(`│ ${padRight(truncateToWidth(lineStr, width - 4), width - 4)} │`);
 			});
 		}
 		lines.push("└────────────────────────────────────────────────────────────────────────┘");
-	} else if (state.kind === "phases" && state.runId) {
+	} else if ((state.kind === "phases" || state.kind === "agents") && state.runId) {
 		const phases = model.phases(state.runId);
-		lines.push(`┌─ Phases for Run ${state.runId.slice(0, 8)} ──────────────────────────────────────────┐`);
-		lines.push("│ ↑/↓ select · Enter view agents · Esc back                              │");
-		lines.push("├────────────────────────────────────────────────────────────────────────┤");
+		const inAgents = state.kind === "agents";
 
-		if (phases.length === 0) {
-			lines.push("│   (No phases found for this run)                                       │");
-		} else {
-			phases.forEach((p, idx) => {
-				const isSelected = idx === state.cursor;
-				const prefix = isSelected ? "> " : "  ";
-				const lineStr = `${prefix}Phase: ${p.title} — ${p.done}/${p.total} done · ${p.tokens}t`;
-				lines.push(`│ ${padRight(truncateToWidth(lineStr, innerWidth), innerWidth)} │`);
-			});
-		}
-		lines.push("└────────────────────────────────────────────────────────────────────────┘");
-	} else if (state.kind === "agents" && state.runId && state.phase) {
-		const agents = model.agents(state.runId, state.phase);
-		lines.push(`┌─ Agents in ${state.phase} ───────────────────────────────────────────┐`);
-		lines.push("│ ↑/↓ select · Enter view detail · Esc back                              │");
-		lines.push("├────────────────────────────────────────────────────────────────────────┤");
+		let selPhaseIdx = inAgents ? phases.findIndex((p) => p.title === state.phase) : state.cursor;
+		if (selPhaseIdx < 0) selPhaseIdx = 0;
+		const selPhase = phases[selPhaseIdx];
+		const agents = selPhase ? model.agents(state.runId, selPhase.title) : [];
 
-		if (agents.length === 0) {
-			lines.push("│   (No agents found in this phase)                                      │");
-		} else {
-			agents.forEach((a, idx) => {
-				const isSelected = idx === state.cursor;
-				const prefix = isSelected ? "> " : "  ";
-				const icon = agentStatusIcon(a.status);
-				const tokens = a.outputTokens ? ` · ${a.outputTokens}t` : "";
-				const duration = a.durationMs ? ` · ${(a.durationMs / 1000).toFixed(1)}s` : "";
-				const lineStr = `${prefix}${icon} #${a.id} ${a.label}${tokens}${duration}`;
-				lines.push(`│ ${padRight(truncateToWidth(lineStr, innerWidth), innerWidth)} │`);
-			});
+		if (inAgents) state.clamp(agents.length);
+		else state.clamp(phases.length);
+
+		const leftW = Math.max(18, Math.min(30, Math.floor(width * 0.35)));
+		const rightW = Math.max(20, width - leftW);
+		const leftInner = leftW - 2;
+		const rightInner = rightW - 2;
+
+		lines.push(
+			`┌─ Phases ${"─".repeat(leftInner - 8)}┬─ ${truncateToWidth(selPhase ? selPhase.title : "Agents", rightInner - 4)} ${"─".repeat(Math.max(0, rightInner - 12))}┐`,
+		);
+
+		const maxRows = Math.max(phases.length, agents.length, 3);
+		for (let r = 0; r < maxRows; r++) {
+			let leftContent = " ".repeat(leftInner);
+			if (r < phases.length) {
+				const p = phases[r];
+				const selected = !inAgents && r === state.cursor;
+				const marker = selected ? `${CARET} ` : "  ";
+				leftContent = padRight(truncateToWidth(`${marker}${p.title} (${p.done}/${p.total})`, leftInner), leftInner);
+			}
+
+			let rightContent = " ".repeat(rightInner);
+			if (r < agents.length) {
+				const a = agents[r];
+				const selected = inAgents && r === state.cursor;
+				const marker = selected ? `${CARET} ` : "  ";
+				const dot = agentStatusIcon(a.status);
+				const tokens = a.outputTokens ? ` ${a.outputTokens}t` : "";
+				rightContent = padRight(
+					truncateToWidth(`${marker}${dot} #${a.id} ${asText(a.label)}${tokens}`, rightInner),
+					rightInner,
+				);
+			} else if (r === 0 && agents.length === 0) {
+				rightContent = padRight(truncateToWidth("  (no agents in phase)", rightInner), rightInner);
+			}
+
+			lines.push(`│${leftContent}│${rightContent}│`);
 		}
-		lines.push("└────────────────────────────────────────────────────────────────────────┘");
+
+		lines.push(`└${"─".repeat(leftInner)}┴${"─".repeat(rightInner)}┘`);
+		lines.push(
+			inAgents
+				? "  Enter open detail · Esc back to phases · q quit"
+				: "  Enter select phase · Esc back to runs · q quit",
+		);
 	} else if (state.kind === "detail" && state.runId && state.agentId !== undefined) {
 		const agent = model.agentDetail(state.runId, state.agentId);
+		const innerWidth = width - 4;
+
 		lines.push(`┌─ Agent #${state.agentId} Detail ──────────────────────────────────────────────────┐`);
-		lines.push("│ t toggle tail · Esc back · q quit                                     │");
+		lines.push("│ Enter toggle pager · t toggle tail · Esc back · q quit                 │");
 		lines.push("├────────────────────────────────────────────────────────────────────────┤");
 
 		if (!agent) {
 			lines.push("│   (Agent details unavailable)                                          │");
 		} else {
-			lines.push(`│ Label:  ${truncateToWidth(agent.label, innerWidth - 10)} │`);
-			lines.push(`│ Status: ${agentStatusIcon(agent.status)} ${agent.status} │`);
-			if (agent.model) lines.push(`│ Model:  ${agent.model} │`);
-			if (agent.outputTokens) lines.push(`│ Tokens: ${agent.outputTokens} │`);
-			lines.push("├────────────────────────────────────────────────────────────────────────┤");
-			lines.push("│ Prompt:                                                                │");
-			lines.push(`│   ${truncateToWidth(agent.prompt || "(none)", innerWidth - 4)} │`);
-			lines.push("├────────────────────────────────────────────────────────────────────────┤");
-			lines.push("│ Output / Result:                                                       │");
-			const outputText = agent.error ? `Error: ${agent.error}` : agent.resultPreview || "(running...)";
-			lines.push(`│   ${truncateToWidth(outputText, innerWidth - 4)} │`);
+			const bodyLines: string[] = [];
+			bodyLines.push(`Label:  ${asText(agent.label)}`);
+			bodyLines.push(`Status: ${agentStatusIcon(agent.status)} ${asText(agent.status)}`);
+			if (agent.model) bodyLines.push(`Model:  ${asText(agent.model)}`);
+			if (agent.outputTokens) bodyLines.push(`Tokens: ${agent.outputTokens}`);
+			bodyLines.push("");
+			bodyLines.push("--- Prompt ---");
+			bodyLines.push(asText(agent.prompt || "(none)"));
+			bodyLines.push("");
+
+			if (state.pagerOpen) {
+				bodyLines.push("--- Output / Result ---");
+				bodyLines.push(agent.error ? `Error: ${asText(agent.error)}` : asText(agent.resultPreview || "(running...)"));
+
+				if (agent.history && agent.history.length > 0) {
+					bodyLines.push("");
+					bodyLines.push("--- History Stream ---");
+					for (const entry of agent.history) {
+						if (entry.kind === "toolCall") {
+							bodyLines.push(`[toolCall] ${entry.toolName}: ${entry.args}`);
+						} else if (entry.role === "tool") {
+							bodyLines.push(`[toolResult] ${entry.toolName}: ${entry.text}`);
+							if (entry.diff) bodyLines.push(`  Diff: ${entry.diff}`);
+						} else {
+							bodyLines.push(`[${entry.role}] ${entry.text}`);
+						}
+					}
+				}
+			} else {
+				bodyLines.push("--- Output Snippet ---");
+				bodyLines.push(agent.error ? `Error: ${asText(agent.error)}` : asText(agent.resultPreview || "(running...)"));
+				bodyLines.push("  … Press Enter to open full pager & stream history");
+			}
+
+			const viewportCap = Math.max(1, viewportRows - 6);
+			const maxScroll = Math.max(0, bodyLines.length - viewportCap);
+			if (state.tailing) state.scroll = maxScroll;
+			state.scroll = Math.min(Math.max(0, state.scroll), maxScroll);
+
+			const visibleBody = bodyLines.slice(state.scroll, state.scroll + viewportCap);
+			for (const line of visibleBody) {
+				lines.push(`│ ${padRight(truncateToWidth(line, innerWidth), innerWidth)} │`);
+			}
 		}
 		lines.push("└────────────────────────────────────────────────────────────────────────┘");
 	}
@@ -370,17 +524,30 @@ export function openWorkflowNavigator(
 		(tui: TUI, theme: Theme, _keybindings, done: (r: undefined) => void) => {
 			const rerender = () => tui.requestRender();
 
+			// 125ms Debounce timer for high-frequency history updates
+			let historyRenderTimer: ReturnType<typeof setTimeout> | undefined;
+			const onHistoryEvent = () => {
+				if (historyRenderTimer) return;
+				historyRenderTimer = setTimeout(() => {
+					historyRenderTimer = undefined;
+					rerender();
+				}, 125);
+			};
+
 			const events = ["agentStart", "agentEnd", "phase", "log", "complete", "error", "stopped", "paused", "resumed"];
 			const onEvent = () => rerender();
 			for (const ev of events) manager.on(ev, onEvent);
+			manager.on("agentHistory", onHistoryEvent);
 
 			const cleanup = () => {
 				for (const ev of events) manager.off(ev, onEvent);
+				manager.off("agentHistory", onHistoryEvent);
+				if (historyRenderTimer) clearTimeout(historyRenderTimer);
 			};
 
 			return {
 				render(width: number): string[] {
-					return renderNavigatorText(state, model, width);
+					return renderNavigatorText(state, model, width, tui.terminal.rows);
 				},
 
 				handleInput(data: string): void {
@@ -402,11 +569,11 @@ export function openWorkflowNavigator(
 							rerender();
 							break;
 						case "page":
-							state.movePage(action.direction || "down", count);
+							state.movePage(action.direction || 1, count);
 							rerender();
 							break;
 						case "jump":
-							state.jump(action.edge || "top", count);
+							state.jump(action.edge || "start", count);
 							rerender();
 							break;
 						case "drill":
@@ -439,6 +606,14 @@ export function openWorkflowNavigator(
 							break;
 						case "toggleTail":
 							state.toggleTail();
+							rerender();
+							break;
+						case "togglePager":
+							state.togglePager();
+							rerender();
+							break;
+						case "openPager":
+							state.openPager();
 							rerender();
 							break;
 					}

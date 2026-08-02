@@ -3,6 +3,9 @@
  */
 
 import type { WorkflowMeta } from "./workflow.ts";
+import type { AgentHistoryEntry } from "./types.ts";
+
+export type { AgentHistoryEntry };
 
 /**
  * Current status of a single agent in the workflow.
@@ -39,6 +42,14 @@ export interface WorkflowAgentSnapshot {
 	turns?: number;
 	/** Number of tool uses */
 	toolUses?: number;
+	/** Full result value */
+	result?: unknown;
+	/** Error code if failed */
+	errorCode?: string;
+	/** Whether failure is recoverable */
+	recoverable?: boolean;
+	/** Live history events (tool calls, diffs, outputs) */
+	history?: AgentHistoryEntry[];
 }
 
 /**

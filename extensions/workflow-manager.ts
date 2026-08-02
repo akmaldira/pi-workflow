@@ -6,7 +6,7 @@
 import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { WorkflowSnapshot, WorkflowAgentSnapshot } from "./workflow-display-types.ts";
+import type { WorkflowSnapshot, WorkflowAgentSnapshot, AgentHistoryEntry } from "./workflow-display-types.ts";
 import type { WorkflowMeta } from "./workflow.ts";
 
 export type RunStatus = "running" | "paused" | "completed" | "error" | "stopped";
@@ -124,6 +124,19 @@ export class WorkflowManager extends EventEmitter {
 
 		run.updatedAt = Date.now();
 		this.emit("agentEnd", { runId, agentId, status });
+	}
+
+	recordAgentHistory(runId: string, agentId: number, entry: AgentHistoryEntry): void {
+		const run = this.runs.get(runId);
+		if (!run) return;
+
+		const agent = run.snapshot.agents.find((a) => a.id === agentId);
+		if (agent) {
+			if (!agent.history) agent.history = [];
+			agent.history.push(entry);
+			run.updatedAt = Date.now();
+			this.emit("agentHistory", { runId, agentId, history: agent.history });
+		}
 	}
 
 	markPhase(runId: string, phaseIndex: number, title?: string): void {

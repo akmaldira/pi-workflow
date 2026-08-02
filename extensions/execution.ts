@@ -369,6 +369,7 @@ async function runSingleAttempt(
 		onLine: (line) => {
 			try {
 				const event = JSON.parse(line);
+				options.onEvent?.(event);
 				if (event.type === "message_end" || event.type === "tool_result_end") {
 					result.messages?.push(event.message);
 					if (event.message?.role === "assistant") {

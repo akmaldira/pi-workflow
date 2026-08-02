@@ -81,9 +81,10 @@ function createWorkflowAgentRunner(
 		cwd: string,
 		agent: AgentConfig,
 		task: string,
-		options: { signal?: AbortSignal; parentSessionId?: string },
+		options: { signal?: AbortSignal; parentSessionId?: string; onEvent?: (event: Record<string, unknown>) => void },
 	) => Promise<string>,
 	parentSessionId?: string,
+	onEvent?: (event: Record<string, unknown>) => void,
 ): WorkflowAgentRunner {
 	return {
 		async resolveAgent(agentName: string | undefined, cwd?: string): Promise<AgentConfig> {
@@ -91,9 +92,7 @@ function createWorkflowAgentRunner(
 			if (agentName) {
 				const agent = discovery.agents.find((a) => a.name === agentName);
 				if (agent) return agent;
-				// Fall back to a default agent config
 			}
-			// Return a default agent config (no special attributes)
 			return {
 				name: agentName ?? "default",
 				description: "Default workflow subagent",
@@ -103,11 +102,14 @@ function createWorkflowAgentRunner(
 			};
 		},
 		async run(prompt: string, agentConfig: AgentConfig, options: { label?: string; signal?: AbortSignal; cwd?: string; modelOverride?: string }): Promise<string> {
-			// If model override is specified, create a modified agent config
 			const effectiveConfig = options.modelOverride
 				? { ...agentConfig, model: options.modelOverride }
 				: agentConfig;
-			return runSingleAgent(options.cwd ?? defaultCwd, effectiveConfig, prompt, { signal: options.signal, parentSessionId });
+			return runSingleAgent(options.cwd ?? defaultCwd, effectiveConfig, prompt, {
+				signal: options.signal,
+				parentSessionId,
+				onEvent,
+			});
 		},
 	};
 }
@@ -253,7 +255,7 @@ export interface WorkflowToolOptionsFull extends WorkflowToolOptions {
 		cwd: string,
 		agent: AgentConfig,
 		task: string,
-		options: { signal?: AbortSignal; parentSessionId?: string },
+		options: { signal?: AbortSignal; parentSessionId?: string; onEvent?: (event: Record<string, unknown>) => void },
 	) => Promise<string>;
 }
 
@@ -321,11 +323,41 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 				if (!snapshot.phases.includes(title)) snapshot.phases.push(title);
 			};
 
+			const onSubagentEvent = (ev: Record<string, unknown>) => {
+				if (!workflowManager) return;
+				const currentAgent = [...snapshot.agents].reverse().find((a) => a.status === "running");
+				if (!currentAgent) return;
+
+				const evType = String(ev.type || "");
+				if (evType === "tool_execution_start" || evType === "tool_call") {
+					const toolName = String(ev.toolName || ev.tool || "tool");
+					const args = typeof ev.args === "string" ? ev.args : JSON.stringify(ev.args || {});
+					workflowManager.recordAgentHistory(runId, currentAgent.id, {
+						role: "assistant",
+						kind: "toolCall",
+						toolName,
+						args,
+						path: ev.path as string | undefined,
+						text: `Tool call: ${toolName}`,
+					});
+				} else if (evType === "tool_result" || evType === "tool_result_end") {
+					const toolName = String(ev.toolName || ev.tool || "tool");
+					const text = typeof ev.output === "string" ? ev.output : JSON.stringify(ev.output || {});
+					workflowManager.recordAgentHistory(runId, currentAgent.id, {
+						role: "tool",
+						toolName,
+						text,
+						diff: ev.diff as string | undefined,
+					});
+				}
+			};
+
 			const agentRunner = createWorkflowAgentRunner(
 				options.cwd ?? ctx.cwd,
 				agentScope,
 				options.runSingleAgent,
 				ctx.sessionManager.getSessionId(),
+				onSubagentEvent,
 			);
 
 			let result: WorkflowRunResult;

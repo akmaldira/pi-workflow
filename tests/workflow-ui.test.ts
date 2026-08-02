@@ -113,7 +113,6 @@ describe("keyToAction", () => {
 
 		expect(keyToAction("enter", "runs")).toEqual({ type: "drill" });
 		expect(keyToAction("return", "runs")).toEqual({ type: "drill" });
-		expect(keyToAction("right", "runs")).toEqual({ type: "drill" });
 
 		expect(keyToAction("escape", "runs")).toEqual({ type: "back" });
 		expect(keyToAction("left", "runs")).toEqual({ type: "back" });
@@ -147,5 +146,73 @@ describe("renderNavigatorText", () => {
 		const lines = renderNavigatorText(state, model, 80);
 
 		expect(lines.some((l) => l.includes("No active or recorded workflow runs"))).toBe(true);
+	});
+
+	it("renders two-pane phases and agents view", () => {
+		const manager = new WorkflowManager();
+		manager.registerRun("run-split", {
+			name: "split_wf",
+			phases: [{ title: "Scan Phase" }, { title: "Audit Phase" }],
+		});
+
+		manager.markAgentStart("run-split", 0, {
+			id: 1,
+			label: "Scout Agent",
+			phase: "Scan Phase",
+			prompt: "Scan files",
+			status: "done",
+			outputTokens: 120,
+		});
+
+		const state = new NavigatorState();
+		const model = new NavigatorModel(manager);
+
+		state.drill(model); // Move to phases
+
+		const lines = renderNavigatorText(state, model, 80);
+
+		expect(lines.some((l) => l.includes("Phases"))).toBe(true);
+		expect(lines.some((l) => l.includes("Scan Phase"))).toBe(true);
+		expect(lines.some((l) => l.includes("Scout Agent"))).toBe(true);
+	});
+
+	it("renders agent detail view with history stream in full pager", () => {
+		const manager = new WorkflowManager();
+		manager.registerRun("run-detail", {
+			name: "detail_wf",
+			phases: [{ title: "Phase 1" }],
+		});
+
+		manager.markAgentStart("run-detail", 0, {
+			id: 1,
+			label: "Worker Agent",
+			phase: "Phase 1",
+			prompt: "Implement feature X",
+			status: "running",
+		});
+
+		manager.recordAgentHistory("run-detail", 1, {
+			role: "assistant",
+			kind: "toolCall",
+			toolName: "read",
+			args: '{"path":"src/index.ts"}',
+			text: "Tool call: read",
+		});
+
+		const state = new NavigatorState();
+		const model = new NavigatorModel(manager);
+
+		state.drill(model); // phases
+		state.drill(model); // agents
+		state.drill(model); // detail
+
+		state.togglePager(); // Open full pager
+
+		const lines = renderNavigatorText(state, model, 80);
+
+		expect(lines.some((l) => l.includes("Worker Agent"))).toBe(true);
+		expect(lines.some((l) => l.includes("Implement feature X"))).toBe(true);
+		expect(lines.some((l) => l.includes("History Stream"))).toBe(true);
+		expect(lines.some((l) => l.includes("toolCall"))).toBe(true);
 	});
 });
