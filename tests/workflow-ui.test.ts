@@ -149,7 +149,7 @@ describe("renderNavigatorText", () => {
 
 		const lines = renderNavigatorText(state, model, 80);
 
-		expect(lines.some((l) => l.includes("No active or recorded workflow runs"))).toBe(true);
+		expect(lines.some((l) => l.includes("No runs yet"))).toBe(true);
 	});
 
 	it("renders two-pane phases and agents view", () => {
@@ -216,7 +216,7 @@ describe("renderNavigatorText", () => {
 
 		expect(lines.some((l) => l.includes("Worker Agent"))).toBe(true);
 		expect(lines.some((l) => l.includes("Implement feature X"))).toBe(true);
-		expect(lines.some((l) => l.includes("History Stream"))).toBe(true);
-		expect(lines.some((l) => l.includes("toolCall"))).toBe(true);
+		expect(lines.some((l) => l.includes("History"))).toBe(true);
+		expect(lines.some((l) => l.includes("read"))).toBe(true);
 	});
 });

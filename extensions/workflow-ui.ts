@@ -366,47 +366,86 @@ export function keyToAction(data: string, kind: ViewKind): NavAction {
 	}
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// Two-Pane Split Layout Renderer (Claude Code Parity)
-// ───────────────────────────────────────────────────────────────────────────
+// Box border constants (same as reference)
+const BOX_BORDER_LEFT = "│ ";
+const BOX_BORDER_RIGHT = " │";
+const BOX_BORDER_OVERHEAD = BOX_BORDER_LEFT.length + BOX_BORDER_RIGHT.length;
 
-const BX = { h: "─", v: "│", tl: "┌", tr: "┐", bl: "└", br: "┘", tj: "┬", bj: "┴" } as const;
-const CARET = "›";
-const DOT = "●";
+export type ThemeLike = {
+	fg: (color: string, text: string) => string;
+	bold: (text: string) => string;
+};
 
-export function renderNavigatorText(
+const PLAIN: ThemeLike = { fg: (_c, t) => t, bold: (t) => t };
+
+/** Alias for backwards compat with tests */
+export function renderNavigatorText(state: NavigatorState, model: NavigatorModel, width = 80, viewportRows = 24): string[] {
+	return renderNavigatorFrame(state, model, width, PLAIN, viewportRows);
+}
+
+export function renderNavigatorFrame(
 	state: NavigatorState,
 	model: NavigatorModel,
-	width = 80,
+	width: number,
+	theme: ThemeLike = PLAIN,
 	viewportRows = 24,
 ): string[] {
 	const lines: string[] = [];
 	state.setPageSize(Math.max(1, viewportRows - 5));
+	const dim = (t: string) => theme.fg("dim", t);
+	const accent = (t: string) => theme.fg("accent", t);
+	const sel = (selected: boolean, text: string) =>
+		selected ? accent(theme.bold(`❯ ${text}`)) : `  ${text}`;
+
+	const pushScrollable = (body: string[]) => {
+		const viewport = Math.max(1, viewportRows - 4);
+		state.setPageSize(viewport);
+		const maxScroll = Math.max(0, body.length - viewport);
+		if (state.tailing) state.scroll = maxScroll;
+		state.scroll = Math.min(Math.max(0, state.scroll), maxScroll);
+		lines.push(...body.slice(state.scroll, state.scroll + viewport));
+		if (body.length > viewport) {
+			const end = Math.min(state.scroll + viewport, body.length);
+			const up = state.scroll > 0 ? "↑" : " ";
+			const down = end < body.length ? "↓" : " ";
+			const mode = state.tailing ? " TAIL" : "";
+			lines.push(dim(`  [${state.scroll + 1}-${end} / ${body.length}] ${up}${down}${mode}`));
+		}
+	};
+
+	const pushCompact = (body: string[]) => {
+		const viewport = Math.max(1, viewportRows - 3);
+		if (body.length <= viewport) {
+			lines.push(...body);
+			return;
+		}
+		lines.push(...body.slice(0, Math.max(1, viewport - 1)));
+		lines.push(dim("  … enter to open full pager"));
+	};
 
 	if (state.kind === "runs") {
 		const runs = model.runs();
 		state.clamp(runs.length);
 
-		lines.push("┌─ Workflows ────────────────────────────────────────────────────────────┐");
-		lines.push("│ ↑/↓ select · Enter open · p pause · x stop · r resume · q quit         │");
-		lines.push("├────────────────────────────────────────────────────────────────────────┤");
+		lines.push(theme.bold("Workflows"));
 
 		if (runs.length === 0) {
-			lines.push("│   (No active or recorded workflow runs found)                          │");
+			lines.push(dim("  No runs yet. Start a workflow."));
 		} else {
-			runs.forEach((r, idx) => {
-				const isSelected = idx === state.cursor;
-				const prefix = isSelected ? `${CARET} ` : "  ";
-				const icon = statusIcon(r.status);
-				const lineStr = `${prefix}${icon} ${r.name} (${r.runId.slice(0, 8)}) — ${r.done}/${r.total} agents · ${r.totalTokens}t`;
-				lines.push(`│ ${padRight(truncateToWidth(lineStr, width - 4), width - 4)} │`);
-			});
+			for (let i = 0; i < runs.length; i++) {
+				const r = runs[i];
+				const icon = STATUS_ICON[r.status] ?? "?";
+				const meta = `${r.done}/${r.total}${r.totalTokens ? ` · ${compactTokens(r.totalTokens)}t` : ""}`;
+				lines.push(sel(i === state.cursor, `${icon} ${r.name}  ${dim(`${r.runId.slice(0, 8)} · ${r.status} · ${meta}`)}`));
+			}
 		}
-		lines.push("└────────────────────────────────────────────────────────────────────────┘");
+
+		lines.push("");
+		lines.push(dim("↑/↓ select · enter open · p pause · x stop · r resume · q quit"));
+
 	} else if ((state.kind === "phases" || state.kind === "agents") && state.runId) {
 		const phases = model.phases(state.runId);
 		const inAgents = state.kind === "agents";
-
 		let selPhaseIdx = inAgents ? phases.findIndex((p) => p.title === state.phase) : state.cursor;
 		if (selPhaseIdx < 0) selPhaseIdx = 0;
 		const selPhase = phases[selPhaseIdx];
@@ -415,112 +454,189 @@ export function renderNavigatorText(
 		if (inAgents) state.clamp(agents.length);
 		else state.clamp(phases.length);
 
-		const leftW = Math.max(18, Math.min(30, Math.floor(width * 0.35)));
-		const rightW = Math.max(20, width - leftW);
+		// Two-line header
+		const runRow = model.runs().find((r) => r.runId === state.runId);
+		const runName = runRow ? runRow.name : state.runId ?? "";
+		lines.push(accent(theme.bold(truncateToWidth(runName, width))));
+		const totalDone = phases.reduce((s, p) => s + p.done, 0);
+		const totalAgents = phases.reduce((s, p) => s + p.total, 0);
+		lines.push(dim(`${runRow?.status ?? "running"}  ${totalDone}/${totalAgents} agents`));
+
+		// Two-pane split
+		const leftW = Math.max(16, Math.min(32, Math.floor(width * 0.36)));
+		const rightW = width - leftW + 1;
 		const leftInner = leftW - 2;
 		const rightInner = rightW - 2;
+		const bc = (s: string) => theme.fg("muted", s);
+		const bodyCap = Math.max(1, viewportRows - 2 - 2 - 2);
 
+		// Scroll windows
+		const leftRows = scrollWindow(phases.length, inAgents ? selPhaseIdx : state.cursor, bodyCap);
+		const rightRows = scrollWindow(agents.length, inAgents ? state.cursor : 0, bodyCap);
+		const bodyRows = Math.max(1, Math.min(bodyCap, Math.max(leftRows.count, rightRows.count)));
+
+		// Top rule with titles
+		const rightTitle = `${selPhase?.title ?? ""} · ${agents.length} ${agents.length === 1 ? "agent" : "agents"}`;
+		const leftTitlePad = leftInner - 8;
+		const rightTitlePad = Math.max(0, rightInner - visibleWidth(rightTitle) - 2);
 		lines.push(
-			`┌─ Phases ${"─".repeat(leftInner - 8)}┬─ ${truncateToWidth(selPhase ? selPhase.title : "Agents", rightInner - 4)} ${"─".repeat(Math.max(0, rightInner - 12))}┐`,
+			bc(`┌`) + bc(`─`) + bc(` Phases `) + bc(`─`.repeat(Math.max(0, leftTitlePad))) +
+			bc(`┬`) + bc(`─ `) + dim(rightTitle) + bc(` ` + `─`.repeat(rightTitlePad)) + bc(`┐`)
 		);
 
-		const maxRows = Math.max(phases.length, agents.length, 3);
-		for (let r = 0; r < maxRows; r++) {
-			let leftContent = " ".repeat(leftInner);
-			if (r < phases.length) {
-				const p = phases[r];
-				const selected = !inAgents && r === state.cursor;
-				const marker = selected ? `${CARET} ` : "  ";
-				leftContent = padRight(truncateToWidth(`${marker}${p.title} (${p.done}/${p.total})`, leftInner), leftInner);
+		for (let k = 0; k < bodyRows; k++) {
+			// Left cell
+			let leftCell = " ".repeat(leftInner);
+			const li = leftRows.start + k;
+			if (li < phases.length) {
+				const p = phases[li];
+				const selected = !inAgents && li === state.cursor;
+				const marker = selected ? theme.fg("accent", theme.bold("❯ ")) : "  ";
+				const prog = p.total > 0 ? ` ${p.done}/${p.total}` : "";
+				const nameW = leftInner - 2 - visibleWidth(prog);
+				const name = truncateToWidth(p.title, Math.max(1, nameW));
+				const nameStyled = selected ? theme.fg("accent", theme.bold(name)) : name;
+				const progStyled = p.done === p.total && p.total > 0
+					? theme.fg("success", prog)
+					: p.done > 0 ? theme.fg("warning", prog) : dim(prog);
+				leftCell = padRight(marker + nameStyled + progStyled, leftInner);
 			}
 
-			let rightContent = " ".repeat(rightInner);
-			if (r < agents.length) {
-				const a = agents[r];
-				const selected = inAgents && r === state.cursor;
-				const marker = selected ? `${CARET} ` : "  ";
-				const dot = agentStatusIcon(a.status);
-				const tokens = a.outputTokens ? ` ${a.outputTokens}t` : "";
-				rightContent = padRight(
-					truncateToWidth(`${marker}${dot} #${a.id} ${asText(a.label)}${tokens}`, rightInner),
-					rightInner,
-				);
-			} else if (r === 0 && agents.length === 0) {
-				rightContent = padRight(truncateToWidth("  (no agents in phase)", rightInner), rightInner);
+			// Right cell
+			let rightCell = " ".repeat(rightInner);
+			const ri = rightRows.start + k;
+			if (ri < agents.length) {
+				const a = agents[ri];
+				const selected = inAgents && ri === state.cursor;
+				const marker = selected ? theme.fg("accent", theme.bold("❯ ")) : "  ";
+				const dotColor = AGENT_DOT_COLOR[a.status] ?? "dim";
+				const dot = theme.fg(dotColor, "●");
+				const tokens = a.outputTokens ? dim(` ${compactTokens(a.outputTokens)}t`) : "";
+				const labelStyled = selected ? theme.fg("accent", theme.bold(asText(a.label))) : theme.fg("accent", asText(a.label));
+				rightCell = padRight(marker + dot + " " + labelStyled + tokens, rightInner);
+			} else if (k === 0 && agents.length === 0) {
+				rightCell = padRight(dim("  no agents"), rightInner);
 			}
 
-			lines.push(`│${leftContent}│${rightContent}│`);
+			lines.push(bc("│") + leftCell + bc("│") + rightCell + bc("│"));
 		}
 
-		lines.push(`└${"─".repeat(leftInner)}┴${"─".repeat(rightInner)}┘`);
-		lines.push(
+		lines.push(bc(`└`) + bc(`─`.repeat(leftInner)) + bc(`┴`) + bc(`─`.repeat(rightInner)) + bc(`┘`));
+		lines.push("");
+		lines.push(dim(
 			inAgents
-				? "  Enter open detail · Esc back to phases · q quit"
-				: "  Enter select phase · Esc back to runs · q quit",
-		);
+				? "enter open detail · esc back · ↑/↓ select · q quit"
+				: "enter select phase · esc back · ↑/↓ select · q quit"
+		));
+
 	} else if (state.kind === "detail" && state.runId && state.agentId !== undefined) {
 		const agent = model.agentDetail(state.runId, state.agentId);
-		const innerWidth = width - 4;
+		lines.push(theme.bold(agent ? asText(agent.label) : "agent"));
 
-		lines.push(`┌─ Agent #${state.agentId} Detail ──────────────────────────────────────────────────┐`);
-		lines.push("│ Enter toggle pager · t toggle tail · Esc back · q quit                 │");
-		lines.push("├────────────────────────────────────────────────────────────────────────┤");
-
-		if (!agent) {
-			lines.push("│   (Agent details unavailable)                                          │");
-		} else {
-			const bodyLines: string[] = [];
-			bodyLines.push(`Label:  ${asText(agent.label)}`);
-			bodyLines.push(`Status: ${agentStatusIcon(agent.status)} ${asText(agent.status)}`);
-			if (agent.model) bodyLines.push(`Model:  ${asText(agent.model)}`);
-			if (agent.outputTokens) bodyLines.push(`Tokens: ${agent.outputTokens}`);
-			bodyLines.push("");
-			bodyLines.push("--- Prompt ---");
-			bodyLines.push(asText(agent.prompt || "(none)"));
-			bodyLines.push("");
-
+		if (agent) {
+			const body: string[] = [];
 			if (state.pagerOpen) {
-				bodyLines.push("--- Output / Result ---");
-				bodyLines.push(agent.error ? `Error: ${asText(agent.error)}` : asText(agent.resultPreview || "(running...)"));
-
+				body.push(dim("Status: ") + asText(agent.status ?? ""));
+				if (agent.model) body.push(dim("Model:  ") + asText(agent.model));
+				if (agent.outputTokens) body.push(dim("Tokens: ") + String(agent.outputTokens));
+				if (agent.error) body.push(dim("Error:  ") + theme.fg("error", asText(agent.error)));
+				body.push("");
+				body.push(accent(theme.bold("Prompt:")));
+				for (const line of asText(agent.prompt || "").split("\n")) body.push("  " + line);
+				body.push("");
+				body.push(accent(theme.bold("Result:")));
+				const resultText = agent.error
+					? theme.fg("error", asText(agent.error))
+					: asText(agent.resultPreview || "(no result yet)");
+				for (const line of resultText.split("\n")) body.push("  " + line);
 				if (agent.history && agent.history.length > 0) {
-					bodyLines.push("");
-					bodyLines.push("--- History Stream ---");
+					body.push("");
+					body.push(accent(theme.bold("History:")));
 					for (const entry of agent.history) {
 						if (entry.kind === "toolCall") {
-							bodyLines.push(`[toolCall] ${entry.toolName}: ${entry.args}`);
+							body.push(dim(`  ${entry.toolName}:`) + ` ${entry.args}`);
 						} else if (entry.role === "tool") {
-							bodyLines.push(`[toolResult] ${entry.toolName}: ${entry.text}`);
-							if (entry.diff) bodyLines.push(`  Diff: ${entry.diff}`);
+							body.push(dim(`  ← ${entry.toolName}:`) + ` ${entry.text}`);
+							if (entry.diff) body.push(dim(`  diff: `) + entry.diff);
 						} else {
-							bodyLines.push(`[${entry.role}] ${entry.text}`);
+							body.push(dim(`  [${entry.role}] `) + asText((entry as any).text || ""));
 						}
 					}
 				}
+				pushScrollable(body);
 			} else {
-				bodyLines.push("--- Output Snippet ---");
-				bodyLines.push(agent.error ? `Error: ${asText(agent.error)}` : asText(agent.resultPreview || "(running...)"));
-				bodyLines.push("  … Press Enter to open full pager & stream history");
-			}
-
-			const viewportCap = Math.max(1, viewportRows - 6);
-			const maxScroll = Math.max(0, bodyLines.length - viewportCap);
-			if (state.tailing) state.scroll = maxScroll;
-			state.scroll = Math.min(Math.max(0, state.scroll), maxScroll);
-
-			const visibleBody = bodyLines.slice(state.scroll, state.scroll + viewportCap);
-			for (const line of visibleBody) {
-				lines.push(`│ ${padRight(truncateToWidth(line, innerWidth), innerWidth)} │`);
+				// Compact view
+				body.push(dim("Status: ") + asText(agent.status ?? ""));
+				if (agent.model) body.push(dim("Model:  ") + asText(agent.model));
+				if (agent.error) body.push(dim("Error:  ") + theme.fg("error", asText(agent.error)));
+				body.push("");
+				body.push(accent(theme.bold("Prompt:")));
+				const promptLines = asText(agent.prompt || "").split("\n");
+				for (const line of promptLines.slice(0, 5)) body.push("  " + line);
+				if (promptLines.length > 5) body.push(dim("  … prompt continues in pager"));
+				body.push("");
+				body.push(accent(theme.bold("Result:")));
+				const resultText = agent.error
+					? theme.fg("error", asText(agent.error))
+					: asText(agent.resultPreview || "(running…)");
+				for (const line of resultText.split("\n").slice(0, 4)) body.push("  " + line);
+				pushCompact(body);
 			}
 		}
-		lines.push("└────────────────────────────────────────────────────────────────────────┘");
+		lines.push("");
+		lines.push(dim(state.pagerOpen
+			? "↑/↓ scroll · g/G ends · t tail · enter close pager · esc back"
+			: "enter open pager · t tail · esc back · q quit"
+		));
 	}
 
 	return lines;
 }
 
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+const STATUS_ICON: Record<string, string> = {
+	running: "◆",
+	paused: "⏸",
+	completed: "✓",
+	stopped: "⊘",
+	cancelled: "⊘",
+	error: "✗",
+	failed: "✗",
+};
+
+const AGENT_DOT_COLOR: Record<string, string> = {
+	running: "warning",
+	queued: "dim",
+	pending: "dim",
+	done: "success",
+	completed: "success",
+	error: "error",
+	failed: "error",
+	skipped: "dim",
+	cached: "dim",
+};
+
+function compactTokens(t: number): string {
+	if (!t || t <= 0) return "0";
+	if (t < 1000) return String(Math.round(t));
+	if (t < 1_000_000) {
+		const k = t / 1000;
+		return `${k >= 100 ? Math.round(k) : k.toFixed(1).replace(/\.0$/, "")}k`;
+	}
+	return `${(t / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+}
+
+function scrollWindow(total: number, active: number, cap: number): { start: number; count: number; more: boolean } {
+	if (total <= cap) return { start: 0, count: total, more: false };
+	let start = Math.max(0, Math.min(active - Math.floor(cap / 2), total - cap));
+	if (active < start) start = active;
+	if (active >= start + cap) start = active - cap + 1;
+	return { start, count: cap, more: start + cap < total };
+}
+
 export function openWorkflowNavigator(
-	pi: ExtensionAPI,
+	_pi: ExtensionAPI,
 	manager: WorkflowManager,
 	ui: ExtensionUIContext,
 ): Promise<void> {
@@ -552,9 +668,31 @@ export function openWorkflowNavigator(
 				if (historyRenderTimer) clearTimeout(historyRenderTimer);
 			};
 
-			return {
+			let _focused = false;
+			const component = {
+				get focused(): boolean { return _focused; },
+				set focused(v: boolean) { _focused = v; },
+
 				render(width: number): string[] {
-					return renderNavigatorText(state, model, width, tui.terminal.rows);
+					const borderColor = (s: string) => _focused ? theme.fg("accent", s) : theme.fg("borderMuted", s);
+					const titleColor = (s: string) => _focused ? theme.fg("dim", theme.bold(s)) : theme.fg("muted", s);
+					const bgColor = (s: string) => (theme as any).bg?.("customMessageBg", s) ?? s;
+					const innerWidth = Math.max(10, width - BOX_BORDER_OVERHEAD);
+					const terminalRows = tui.terminal?.rows ?? 24;
+					const overlayRows = Math.max(8, Math.floor(terminalRows * 0.92));
+					const contentRows = Math.max(6, overlayRows - 2);
+					const raw = renderNavigatorFrame(state, model, innerWidth, theme, contentRows);
+					const title = titleColor(" workflows ");
+					const dashes = (n: number) => "\u2500".repeat(Math.max(0, n));
+					const topBorder = borderColor("\u256d\u2500") + title + borderColor(dashes(innerWidth - 10)) + borderColor("\u256e");
+					const botBorder = borderColor(`\u2570${dashes(innerWidth + 2)}\u256f`);
+					const wrapAndBg = (line: string) => {
+						const padded = truncateToWidth(line, innerWidth, "", true);
+						const fullLine = borderColor(BOX_BORDER_LEFT) + padded + borderColor(BOX_BORDER_RIGHT);
+						const trailingPad = width - visibleWidth(fullLine);
+						return bgColor(fullLine + (trailingPad > 0 ? " ".repeat(trailingPad) : ""));
+					};
+					return [bgColor(topBorder), ...raw.map(wrapAndBg), bgColor(botBorder)];
 				},
 
 				handleInput(data: string): void {
@@ -629,14 +767,19 @@ export function openWorkflowNavigator(
 				invalidate(): void {
 					rerender();
 				},
+				dispose(): void {
+					cleanup();
+				},
 			};
+			return component;
 		},
 		{
 			overlay: true,
 			overlayOptions: {
 				anchor: "center",
-				width: "90%",
-				maxHeight: "85%",
+				width: "94%",
+				maxHeight: "92%",
+				margin: 1,
 			},
 		},
 	);
