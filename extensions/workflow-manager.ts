@@ -94,6 +94,10 @@ export class WorkflowManager extends EventEmitter {
 		const run = this.runs.get(runId);
 		if (!run) return;
 
+		if (!agent.phase && run.snapshot.phases[phaseIndex]) {
+			agent.phase = run.snapshot.phases[phaseIndex].title;
+		}
+
 		run.snapshot.agents.push(agent);
 		run.snapshot.totalAgents++;
 		if (run.snapshot.phases[phaseIndex]) {

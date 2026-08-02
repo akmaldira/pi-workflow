@@ -208,6 +208,10 @@ function asText(v: unknown): string {
 	return typeof v === "string" ? v : String(v ?? "");
 }
 
+function agentPhaseKey(a: WorkflowAgentSnapshot): string {
+	return a.phase != null && String(a.phase).trim() ? asText(a.phase) : "(no phase)";
+}
+
 export class NavigatorModel {
 	constructor(private manager: WorkflowManager) {}
 
@@ -229,54 +233,58 @@ export class NavigatorModel {
 
 	phases(runId: string): PhaseRow[] {
 		const live = this.manager.getRun(runId);
-		if (live) {
-			return live.snapshot.phases.map((p) => {
-				const done = p.agents.filter((a) => a.status === "done").length;
-				const tokens = p.agents.reduce((sum, a) => sum + (a.outputTokens || 0), 0);
-				return {
-					title: asText(p.title || `Phase ${p.index + 1}`),
-					done,
-					total: p.agents.length,
-					tokens,
-				};
-			});
+		const snap = live
+			? live.snapshot
+			: (() => {
+					const p = this.manager.listRuns().find((r) => r.runId === runId);
+					return p ? { phases: (p as any).phases || [], agents: p.agents || [] } : undefined;
+				})();
+
+		if (!snap) return [];
+
+		const rawPhases = Array.isArray(snap.phases)
+			? snap.phases.map((p: any) => (typeof p === "string" ? p : p.title || ""))
+			: [];
+		const order: string[] = rawPhases.map(asText).filter(Boolean);
+		const byPhase = new Map<string, WorkflowAgentSnapshot[]>();
+		const agents = Array.isArray(snap.agents) ? snap.agents : [];
+
+		for (const a of agents) {
+			const key = agentPhaseKey(a);
+			if (!byPhase.has(key)) byPhase.set(key, []);
+			byPhase.get(key)?.push(a);
+			if (!order.includes(key)) order.push(key);
 		}
 
-		const persisted = this.manager.listRuns().find((r) => r.runId === runId);
-		if (!persisted) return [];
-
-		const byPhase = new Map<string, { done: number; total: number; tokens: number }>();
-		for (const agent of persisted.agents) {
-			const phaseName = asText(agent.phase || "Phase 1");
-			const entry = byPhase.get(phaseName) || { done: 0, total: 0, tokens: 0 };
-			entry.total++;
-			if (agent.status === "done") entry.done++;
-			entry.tokens += agent.outputTokens || 0;
-			byPhase.set(phaseName, entry);
+		// Fallback: if no phases pre-declared and no agents yet, return a default phase row
+		if (order.length === 0) {
+			order.push("(no phase)");
 		}
 
-		return Array.from(byPhase.entries()).map(([title, stats]) => ({
-			title,
-			done: stats.done,
-			total: stats.total,
-			tokens: stats.tokens,
-		}));
+		return order.map((title) => {
+			const ags = byPhase.get(title) ?? [];
+			const done = ags.filter((a) => a.status === "done").length;
+			const tokens = ags.reduce((sum, a) => sum + (a.outputTokens || 0), 0);
+			return {
+				title,
+				done,
+				total: ags.length,
+				tokens,
+			};
+		});
 	}
 
 	agents(runId: string, phase: string): WorkflowAgentSnapshot[] {
 		const live = this.manager.getRun(runId);
-		if (live) {
-			return live.snapshot.agents.filter(
-				(a) => asText(a.phase || "Phase 1") === phase || live.snapshot.phases.length <= 1,
-			);
-		}
+		const snap = live
+			? live.snapshot
+			: (() => {
+					const p = this.manager.listRuns().find((r) => r.runId === runId);
+					return p ? { agents: p.agents || [] } : undefined;
+				})();
 
-		const persisted = this.manager.listRuns().find((r) => r.runId === runId);
-		if (!persisted) return [];
-
-		return (persisted.agents || []).filter(
-			(a) => asText(a.phase || "Phase 1") === phase || true,
-		);
+		if (!snap || !Array.isArray(snap.agents)) return [];
+		return snap.agents.filter((a) => agentPhaseKey(a) === phase);
 	}
 
 	agentDetail(runId: string, agentId: number): WorkflowAgentSnapshot | undefined {
