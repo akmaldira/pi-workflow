@@ -48,6 +48,8 @@ export interface WorkflowAgentSnapshot {
 	errorCode?: string;
 	/** Whether failure is recoverable */
 	recoverable?: boolean;
+	/** Path to the child transcript JSONL file for live streaming */
+	transcriptPath?: string;
 	/** Live history events (tool calls, diffs, outputs) */
 	history?: AgentHistoryEntry[];
 }

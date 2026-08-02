@@ -409,8 +409,8 @@ async function runSingleAttempt(
 						// Start draining output
 					}
 				}
-				shared.transcriptWriter?.append({ type: "child_event", event, ts: Date.now() });
-				shared.jsonlPath && createJsonlWriter(shared.jsonlPath).write({ type: "child_event", event, ts: Date.now() });
+				shared.transcriptWriter?.writeChildEvent(event);
+				shared.jsonlWriter?.write({ type: "child_event", event, ts: Date.now() });
 			} catch {
 				// Non-JSON lines are ignored
 			}
@@ -599,6 +599,7 @@ export async function runSingleAgent(
 		modelCandidates,
 		skillsWarning,
 		jsonlPath: artifactPaths?.jsonlPath,
+		jsonlWriter,
 		artifactPaths,
 		transcriptWriter,
 		attemptNotes: [] as string[],

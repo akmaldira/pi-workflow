@@ -10,9 +10,11 @@
 import { defineTool, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import * as path from "node:path";
 import { parseWorkflowScript, runWorkflow, type WorkflowAgentRunner, type WorkflowRunResult } from "./workflow.ts";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import type { WorkflowManager } from "./workflow-manager.ts";
+import { getArtifactPaths } from "./artifacts.ts";
 
 const workflowToolSchema = Type.Object({
 	script: Type.String({
@@ -81,11 +83,13 @@ function createWorkflowAgentRunner(
 		cwd: string,
 		agent: AgentConfig,
 		task: string,
-		options: { signal?: AbortSignal; parentSessionId?: string; onEvent?: (event: Record<string, unknown>) => void },
+		options: { signal?: AbortSignal; parentSessionId?: string; onEvent?: (event: Record<string, unknown>) => void; runId?: string; index?: number },
 	) => Promise<string>,
 	parentSessionId?: string,
 	onEvent?: (event: Record<string, unknown>) => void,
+	runId?: string,
 ): WorkflowAgentRunner {
+	let childIndex = 0;
 	return {
 		async resolveAgent(agentName: string | undefined, cwd?: string): Promise<AgentConfig> {
 			const discovery = discoverAgents(cwd ?? defaultCwd, agentScope);
@@ -102,10 +106,13 @@ function createWorkflowAgentRunner(
 			};
 		},
 		async run(prompt: string, agentConfig: AgentConfig, options: { label?: string; signal?: AbortSignal; cwd?: string; modelOverride?: string }): Promise<string> {
+			childIndex++;
 			const effectiveConfig = options.modelOverride
-				? { ...agentConfig, model: options.modelOverride }
-				: agentConfig;
+				? { ...agentConfig, name: options.label || agentConfig.name, model: options.modelOverride }
+				: { ...agentConfig, name: options.label || agentConfig.name };
 			return runSingleAgent(options.cwd ?? defaultCwd, effectiveConfig, prompt, {
+				runId,
+				index: childIndex,
 				signal: options.signal,
 				parentSessionId,
 				onEvent,
@@ -358,6 +365,7 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 				options.runSingleAgent,
 				ctx.sessionManager.getSessionId(),
 				onSubagentEvent,
+				runId,
 			);
 
 			let result: WorkflowRunResult;
@@ -388,12 +396,15 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 						if (signal?.aborted) throw new Error("Workflow was aborted");
 						recordPhase(event.phase);
 						const agentId = snapshot.agents.length + 1;
+						const artifactsDir = path.join(options.cwd ?? ctx.cwd, ".pi-workflow", "artifacts");
+						const artifactPaths = getArtifactPaths(artifactsDir, runId, event.label, agentId);
 						const agentSnapshot = {
 							id: agentId,
 							label: event.label,
 							phase: event.phase,
 							prompt: event.prompt,
 							status: "running" as const,
+							transcriptPath: artifactPaths.transcriptPath,
 						};
 						snapshot.agents.push(agentSnapshot);
 						const phaseIdx = event.phase ? snapshot.phases.indexOf(event.phase) : 0;

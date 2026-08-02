@@ -95,6 +95,56 @@ describe("WorkflowManager", () => {
 		expect(errored).toBe(true);
 	});
 
+	it("watches transcript JSONL file and emits history entries", async () => {
+		const transcriptPath = path.join(tempDir, "transcript.jsonl");
+		fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+
+		manager.registerRun("run-1", { name: "test" });
+
+		let historyEmitted = false;
+		manager.on("agentHistory", (evt) => {
+			if (evt.agentId === 1) historyEmitted = true;
+		});
+
+		manager.markAgentStart("run-1", 0, {
+			id: 1,
+			label: "Agent 1",
+			prompt: "do work",
+			status: "running",
+			transcriptPath,
+		});
+
+		// Write transcript records
+		const record1 = {
+			version: 1,
+			recordType: "tool_start",
+			toolName: "bash",
+			argsPreview: "echo hello",
+			ts: Date.now(),
+		};
+		const record2 = {
+			version: 1,
+			recordType: "message",
+			role: "assistant",
+			text: "I ran the command",
+			ts: Date.now(),
+		};
+		fs.writeFileSync(transcriptPath, `${JSON.stringify(record1)}\n${JSON.stringify(record2)}\n`);
+
+		// Wait for poll interval
+		await new Promise((r) => setTimeout(r, 350));
+
+		const run = manager.getRun("run-1");
+		const agent = run?.snapshot.agents.find((a) => a.id === 1);
+		expect(agent?.history).toBeDefined();
+		expect(agent?.history?.length).toBeGreaterThanOrEqual(2);
+		expect(agent?.history?.[0].toolName).toBe("bash");
+		expect(agent?.history?.[1].text).toBe("I ran the command");
+		expect(historyEmitted).toBe(true);
+
+		manager.markAgentEnd("run-1", 1, "done");
+	});
+
 	it("pauses, resumes, and stops active run", () => {
 		const abortController = new AbortController();
 		manager.registerRun("run-1", { name: "test" }, abortController);

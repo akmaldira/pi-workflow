@@ -34,6 +34,7 @@ export interface PersistedRun {
 export class WorkflowManager extends EventEmitter {
 	private runs = new Map<string, ManagedRun>();
 	private journalDir?: string;
+	private transcriptWatchers = new Map<string, () => void>();
 
 	constructor(journalDir?: string) {
 		super();
@@ -108,9 +109,20 @@ export class WorkflowManager extends EventEmitter {
 		}
 		run.updatedAt = Date.now();
 		this.emit("agentStart", { runId, agentId: agent.id });
+
+		if (agent.transcriptPath) {
+			this.watchTranscript(runId, agent.id, agent.transcriptPath);
+		}
 	}
 
 	markAgentEnd(runId: string, agentId: number, status: "done" | "error" | "skipped", result?: unknown, error?: string, tokens?: number, durationMs?: number): void {
+		const key = `${runId}:${agentId}`;
+		const stopWatcher = this.transcriptWatchers.get(key);
+		if (stopWatcher) {
+			stopWatcher();
+			this.transcriptWatchers.delete(key);
+		}
+
 		const run = this.runs.get(runId);
 		if (!run) return;
 
@@ -141,6 +153,101 @@ export class WorkflowManager extends EventEmitter {
 			run.updatedAt = Date.now();
 			this.emit("agentHistory", { runId, agentId, history: agent.history });
 		}
+	}
+
+	private watchTranscript(runId: string, agentId: number, transcriptPath: string): void {
+		const key = `${runId}:${agentId}`;
+		if (this.transcriptWatchers.has(key)) return;
+
+		let byteOffset = 0;
+		let lineBuffer = "";
+		let stopped = false;
+
+		const readNewLines = () => {
+			if (stopped) return;
+			try {
+				if (!fs.existsSync(transcriptPath)) return;
+				const stat = fs.statSync(transcriptPath);
+				if (stat.size <= byteOffset) return;
+
+				const fd = fs.openSync(transcriptPath, "r");
+				const length = stat.size - byteOffset;
+				const buffer = Buffer.alloc(length);
+				fs.readSync(fd, buffer, 0, length, byteOffset);
+				fs.closeSync(fd);
+
+				byteOffset = stat.size;
+				const content = lineBuffer + buffer.toString("utf-8");
+				const lines = content.split("\n");
+				lineBuffer = lines.pop() ?? "";
+
+				for (const line of lines) {
+					if (!line.trim()) continue;
+					try {
+						const rec = JSON.parse(line);
+						if (rec.recordType === "tool_start" && rec.toolName) {
+							this.recordAgentHistory(runId, agentId, {
+								role: "assistant",
+								kind: "toolCall",
+								toolName: rec.toolName,
+								text: rec.argsPreview || "",
+								timestamp: rec.ts,
+							});
+						} else if (rec.recordType === "message" && rec.role === "assistant" && rec.text) {
+							this.recordAgentHistory(runId, agentId, {
+								role: "assistant",
+								kind: "text",
+								text: rec.text,
+								timestamp: rec.ts,
+							});
+						} else if (rec.recordType === "message" && rec.role === "toolResult") {
+							this.recordAgentHistory(runId, agentId, {
+								role: "toolResult",
+								kind: "toolResult",
+								toolName: rec.toolName || "tool",
+								text: rec.text || "",
+								isError: rec.isError,
+								timestamp: rec.ts,
+							});
+						}
+					} catch {
+						// Invalid JSON line, skip
+					}
+				}
+			} catch {
+				// Best-effort file read
+			}
+		};
+
+		// Poll every 200ms
+		const timer = setInterval(readNewLines, 200);
+		timer.unref?.();
+
+		// Also watch for immediate filesystem change events if supported
+		let watcher: fs.FSWatcher | undefined;
+		try {
+			watcher = fs.watch(path.dirname(transcriptPath), (eventType, filename) => {
+				if (filename && transcriptPath.endsWith(filename)) {
+					readNewLines();
+				}
+			});
+		} catch {
+			// Watcher fallback to polling only
+		}
+
+		const stop = () => {
+			stopped = true;
+			clearInterval(timer);
+			try {
+				watcher?.close();
+			} catch {
+				// Ignore close error
+			}
+			readNewLines(); // Final flush
+		};
+
+		this.transcriptWatchers.set(key, stop);
+		readNewLines(); // Initial read
 	}
 
 	markPhase(runId: string, phaseIndex: number, title?: string): void {

@@ -109,13 +109,26 @@ async function runSubagentForWorkflow(
 	cwd: string,
 	agent: AgentConfig,
 	task: string,
-	options: { signal?: AbortSignal; parentSessionId?: string; onEvent?: (event: Record<string, unknown>) => void },
+	options: { signal?: AbortSignal; parentSessionId?: string; onEvent?: (event: Record<string, unknown>) => void; runId?: string; index?: number },
 ): Promise<string> {
+	const runId = options.runId ?? `workflow-${Date.now()}`;
+	const artifactsDir = path.join(cwd, ".pi-workflow", "artifacts");
 	const result = await runSingleAgent(cwd, agent, task, {
-		runId: `workflow-${Date.now()}`,
+		runId,
+		index: options.index,
 		signal: options.signal,
 		parentSessionId: options.parentSessionId,
 		onEvent: options.onEvent,
+		artifactsDir,
+		artifactConfig: {
+			enabled: true,
+			includeInput: true,
+			includeOutput: true,
+			includeJsonl: true,
+			includeTranscript: true,
+			includeMetadata: true,
+			cleanupDays: 7,
+		},
 	});
 	return getResultOutput(result);
 }
