@@ -208,6 +208,28 @@ function asText(v: unknown): string {
 	return typeof v === "string" ? v : String(v ?? "");
 }
 
+/**
+ * Push a (possibly multi-line) block of text into `body` as separate rows.
+ *
+ * The navigator renderer treats every `body[]` element as exactly one
+ * terminal row and draws box borders around it individually. If a single
+ * element contains embedded "\n" characters (e.g. multi-line bash output,
+ * pretty-printed JSON args, diffs), printing it breaks the box open and
+ * spills raw text across the panel instead of staying inside the bordered
+ * rows. This helper splits on newlines up front and caps very long blocks
+ * so a single tool call/result can't blow out the whole pager.
+ */
+function pushTextBlock(body: string[], prefix: string, text: string, continuationIndent = "    ", maxLines = 20): void {
+	const rawLines = text.split("\n");
+	const lines = rawLines.length > maxLines ? rawLines.slice(0, maxLines) : rawLines;
+	lines.forEach((line, i) => {
+		body.push((i === 0 ? prefix : continuationIndent) + line);
+	});
+	if (rawLines.length > maxLines) {
+		body.push(`${continuationIndent}\u2026 ${rawLines.length - maxLines} more line(s) truncated`);
+	}
+}
+
 function agentPhaseKey(a: WorkflowAgentSnapshot): string {
 	return a.phase != null && String(a.phase).trim() ? asText(a.phase) : "(no phase)";
 }
@@ -542,30 +564,31 @@ export function renderNavigatorFrame(
 				if (agent.error) body.push(dim("Error:  ") + theme.fg("error", asText(agent.error)));
 				body.push("");
 				body.push(accent(theme.bold("Prompt:")));
-				for (const line of asText(agent.prompt || "").split("\n")) body.push("  " + line);
+				pushTextBlock(body, "  ", asText(agent.prompt || ""));
 				body.push("");
 				body.push(accent(theme.bold("Result:")));
 				const resultText = agent.error
 					? theme.fg("error", asText(agent.error))
 					: asText(agent.resultPreview || "(no result yet)");
-				for (const line of resultText.split("\n")) body.push("  " + line);
+				pushTextBlock(body, "  ", resultText, "  ", 60);
 				if (agent.history && agent.history.length > 0) {
 					body.push("");
 					body.push(accent(theme.bold("History:")));
 					for (const entry of agent.history) {
 						if (entry.role === "assistant" && entry.kind === "toolCall") {
 							const argsText = entry.args ? ` ${entry.args}` : "";
-							body.push(dim(`  → ${entry.toolName}:`) + argsText);
+							pushTextBlock(body, dim(`  → ${entry.toolName}:`), argsText, "      ", 10);
 						} else if (entry.role === "tool" || entry.role === "toolResult") {
 							const errorTag = "isError" in entry && entry.isError ? theme.fg("error", " [error]") : "";
-							body.push(dim(`  ← ${entry.toolName}:`) + errorTag + ` ${asText(entry.text || "")}`);
-							if (entry.diff) body.push(dim(`  diff: `) + entry.diff);
+							pushTextBlock(body, dim(`  ← ${entry.toolName}:`) + errorTag + " ", asText(entry.text || ""), "      ", 20);
+							if (entry.diff) pushTextBlock(body, dim("  diff: "), entry.diff, "      ", 20);
 						} else if (entry.role === "assistant") {
-							body.push(dim("  [assistant] ") + asText(entry.text || ""));
+							pushTextBlock(body, dim("  [assistant] "), asText(entry.text || ""), "      ", 20);
 						} else if (entry.role === "user") {
-							body.push(dim("  [user] ") + asText(entry.text || ""));
+							pushTextBlock(body, dim("  [user] "), asText(entry.text || ""), "      ", 20);
 						} else {
-							body.push(dim(`  [${(entry as { role?: string }).role ?? "event"}] `) + asText((entry as { text?: string }).text || ""));
+							const roleLabel = (entry as { role?: string }).role ?? "event";
+							pushTextBlock(body, dim(`  [${roleLabel}] `), asText((entry as { text?: string }).text || ""), "      ", 20);
 						}
 					}
 				}
@@ -585,7 +608,9 @@ export function renderNavigatorFrame(
 				const resultText = agent.error
 					? theme.fg("error", asText(agent.error))
 					: asText(agent.resultPreview || "(running…)");
-				for (const line of resultText.split("\n").slice(0, 4)) body.push("  " + line);
+				const compactResultLines = resultText.split("\n");
+				for (const line of compactResultLines.slice(0, 4)) body.push("  " + line);
+				if (compactResultLines.length > 4) body.push(dim("  … result continues in pager"));
 				pushCompact(body);
 			}
 		}

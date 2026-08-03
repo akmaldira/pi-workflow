@@ -219,4 +219,93 @@ describe("renderNavigatorText", () => {
 		expect(lines.some((l) => l.includes("History"))).toBe(true);
 		expect(lines.some((l) => l.includes("read"))).toBe(true);
 	});
+
+	it("splits multi-line history entries into separate rows instead of embedding raw newlines", () => {
+		// Regression test: tool output like `bash: total 60\ndrwxr-xr-x ...`
+		// was previously pushed as a single body[] element containing literal
+		// "\n" characters. The renderer treats every body[] element as exactly
+		// one bordered row, so embedded newlines broke the box border and
+		// spilled raw text across the panel (evidence4.png).
+		const manager = new WorkflowManager();
+		manager.registerRun("run-multiline", {
+			name: "multiline_wf",
+			phases: [{ title: "Phase 1" }],
+		});
+
+		manager.markAgentStart("run-multiline", 0, {
+			id: 1,
+			label: "Worker Agent",
+			phase: "Phase 1",
+			prompt: "Implement feature X",
+			status: "running",
+		});
+
+		const multilineOutput = [
+			"total 60",
+			"drwxr-xr-x 1 ranalubis ranalubis  166 Aug  3 11:48 .",
+			"drwxr-xr-x 1 ranalubis ranalubis   52 Aug  3 11:11 ..",
+			"-rw-r--r-- 1 ranalubis ranalubis   83 Aug  3 11:11 package.json",
+		].join("\n");
+
+		manager.recordAgentHistory("run-multiline", 1, {
+			role: "toolResult",
+			toolName: "bash",
+			text: multilineOutput,
+		});
+
+		const state = new NavigatorState();
+		const model = new NavigatorModel(manager);
+
+		state.drill(model);
+		state.drill(model);
+		state.drill(model);
+		state.togglePager();
+
+		const lines = renderNavigatorText(state, model, 80);
+
+		// No single rendered line should contain an embedded newline.
+		for (const line of lines) {
+			expect(line.includes("\n")).toBe(false);
+		}
+
+		// All four output lines should still be present, just as separate rows.
+		expect(lines.some((l) => l.includes("total 60"))).toBe(true);
+		expect(lines.some((l) => l.includes("package.json"))).toBe(true);
+	});
+
+	it("truncates very long history entries instead of rendering unbounded output", () => {
+		const manager = new WorkflowManager();
+		manager.registerRun("run-huge", {
+			name: "huge_wf",
+			phases: [{ title: "Phase 1" }],
+		});
+
+		manager.markAgentStart("run-huge", 0, {
+			id: 1,
+			label: "Worker Agent",
+			phase: "Phase 1",
+			prompt: "Implement feature X",
+			status: "running",
+		});
+
+		const hugeOutput = Array.from({ length: 500 }, (_, i) => `line ${i}`).join("\n");
+		manager.recordAgentHistory("run-huge", 1, {
+			role: "toolResult",
+			toolName: "bash",
+			text: hugeOutput,
+		});
+
+		const state = new NavigatorState();
+		const model = new NavigatorModel(manager);
+
+		state.drill(model);
+		state.drill(model);
+		state.drill(model);
+		state.togglePager();
+
+		const lines = renderNavigatorText(state, model, 80, 1000);
+
+		expect(lines.length).toBeLessThan(500);
+		expect(lines.some((l) => l.includes("truncated"))).toBe(true);
+	});
 });
