@@ -47,6 +47,7 @@ import {
 } from "./utils.ts";
 import { buildSkillInjection, resolveSkillsWithFallback } from "./skills.ts";
 import { buildAgentMemoryInjection } from "./agent-memory.ts";
+import { generateForkSummary, formatForkContextBlock } from "./fork-context.ts";
 import { evaluateCompletionMutationGuard } from "./completion-guard.ts";
 import { getPiSpawnCommand } from "./pi-spawn.ts";
 import * as fs from "fs";
@@ -204,6 +205,8 @@ async function runSingleAttempt(
 		attemptNotes: string[];
 		outputSnapshot?: SingleOutputSnapshot;
 		originalTask?: string;
+		/** Parent session file path, when context: "fork" successfully resolved a summary. Env escape hatch for the child. */
+		forkParentSessionFile?: string;
 	},
 ): Promise<SingleResult> {
 	const effectiveThinking = options.thinkingOverride ?? agent.thinking;
@@ -303,7 +306,7 @@ async function runSingleAttempt(
 		...(options.toolBudget ? { toolBudget: initialToolBudgetState(options.toolBudget) } : {}),
 		...(options.capabilityCeiling ? { capabilityCeiling: options.capabilityCeiling } : {}),
 		...(capabilityAudit ? { capabilityAudit } : {}),
-	}, options.context);
+	}, options.context ?? agent.defaultContext);
 	const startTime = Date.now();
 	if (options.structuredOutput) {
 		try {
@@ -349,7 +352,12 @@ async function runSingleAttempt(
 		return result;
 	}
 
-	const spawnEnv = { ...process.env, ...sharedEnv, ...getSubagentDepthEnv(options.maxSubagentDepth) };
+	const spawnEnv = {
+		...process.env,
+		...sharedEnv,
+		...getSubagentDepthEnv(options.maxSubagentDepth),
+		...(shared.forkParentSessionFile ? { PI_FORK_PARENT_SESSION_FILE: shared.forkParentSessionFile } : {}),
+	};
 
 	const spawnSpec = getPiSpawnCommand(args);
 	const proc = spawn(spawnSpec.command, spawnSpec.args, {
@@ -590,7 +598,7 @@ export async function runSingleAgent(
 
 	const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);
 
-	const systemPrompt = await buildSystemPrompt(agent, runtimeCwd, options);
+	const { prompt: systemPrompt, notes: contextNotes, parentSessionFile: forkParentSessionFile } = await buildSystemPrompt(agent, runtimeCwd, options);
 
 	const shared = {
 		sessionEnabled: Boolean(options.sessionFile || options.sessionDir),
@@ -602,9 +610,10 @@ export async function runSingleAgent(
 		jsonlWriter,
 		artifactPaths,
 		transcriptWriter,
-		attemptNotes: [] as string[],
+		attemptNotes: [...contextNotes] as string[],
 		outputSnapshot,
 		originalTask: task,
+		forkParentSessionFile,
 	};
 
 	let lastResult: SingleResult | undefined;
@@ -669,8 +678,35 @@ export async function runSingleAgent(
 	};
 }
 
-async function buildSystemPrompt(agent: AgentConfig, cwd: string, options: RunSyncOptions): Promise<string> {
+export async function buildSystemPrompt(agent: AgentConfig, cwd: string, options: RunSyncOptions): Promise<{ prompt: string; notes: string[]; parentSessionFile?: string }> {
 	let prompt = agent.systemPrompt || "";
+	const notes: string[] = [];
+	let parentSessionFile: string | undefined;
+
+	// Resolve and inject fork/fresh context. context: "fork" produces a
+	// compaction-style structured summary of the parent session (not the raw
+	// transcript) to keep cost bounded regardless of parent session length.
+	// Falls back to fresh (no injection) when forkContext handles are absent
+	// or summarization fails — never throws.
+	const effectiveContext = options.context ?? agent.defaultContext ?? "fresh";
+	if (effectiveContext === "fork") {
+		if (options.forkContext) {
+			const forkResult = await generateForkSummary({
+				sessionManager: options.forkContext.sessionManager,
+				modelRegistry: options.forkContext.modelRegistry,
+				fallbackModel: options.forkContext.fallbackModel,
+				signal: options.signal,
+			});
+			if (forkResult) {
+				prompt = appendSystemPrompt(prompt, formatForkContextBlock(forkResult));
+				parentSessionFile = forkResult.parentSessionFile;
+			} else {
+				notes.push("Requested context: \"fork\" but parent session summary could not be generated; running with fresh context instead.");
+			}
+		} else {
+			notes.push("Requested context: \"fork\" but no parent session handles were available; running with fresh context instead.");
+		}
+	}
 
 	// Inject acceptance prompt
 	if (options.acceptance) {
@@ -703,7 +739,7 @@ async function buildSystemPrompt(agent: AgentConfig, cwd: string, options: RunSy
 		prompt = appendSystemPrompt(prompt, "## Completion guard\nOnly declare completion when you have fully addressed the task. Do not stop prematurely.");
 	}
 
-	return prompt;
+	return { prompt, notes, parentSessionFile };
 }
 
 function appendSystemPrompt(base: string, addition: string): string {

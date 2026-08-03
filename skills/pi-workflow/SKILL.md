@@ -87,6 +87,26 @@ Find security issues and code smells. Keep responses concise.
 | `temperature` | Model temperature (0.0-1.0) |
 | `acceptance.level` | none, checked, or auto |
 | `acceptance.evidence` | Required evidence kinds |
+| `defaultContext` | `fresh` (default) or `fork` — see Context section below |
+
+## Context: Fresh vs Fork
+
+Every subagent runs with one of two context modes, resolved as: explicit `context` option → agent's `defaultContext` frontmatter → `fresh`.
+
+- **`fresh`** (default): the child starts with zero inherited history — only its system prompt + the task you give it.
+- **`fork`**: the child's system prompt is prepended with a compaction-style structured summary (Goal / Progress / Key Decisions / Next Steps) of the parent session — not the raw transcript. This keeps cost bounded regardless of how long the parent conversation has run. A note referencing the parent's raw session file is included as an escape hatch, in case the child needs an exact detail not captured in the summary.
+
+Request fork context explicitly when a delegated task needs awareness of what you and the user have been discussing:
+
+```
+subagent(tasks=[{"agent": "worker", "task": "continue the refactor we discussed", "context": "fork"}], mode="single")
+```
+
+```javascript
+await agent('worker: continue the refactor we discussed', { context: 'fork' })
+```
+
+If fork context can't be produced (no active session, or summarization fails), the subagent silently runs fresh instead — it never blocks or throws.
 
 ## Common Patterns
 

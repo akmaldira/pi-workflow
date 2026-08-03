@@ -33,6 +33,12 @@ export interface WorkflowAgentOptions {
 	model?: string;
 	/** Override the agent name from the task. If not provided, the agent name from the task is used. */
 	agentName?: string;
+	/**
+	 * Context mode for this agent invocation. "fork" injects a compaction-style
+	 * structured summary of the parent session into the child's system prompt.
+	 * Falls back to the agent's `defaultContext` frontmatter, then "fresh".
+	 */
+	context?: "fresh" | "fork";
 }
 
 export interface WorkflowRunOptions {
@@ -89,6 +95,7 @@ export interface WorkflowAgentRunner {
 			signal?: AbortSignal;
 			cwd?: string;
 			modelOverride?: string;
+			context?: "fresh" | "fork";
 		},
 	): Promise<string>;
 }
@@ -266,6 +273,7 @@ export async function runWorkflow<T = unknown>(
 					signal: options.signal,
 					cwd: options.cwd,
 					modelOverride: normalizedOptions.model,
+					context: normalizedOptions.context,
 				});
 				throwIfAborted();
 				const tokens = estimateTokens(result);
@@ -546,12 +554,16 @@ function optionalString(value: unknown, name: string): string | undefined {
 function normalizeAgentOptions(value: unknown): WorkflowAgentOptions {
 	if (!value || typeof value !== "object") throw new TypeError("agent options must be an object");
 	const options = value as WorkflowAgentOptions;
+	if (options.context !== undefined && options.context !== "fresh" && options.context !== "fork") {
+		throw new TypeError('agent options.context must be "fresh" or "fork"');
+	}
 	return {
 		...options,
 		label: optionalString(options.label, "agent label"),
 		phase: optionalString(options.phase, "agent phase"),
 		model: optionalString(options.model, "agent model"),
 		agentName: optionalString(options.agentName, "agent name"),
+		context: options.context,
 	};
 }
 

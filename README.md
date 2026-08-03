@@ -163,6 +163,40 @@ const reviews = await pipeline(
 )
 ```
 
+### Context: Fresh vs Fork
+
+Every subagent (via `subagent` tool or `agent()` in a workflow) runs with one of two context modes:
+
+| Mode | Behavior |
+|------|----------|
+| `fresh` (default) | Child starts with zero inherited history — only its system prompt + the task prompt. |
+| `fork` | Child's system prompt is prepended with a **compaction-style structured summary** of the parent session (Goal / Progress / Key Decisions / Next Steps / Critical Context), not the raw transcript. |
+
+**Why a summary instead of the full raw transcript?** Forking the entire parent session JSONL scales linearly with conversation length — a long-running session can be millions of tokens, and forking that into every delegated agent (especially with `parallel()` fan-out) is both cost-prohibitive and mostly noise for a focused task. Instead, `fork` reuses Pi's own compaction primitives (the same mechanism behind `/compact` and auto-compaction) to produce a small, signal-dense summary. Fork cost stays roughly flat regardless of how long the parent conversation has been running.
+
+**Escape hatch:** when a fork summary is generated, the child's system prompt also references the parent's raw session file path, so a task that genuinely needs an exact quote or detail not captured in the summary can read it directly instead of always paying full-fork cost upfront.
+
+**Setting context:**
+
+```js
+// Per-call, in a workflow script
+await agent('worker: continue the API implementation', { context: 'fork' })
+
+// Or set defaultContext: fork in the agent's frontmatter (see below) to make it the default
+```
+
+```json
+// subagent tool call (single mode)
+{ "agent": "worker", "task": "...", "context": "fork" }
+
+// subagent tool call (parallel mode) — per task
+{ "tasks": [{ "agent": "worker", "task": "...", "context": "fork" }] }
+```
+
+Resolution order: explicit `context` option → agent's `defaultContext` frontmatter → `fresh`.
+
+If `fork` is requested but a parent session summary can't be produced (e.g. no active session, or summarization fails), the subagent runs with `fresh` context instead and a note is recorded — it never throws or blocks execution.
+
 ### Error Handling
 
 Failed `agent()`, `parallel()`, or `pipeline()` branches return `null` and log the failure. Check for nulls before synthesizing conclusions:
@@ -277,7 +311,7 @@ console.log(text)
 | `systemPromptMode` | `replace` \| `append` | System prompt behavior (default: `replace`) |
 | `inheritProjectContext` | boolean | Keep inherited project instruction blocks (default: true) |
 | `inheritSkills` | boolean | Keep Pi's discovered skills (default: true) |
-| `defaultContext` | `fresh` \| `fork` | Launch context default |
+| `defaultContext` | `fresh` \| `fork` | Launch context default. See [Context: Fresh vs Fork](#context-fresh-vs-fork). |
 | `skills` | string or array | Specific skills to load |
 | `skillPath` | string or array | Private skill files or directories |
 | `output` | string | Default output file |
@@ -400,6 +434,7 @@ You are an auditor. Complete within 15 turns max.
 | `agentScope` | `"user"` \| `"project"` \| `"both"` | Agent discovery scope (default: `"user"`) |
 | `confirmProjectAgents` | boolean | Confirm before running project agents (default: `true`) |
 | `cwd` | string | Working directory for agent process |
+| `context` | `"fresh"` \| `"fork"` | Launch context. See [Context: Fresh vs Fork](#context-fresh-vs-fork). Single mode: top-level param. Parallel mode: per-task field inside `tasks[]`. |
 
 ### workflow
 

@@ -4,10 +4,30 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { Message } from "@earendil-works/pi-ai";
+import type { ReadonlySessionManager } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./agents.ts";
 import type { ModelScopeConfig } from "./model-scope.ts";
 import type { ResolvedSubagentCapabilityCeiling, SubagentCapabilityAudit } from "./capability-ceiling.ts";
+
+/**
+ * Read-only handles needed to resolve `context: "fork"` subagents: a
+ * compaction-style summary of the parent session, generated on demand.
+ * Fully optional — when absent, fork requests gracefully fall back to fresh.
+ */
+export interface ForkContextOptions {
+	sessionManager: ReadonlySessionManager;
+	modelRegistry: {
+		find(provider: string, modelId: string): Model<Api> | undefined;
+		getApiKeyAndHeaders(model: Model<Api>): Promise<
+			| { ok: true; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string> }
+			| { ok: false; error: string }
+		>;
+	};
+	/** Fallback model used for summarization when no explicit preference is configured. */
+	fallbackModel?: Model<Api>;
+}
 
 function resolveTempScopeId() {
 	const env = process.env;
@@ -385,6 +405,8 @@ export interface RunSyncOptions {
 	parentSessionId?: string;
 	onEvent?: (event: Record<string, unknown>) => void;
 	context?: "fresh" | "fork";
+	/** Read-only handles for resolving `context: "fork"` via compaction-style summary. */
+	forkContext?: ForkContextOptions;
 	cwd?: string;
 	signal?: AbortSignal;
 	interruptSignal?: AbortSignal;

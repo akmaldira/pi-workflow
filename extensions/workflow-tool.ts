@@ -15,6 +15,7 @@ import { parseWorkflowScript, runWorkflow, type WorkflowAgentRunner, type Workfl
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import type { WorkflowManager } from "./workflow-manager.ts";
 import { getArtifactPaths } from "./artifacts.ts";
+import type { ForkContextOptions } from "./types.ts";
 
 const workflowToolSchema = Type.Object({
 	script: Type.String({
@@ -83,11 +84,20 @@ function createWorkflowAgentRunner(
 		cwd: string,
 		agent: AgentConfig,
 		task: string,
-		options: { signal?: AbortSignal; parentSessionId?: string; onEvent?: (event: Record<string, unknown>) => void; runId?: string; index?: number },
+		options: {
+			signal?: AbortSignal;
+			parentSessionId?: string;
+			onEvent?: (event: Record<string, unknown>) => void;
+			runId?: string;
+			index?: number;
+			context?: "fresh" | "fork";
+			forkContext?: ForkContextOptions;
+		},
 	) => Promise<string>,
 	parentSessionId?: string,
 	onEvent?: (event: Record<string, unknown>) => void,
 	runId?: string,
+	forkContext?: ForkContextOptions,
 ): WorkflowAgentRunner {
 	let childIndex = 0;
 	return {
@@ -105,7 +115,11 @@ function createWorkflowAgentRunner(
 				filePath: "",
 			};
 		},
-		async run(prompt: string, agentConfig: AgentConfig, options: { label?: string; signal?: AbortSignal; cwd?: string; modelOverride?: string }): Promise<string> {
+		async run(
+			prompt: string,
+			agentConfig: AgentConfig,
+			options: { label?: string; signal?: AbortSignal; cwd?: string; modelOverride?: string; context?: "fresh" | "fork" },
+		): Promise<string> {
 			childIndex++;
 			const effectiveConfig = options.modelOverride
 				? { ...agentConfig, name: options.label || agentConfig.name, model: options.modelOverride }
@@ -116,6 +130,8 @@ function createWorkflowAgentRunner(
 				signal: options.signal,
 				parentSessionId,
 				onEvent,
+				context: options.context,
+				forkContext: options.context === "fork" ? forkContext : undefined,
 			});
 		},
 	};
@@ -262,7 +278,15 @@ export interface WorkflowToolOptionsFull extends WorkflowToolOptions {
 		cwd: string,
 		agent: AgentConfig,
 		task: string,
-		options: { signal?: AbortSignal; parentSessionId?: string; onEvent?: (event: Record<string, unknown>) => void },
+		options: {
+			signal?: AbortSignal;
+			parentSessionId?: string;
+			onEvent?: (event: Record<string, unknown>) => void;
+			runId?: string;
+			index?: number;
+			context?: "fresh" | "fork";
+			forkContext?: ForkContextOptions;
+		},
 	) => Promise<string>;
 }
 
@@ -359,6 +383,14 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 				}
 			};
 
+			const forkContext: ForkContextOptions | undefined = ctx.model
+				? {
+					sessionManager: ctx.sessionManager,
+					modelRegistry: ctx.modelRegistry,
+					fallbackModel: ctx.model,
+				}
+				: undefined;
+
 			const agentRunner = createWorkflowAgentRunner(
 				options.cwd ?? ctx.cwd,
 				agentScope,
@@ -366,6 +398,7 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 				ctx.sessionManager.getSessionId(),
 				onSubagentEvent,
 				runId,
+				forkContext,
 			);
 
 			let result: WorkflowRunResult;

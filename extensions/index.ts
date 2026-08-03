@@ -17,7 +17,7 @@ import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { createWorkflowTool } from "./workflow-tool.ts";
 import { runSingleAgent } from "./execution.ts";
-import type { SingleResult } from "./types.ts";
+import type { SingleResult, ForkContextOptions } from "./types.ts";
 import { getFinalOutput } from "./utils.ts";
 import { WorkflowManager } from "./workflow-manager.ts";
 import { openWorkflowNavigator } from "./workflow-ui.ts";
@@ -79,10 +79,17 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
 	return results;
 }
 
+const ContextModeSchema = StringEnum(["fresh", "fork"] as const, {
+	description:
+		'Context mode: "fresh" (default) starts with no inherited history. "fork" injects a compaction-style ' +
+		"structured summary (Goal/Progress/Key Decisions/etc) of the parent session, not the raw transcript, keeping cost bounded.",
+});
+
 const TaskItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
 	task: Type.String({ description: "Task to delegate to the agent" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+	context: Type.Optional(ContextModeSchema),
 });
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
@@ -99,6 +106,7 @@ const SubagentParams = Type.Object({
 		Type.Boolean({ description: "Prompt before running project-local agents. Default: true.", default: true }),
 	),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
+	context: Type.Optional(ContextModeSchema),
 });
 
 /**
@@ -109,7 +117,15 @@ async function runSubagentForWorkflow(
 	cwd: string,
 	agent: AgentConfig,
 	task: string,
-	options: { signal?: AbortSignal; parentSessionId?: string; onEvent?: (event: Record<string, unknown>) => void; runId?: string; index?: number },
+	options: {
+		signal?: AbortSignal;
+		parentSessionId?: string;
+		onEvent?: (event: Record<string, unknown>) => void;
+		runId?: string;
+		index?: number;
+		context?: "fresh" | "fork";
+		forkContext?: ForkContextOptions;
+	},
 ): Promise<string> {
 	const runId = options.runId ?? `workflow-${Date.now()}`;
 	const artifactsDir = path.join(cwd, ".pi-workflow", "artifacts");
@@ -119,6 +135,8 @@ async function runSubagentForWorkflow(
 		signal: options.signal,
 		parentSessionId: options.parentSessionId,
 		onEvent: options.onEvent,
+		context: options.context,
+		forkContext: options.forkContext,
 		artifactsDir,
 		artifactConfig: {
 			enabled: true,
@@ -152,6 +170,9 @@ export default function (pi: ExtensionAPI) {
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
 			const confirmProjectAgents = params.confirmProjectAgents ?? true;
+			const forkContext: ForkContextOptions | undefined = ctx.model
+				? { sessionManager: ctx.sessionManager, modelRegistry: ctx.modelRegistry, fallbackModel: ctx.model }
+				: undefined;
 
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
 			const hasSingle = Boolean(params.agent && params.task);
@@ -239,6 +260,8 @@ export default function (pi: ExtensionAPI) {
 								cwd: t.cwd,
 								signal,
 								parentSessionId: ctx.sessionManager.getSessionId(),
+								context: t.context,
+								forkContext: t.context === "fork" ? forkContext : undefined,
 							},
 						);
 					},
@@ -283,6 +306,8 @@ export default function (pi: ExtensionAPI) {
 						cwd: params.cwd,
 						signal,
 						parentSessionId: ctx.sessionManager.getSessionId(),
+						context: params.context,
+						forkContext: params.context === "fork" ? forkContext : undefined,
 					},
 				);
 				const isError = isFailedResult(result);
