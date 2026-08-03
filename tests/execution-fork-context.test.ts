@@ -73,9 +73,39 @@ describe("execution.ts buildSystemPrompt — context resolution", () => {
 		clearForkSummaryCache();
 	});
 
-	it("fresh mode (default) does not inject any fork summary", async () => {
+	it("defaults to fork mode when context is unspecified and forkContext is available", async () => {
+		vi.mocked(generateSummaryWithUsage).mockResolvedValue({
+			text: "## Goal\nDefault fork summary.",
+			usage: {} as any,
+		});
+		const agent = makeAgent();
+		const options: RunSyncOptions = {
+			runId: "test-run",
+			forkContext: {
+				sessionManager: makeSessionManager(),
+				modelRegistry: makeModelRegistry(),
+				fallbackModel: { provider: "test", id: "test-model" } as any,
+			},
+		};
+		const { prompt, notes } = await buildSystemPrompt(agent, "/tmp", options);
+		expect(prompt).toContain("## Goal\nDefault fork summary.");
+		expect(notes).toHaveLength(0);
+		expect(generateSummaryWithUsage).toHaveBeenCalledTimes(1);
+	});
+
+	it("defaults to fork mode but falls back gracefully when no forkContext is available", async () => {
 		const agent = makeAgent();
 		const options: RunSyncOptions = { runId: "test-run" };
+		const { prompt, notes } = await buildSystemPrompt(agent, "/tmp", options);
+		expect(prompt).toBe("You are a worker.");
+		expect(notes).toHaveLength(1);
+		expect(notes[0]).toContain("no parent session handles were available");
+		expect(generateSummaryWithUsage).not.toHaveBeenCalled();
+	});
+
+	it("explicit fresh context does not inject any fork summary", async () => {
+		const agent = makeAgent();
+		const options: RunSyncOptions = { runId: "test-run", context: "fresh" };
 		const { prompt, notes } = await buildSystemPrompt(agent, "/tmp", options);
 		expect(prompt).toBe("You are a worker.");
 		expect(notes).toHaveLength(0);
@@ -155,6 +185,22 @@ describe("execution.ts buildSystemPrompt — context resolution", () => {
 		const options: RunSyncOptions = {
 			runId: "test-run",
 			context: "fresh",
+			forkContext: {
+				sessionManager: makeSessionManager(),
+				modelRegistry: makeModelRegistry(),
+				fallbackModel: { provider: "test", id: "test-model" } as any,
+			},
+		};
+		const { prompt, notes } = await buildSystemPrompt(agent, "/tmp", options);
+		expect(prompt).toBe("You are a worker.");
+		expect(notes).toHaveLength(0);
+		expect(generateSummaryWithUsage).not.toHaveBeenCalled();
+	});
+
+	it("agent.defaultContext: 'fresh' overrides the global fork default", async () => {
+		const agent = makeAgent({ defaultContext: "fresh" });
+		const options: RunSyncOptions = {
+			runId: "test-run",
 			forkContext: {
 				sessionManager: makeSessionManager(),
 				modelRegistry: makeModelRegistry(),

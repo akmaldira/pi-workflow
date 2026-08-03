@@ -34,9 +34,10 @@ export interface WorkflowAgentOptions {
 	/** Override the agent name from the task. If not provided, the agent name from the task is used. */
 	agentName?: string;
 	/**
-	 * Context mode for this agent invocation. "fork" injects a compaction-style
-	 * structured summary of the parent session into the child's system prompt.
-	 * Falls back to the agent's `defaultContext` frontmatter, then "fresh".
+	 * Context mode for this agent invocation. "fork" (default) injects a
+	 * compaction-style structured summary of the parent session into the
+	 * child's system prompt. "fresh" starts with no inherited history.
+	 * Falls back to the agent's `defaultContext` frontmatter, then "fork".
 	 */
 	context?: "fresh" | "fork";
 }

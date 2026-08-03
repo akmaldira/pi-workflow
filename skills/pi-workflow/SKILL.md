@@ -87,23 +87,23 @@ Find security issues and code smells. Keep responses concise.
 | `temperature` | Model temperature (0.0-1.0) |
 | `acceptance.level` | none, checked, or auto |
 | `acceptance.evidence` | Required evidence kinds |
-| `defaultContext` | `fresh` (default) or `fork` — see Context section below |
+| `defaultContext` | `fresh` or `fork` (global default: `fork`) — see Context section below |
 
 ## Context: Fresh vs Fork
 
-Every subagent runs with one of two context modes, resolved as: explicit `context` option → agent's `defaultContext` frontmatter → `fresh`.
+Every subagent runs with one of two context modes, resolved as: explicit `context` option → agent's `defaultContext` frontmatter → `fork`.
 
-- **`fresh`** (default): the child starts with zero inherited history — only its system prompt + the task you give it.
-- **`fork`**: the child's system prompt is prepended with a compaction-style structured summary (Goal / Progress / Key Decisions / Next Steps) of the parent session — not the raw transcript. This keeps cost bounded regardless of how long the parent conversation has run. A note referencing the parent's raw session file is included as an escape hatch, in case the child needs an exact detail not captured in the summary.
+- **`fork`** (default): the child's system prompt is prepended with a compaction-style structured summary (Goal / Progress / Key Decisions / Next Steps) of the parent session — not the raw transcript. This keeps cost bounded regardless of how long the parent conversation has run. A note referencing the parent's raw session file is included as an escape hatch, in case the child needs an exact detail not captured in the summary.
+- **`fresh`**: the child starts with zero inherited history — only its system prompt + the task you give it. Use this for agents that should run in full isolation with no awareness of the current conversation.
 
-Request fork context explicitly when a delegated task needs awareness of what you and the user have been discussing:
+Opt out of forking when a delegated task should run in complete isolation, unaware of the current conversation:
 
 ```
-subagent(tasks=[{"agent": "worker", "task": "continue the refactor we discussed", "context": "fork"}], mode="single")
+subagent(tasks=[{"agent": "worker", "task": "run an isolated audit", "context": "fresh"}], mode="single")
 ```
 
 ```javascript
-await agent('worker: continue the refactor we discussed', { context: 'fork' })
+await agent('worker: run an isolated audit', { context: 'fresh' })
 ```
 
 If fork context can't be produced (no active session, or summarization fails), the subagent silently runs fresh instead — it never blocks or throws.

@@ -81,8 +81,8 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
 
 const ContextModeSchema = StringEnum(["fresh", "fork"] as const, {
 	description:
-		'Context mode: "fresh" (default) starts with no inherited history. "fork" injects a compaction-style ' +
-		"structured summary (Goal/Progress/Key Decisions/etc) of the parent session, not the raw transcript, keeping cost bounded.",
+		'Context mode: "fork" (default) injects a compaction-style structured summary (Goal/Progress/Key Decisions/etc) ' +
+		'of the parent session, not the raw transcript, keeping cost bounded. "fresh" starts with no inherited history.',
 });
 
 const TaskItem = Type.Object({
@@ -261,7 +261,7 @@ export default function (pi: ExtensionAPI) {
 								signal,
 								parentSessionId: ctx.sessionManager.getSessionId(),
 								context: t.context,
-								forkContext: t.context === "fork" ? forkContext : undefined,
+								forkContext,
 							},
 						);
 					},
@@ -307,7 +307,7 @@ export default function (pi: ExtensionAPI) {
 						signal,
 						parentSessionId: ctx.sessionManager.getSessionId(),
 						context: params.context,
-						forkContext: params.context === "fork" ? forkContext : undefined,
+						forkContext,
 					},
 				);
 				const isError = isFailedResult(result);

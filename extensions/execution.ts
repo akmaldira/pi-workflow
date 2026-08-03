@@ -687,8 +687,8 @@ export async function buildSystemPrompt(agent: AgentConfig, cwd: string, options
 	// compaction-style structured summary of the parent session (not the raw
 	// transcript) to keep cost bounded regardless of parent session length.
 	// Falls back to fresh (no injection) when forkContext handles are absent
-	// or summarization fails — never throws.
-	const effectiveContext = options.context ?? agent.defaultContext ?? "fresh";
+	// or summarization fails — never throws. Default is "fork" when unspecified.
+	const effectiveContext = options.context ?? agent.defaultContext ?? "fork";
 	if (effectiveContext === "fork") {
 		if (options.forkContext) {
 			const forkResult = await generateForkSummary({

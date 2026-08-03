@@ -131,7 +131,7 @@ function createWorkflowAgentRunner(
 				parentSessionId,
 				onEvent,
 				context: options.context,
-				forkContext: options.context === "fork" ? forkContext : undefined,
+				forkContext,
 			});
 		},
 	};

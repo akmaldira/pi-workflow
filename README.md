@@ -169,8 +169,8 @@ Every subagent (via `subagent` tool or `agent()` in a workflow) runs with one of
 
 | Mode | Behavior |
 |------|----------|
-| `fresh` (default) | Child starts with zero inherited history — only its system prompt + the task prompt. |
-| `fork` | Child's system prompt is prepended with a **compaction-style structured summary** of the parent session (Goal / Progress / Key Decisions / Next Steps / Critical Context), not the raw transcript. |
+| `fork` (default) | Child's system prompt is prepended with a **compaction-style structured summary** of the parent session (Goal / Progress / Key Decisions / Next Steps / Critical Context), not the raw transcript. |
+| `fresh` | Child starts with zero inherited history — only its system prompt + the task prompt. |
 
 **Why a summary instead of the full raw transcript?** Forking the entire parent session JSONL scales linearly with conversation length — a long-running session can be millions of tokens, and forking that into every delegated agent (especially with `parallel()` fan-out) is both cost-prohibitive and mostly noise for a focused task. Instead, `fork` reuses Pi's own compaction primitives (the same mechanism behind `/compact` and auto-compaction) to produce a small, signal-dense summary. Fork cost stays roughly flat regardless of how long the parent conversation has been running.
 
@@ -179,23 +179,26 @@ Every subagent (via `subagent` tool or `agent()` in a workflow) runs with one of
 **Setting context:**
 
 ```js
-// Per-call, in a workflow script
+// Per-call, in a workflow script (fork is already the default, this is explicit for clarity)
 await agent('worker: continue the API implementation', { context: 'fork' })
 
-// Or set defaultContext: fork in the agent's frontmatter (see below) to make it the default
+// Opt out of forking for a fully isolated agent:
+await agent('worker: run in complete isolation', { context: 'fresh' })
+
+// Or set defaultContext in the agent's frontmatter (see below) to change its default
 ```
 
 ```json
-// subagent tool call (single mode)
-{ "agent": "worker", "task": "...", "context": "fork" }
+// subagent tool call (single mode) — opt out of the fork default
+{ "agent": "worker", "task": "...", "context": "fresh" }
 
 // subagent tool call (parallel mode) — per task
-{ "tasks": [{ "agent": "worker", "task": "...", "context": "fork" }] }
+{ "tasks": [{ "agent": "worker", "task": "...", "context": "fresh" }] }
 ```
 
-Resolution order: explicit `context` option → agent's `defaultContext` frontmatter → `fresh`.
+Resolution order: explicit `context` option → agent's `defaultContext` frontmatter → `fork`.
 
-If `fork` is requested but a parent session summary can't be produced (e.g. no active session, or summarization fails), the subagent runs with `fresh` context instead and a note is recorded — it never throws or blocks execution.
+If `fork` context can't be produced (e.g. no active session, or summarization fails), the subagent runs with `fresh` context instead and a note is recorded — it never throws or blocks execution.
 
 ### Error Handling
 
@@ -311,7 +314,7 @@ console.log(text)
 | `systemPromptMode` | `replace` \| `append` | System prompt behavior (default: `replace`) |
 | `inheritProjectContext` | boolean | Keep inherited project instruction blocks (default: true) |
 | `inheritSkills` | boolean | Keep Pi's discovered skills (default: true) |
-| `defaultContext` | `fresh` \| `fork` | Launch context default. See [Context: Fresh vs Fork](#context-fresh-vs-fork). |
+| `defaultContext` | `fresh` \| `fork` | Launch context override for this agent (global default: `fork`). See [Context: Fresh vs Fork](#context-fresh-vs-fork). |
 | `skills` | string or array | Specific skills to load |
 | `skillPath` | string or array | Private skill files or directories |
 | `output` | string | Default output file |
@@ -434,7 +437,7 @@ You are an auditor. Complete within 15 turns max.
 | `agentScope` | `"user"` \| `"project"` \| `"both"` | Agent discovery scope (default: `"user"`) |
 | `confirmProjectAgents` | boolean | Confirm before running project agents (default: `true`) |
 | `cwd` | string | Working directory for agent process |
-| `context` | `"fresh"` \| `"fork"` | Launch context. See [Context: Fresh vs Fork](#context-fresh-vs-fork). Single mode: top-level param. Parallel mode: per-task field inside `tasks[]`. |
+| `context` | `"fresh"` \| `"fork"` | Launch context (default: `"fork"`). See [Context: Fresh vs Fork](#context-fresh-vs-fork). Single mode: top-level param. Parallel mode: per-task field inside `tasks[]`. |
 
 ### workflow
 
