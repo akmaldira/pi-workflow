@@ -186,14 +186,16 @@ export class WorkflowManager extends EventEmitter {
 					try {
 						const rec = JSON.parse(line);
 						if (rec.recordType === "tool_start" && rec.toolName) {
+							const argsPreview = rec.argsPreview || "";
 							this.recordAgentHistory(runId, agentId, {
 								role: "assistant",
 								kind: "toolCall",
 								toolName: rec.toolName,
-								text: rec.argsPreview || "",
+								args: argsPreview,
+								text: argsPreview ? `${rec.toolName}(${argsPreview})` : rec.toolName,
 								timestamp: rec.ts,
 							});
-						} else if (rec.recordType === "message" && rec.role === "assistant" && rec.text) {
+						} else if (rec.recordType === "message" && rec.role === "assistant" && typeof rec.text === "string" && rec.text.trim()) {
 							this.recordAgentHistory(runId, agentId, {
 								role: "assistant",
 								kind: "text",
@@ -203,9 +205,8 @@ export class WorkflowManager extends EventEmitter {
 						} else if (rec.recordType === "message" && rec.role === "toolResult") {
 							this.recordAgentHistory(runId, agentId, {
 								role: "toolResult",
-								kind: "toolResult",
 								toolName: rec.toolName || "tool",
-								text: rec.text || "",
+								text: rec.text || "(no output)",
 								isError: rec.isError,
 								timestamp: rec.ts,
 							});

@@ -71,11 +71,12 @@ export interface SavedOutputReference {
 }
 
 export type AgentHistoryEntry =
-	| { role: "user"; text: string }
-	| { role: "assistant"; text: string; kind?: "text" }
-	| { role: "assistant"; kind: "toolCall"; toolName: string; args: string; path?: string; text: string }
-	| { role: "tool"; toolName: string; text: string; diff?: string }
-	| { role: "assistant"; kind: "error"; text: string };
+	| { role: "user"; text: string; timestamp?: number }
+	| { role: "assistant"; text: string; kind?: "text"; timestamp?: number }
+	| { role: "assistant"; kind: "toolCall"; toolName: string; args?: string; path?: string; text: string; timestamp?: number }
+	| { role: "tool"; toolName: string; text: string; diff?: string; timestamp?: number }
+	| { role: "toolResult"; toolName: string; text: string; isError?: boolean; diff?: string; timestamp?: number }
+	| { role: "assistant"; kind: "error"; text: string; timestamp?: number };
 
 export interface TruncationResult {
 	text: string;

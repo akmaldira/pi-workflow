@@ -182,7 +182,10 @@ export function createChildTranscriptWriter(input: ChildTranscriptWriterInput): 
 	}
 
 	const writeMessage = (sourceEventType: string, message: ChildTranscriptMessage) => {
-		const text = extractTextFromContent(message.content);
+		// extractTextFromContent() takes the full message (it reads message.content
+		// internally) and returns an array of text fragments — join them into a
+		// single string for transcript records.
+		const text = extractTextFromContent(message).join("\n");
 		if (message.role === "toolResult") {
 			const output = boundedPayload(text);
 			writeRecord({
@@ -241,7 +244,7 @@ export function createChildTranscriptWriter(input: ChildTranscriptWriterInput): 
 					sourceEventType: event.type,
 					...(event.toolCallId ? { toolCallId: event.toolCallId } : {}),
 					toolName: event.toolName,
-					...(Object.keys(args).length > 0 ? { argsPreview: extractToolArgsPreview(args) } : {}),
+					...(Object.keys(args).length > 0 ? { argsPreview: extractToolArgsPreview(event) } : {}),
 					...(argsPayload ? { argsPayload } : {}),
 				});
 				return;

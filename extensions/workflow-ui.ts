@@ -553,13 +553,19 @@ export function renderNavigatorFrame(
 					body.push("");
 					body.push(accent(theme.bold("History:")));
 					for (const entry of agent.history) {
-						if (entry.kind === "toolCall") {
-							body.push(dim(`  ${entry.toolName}:`) + ` ${entry.args}`);
-						} else if (entry.role === "tool") {
-							body.push(dim(`  ← ${entry.toolName}:`) + ` ${entry.text}`);
+						if (entry.role === "assistant" && entry.kind === "toolCall") {
+							const argsText = entry.args ? ` ${entry.args}` : "";
+							body.push(dim(`  → ${entry.toolName}:`) + argsText);
+						} else if (entry.role === "tool" || entry.role === "toolResult") {
+							const errorTag = "isError" in entry && entry.isError ? theme.fg("error", " [error]") : "";
+							body.push(dim(`  ← ${entry.toolName}:`) + errorTag + ` ${asText(entry.text || "")}`);
 							if (entry.diff) body.push(dim(`  diff: `) + entry.diff);
+						} else if (entry.role === "assistant") {
+							body.push(dim("  [assistant] ") + asText(entry.text || ""));
+						} else if (entry.role === "user") {
+							body.push(dim("  [user] ") + asText(entry.text || ""));
 						} else {
-							body.push(dim(`  [${entry.role}] `) + asText((entry as any).text || ""));
+							body.push(dim(`  [${(entry as { role?: string }).role ?? "event"}] `) + asText((entry as { text?: string }).text || ""));
 						}
 					}
 				}

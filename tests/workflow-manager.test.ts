@@ -145,6 +145,133 @@ describe("WorkflowManager", () => {
 		manager.markAgentEnd("run-1", 1, "done");
 	});
 
+	it("records toolCall entries with args populated (not undefined)", async () => {
+		const transcriptPath = path.join(tempDir, "transcript-args.jsonl");
+		fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+		manager.registerRun("run-args", { name: "test" });
+		manager.markAgentStart("run-args", 0, {
+			id: 1,
+			label: "Agent 1",
+			prompt: "do work",
+			status: "running",
+			transcriptPath,
+		});
+
+		const record = {
+			version: 1,
+			recordType: "tool_start",
+			toolName: "read",
+			argsPreview: '{"path":"foo.ts"}',
+			ts: Date.now(),
+		};
+		fs.writeFileSync(transcriptPath, `${JSON.stringify(record)}\n`);
+		await new Promise((r) => setTimeout(r, 350));
+
+		const run = manager.getRun("run-args");
+		const agent = run?.snapshot.agents.find((a) => a.id === 1);
+		const entry = agent?.history?.[0];
+		expect(entry).toBeDefined();
+		expect(entry?.role).toBe("assistant");
+		if (entry?.role === "assistant" && entry.kind === "toolCall") {
+			expect(entry.args).toBe('{"path":"foo.ts"}');
+			expect(entry.toolName).toBe("read");
+		} else {
+			throw new Error("expected toolCall entry");
+		}
+
+		manager.markAgentEnd("run-args", 1, "done");
+	});
+
+	it("records toolResult entries with actual text (not '[]')", async () => {
+		const transcriptPath = path.join(tempDir, "transcript-result.jsonl");
+		fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+		manager.registerRun("run-result", { name: "test" });
+		manager.markAgentStart("run-result", 0, {
+			id: 1,
+			label: "Agent 1",
+			prompt: "do work",
+			status: "running",
+			transcriptPath,
+		});
+
+		// This simulates what child-transcript.ts now correctly writes after the
+		// extractTextFromContent(message) fix — real file contents, not "[]".
+		const record = {
+			version: 1,
+			recordType: "message",
+			role: "toolResult",
+			toolName: "read",
+			text: "export function foo() {}",
+			isError: false,
+			ts: Date.now(),
+		};
+		fs.writeFileSync(transcriptPath, `${JSON.stringify(record)}\n`);
+		await new Promise((r) => setTimeout(r, 350));
+
+		const run = manager.getRun("run-result");
+		const agent = run?.snapshot.agents.find((a) => a.id === 1);
+		const entry = agent?.history?.[0];
+		expect(entry).toBeDefined();
+		expect(entry?.role).toBe("toolResult");
+		expect(entry?.text).toBe("export function foo() {}");
+		expect(entry?.text).not.toBe("[]");
+
+		manager.markAgentEnd("run-result", 1, "done");
+	});
+
+	it("records assistant text messages (not just tool calls)", async () => {
+		const transcriptPath = path.join(tempDir, "transcript-text.jsonl");
+		fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+		manager.registerRun("run-text", { name: "test" });
+		manager.markAgentStart("run-text", 0, {
+			id: 1,
+			label: "Agent 1",
+			prompt: "do work",
+			status: "running",
+			transcriptPath,
+		});
+
+		const toolRecord = { version: 1, recordType: "tool_start", toolName: "bash", argsPreview: "ls", ts: Date.now() };
+		const textRecord = { version: 1, recordType: "message", role: "assistant", text: "Here is my plan for the task.", ts: Date.now() };
+		fs.writeFileSync(transcriptPath, `${JSON.stringify(toolRecord)}\n${JSON.stringify(textRecord)}\n`);
+		await new Promise((r) => setTimeout(r, 350));
+
+		const run = manager.getRun("run-text");
+		const agent = run?.snapshot.agents.find((a) => a.id === 1);
+		expect(agent?.history?.length).toBe(2);
+		const textEntry = agent?.history?.find((e) => e.role === "assistant" && "kind" in e && e.kind === "text");
+		expect(textEntry).toBeDefined();
+		expect(textEntry?.text).toBe("Here is my plan for the task.");
+
+		manager.markAgentEnd("run-text", 1, "done");
+	});
+
+	it("does not record duplicate entries for the same transcript line", async () => {
+		const transcriptPath = path.join(tempDir, "transcript-dedup.jsonl");
+		fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+		manager.registerRun("run-dedup", { name: "test" });
+		manager.markAgentStart("run-dedup", 0, {
+			id: 1,
+			label: "Agent 1",
+			prompt: "do work",
+			status: "running",
+			transcriptPath,
+		});
+
+		const record = { version: 1, recordType: "tool_start", toolName: "bash", argsPreview: "echo hi", ts: Date.now() };
+		fs.writeFileSync(transcriptPath, `${JSON.stringify(record)}\n`);
+
+		// Wait through multiple poll cycles — the byte offset tracking should
+		// prevent re-reading the same line more than once.
+		await new Promise((r) => setTimeout(r, 700));
+
+		const run = manager.getRun("run-dedup");
+		const agent = run?.snapshot.agents.find((a) => a.id === 1);
+		expect(agent?.history?.length).toBe(1);
+
+		manager.markAgentEnd("run-dedup", 1, "done");
+	});
+
 	it("pauses, resumes, and stops active run", () => {
 		const abortController = new AbortController();
 		manager.registerRun("run-1", { name: "test" }, abortController);

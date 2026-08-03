@@ -354,34 +354,13 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 				if (!snapshot.phases.includes(title)) snapshot.phases.push(title);
 			};
 
-			const onSubagentEvent = (ev: Record<string, unknown>) => {
-				if (!workflowManager) return;
-				const currentAgent = [...snapshot.agents].reverse().find((a) => a.status === "running");
-				if (!currentAgent) return;
-
-				const evType = String(ev.type || "");
-				if (evType === "tool_execution_start" || evType === "tool_call") {
-					const toolName = String(ev.toolName || ev.tool || "tool");
-					const args = typeof ev.args === "string" ? ev.args : JSON.stringify(ev.args || {});
-					workflowManager.recordAgentHistory(runId, currentAgent.id, {
-						role: "assistant",
-						kind: "toolCall",
-						toolName,
-						args,
-						path: ev.path as string | undefined,
-						text: `Tool call: ${toolName}`,
-					});
-				} else if (evType === "tool_result" || evType === "tool_result_end") {
-					const toolName = String(ev.toolName || ev.tool || "tool");
-					const text = typeof ev.output === "string" ? ev.output : JSON.stringify(ev.output || {});
-					workflowManager.recordAgentHistory(runId, currentAgent.id, {
-						role: "tool",
-						toolName,
-						text,
-						diff: ev.diff as string | undefined,
-					});
-				}
-			};
+			// NOTE: agent history (tool calls, results, assistant text) is recorded
+			// exclusively by WorkflowManager.watchTranscript(), which tails each
+			// agent's transcript.jsonl file (see markAgentStart()). We intentionally
+			// do NOT also record history here from the live onEvent stream — doing so
+			// previously caused every tool call/result to be recorded twice (once
+			// live, once from the transcript tail), producing garbled duplicate
+			// entries in the /workflows history pager.
 
 			const forkContext: ForkContextOptions | undefined = ctx.model
 				? {
@@ -396,7 +375,7 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 				agentScope,
 				options.runSingleAgent,
 				ctx.sessionManager.getSessionId(),
-				onSubagentEvent,
+				undefined,
 				runId,
 				forkContext,
 			);
