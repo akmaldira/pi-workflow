@@ -73,6 +73,7 @@ export interface ChildTranscriptWriter {
 	writeStderrLine(line: string): void;
 	writeStderrText(text: string): void;
 	getError(): string | undefined;
+	close(): void;
 }
 
 function errorMessage(error: unknown): string {
@@ -272,6 +273,11 @@ export function createChildTranscriptWriter(input: ChildTranscriptWriterInput): 
 		},
 		getError() {
 			return writeError;
+		},
+		close() {
+			// Writes are synchronous (fs.appendFileSync), so there is no buffer to
+			// flush. This is a no-op kept for interface symmetry with JsonlWriter
+			// and to satisfy callers that unconditionally invoke close().
 		},
 	};
 }

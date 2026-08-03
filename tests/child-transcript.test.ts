@@ -117,4 +117,16 @@ describe("child-transcript", () => {
 		expect(toolStart.toolName).toBe("read");
 		expect(toolStart.argsPreview).toContain("foo.ts");
 	});
+
+	it("exposes a close() method that does not throw", () => {
+		// Regression test: execution.ts unconditionally calls
+		// shared.transcriptWriter?.close() after every agent run. The writer
+		// previously had no close() method at all, which threw
+		// "shared.transcriptWriter?.close is not a function" and clobbered the
+		// real agent result with that error message (surfaced in the
+		// /workflows pager "Result:" section).
+		const writer = createChildTranscriptWriter({ transcriptPath, source: "workflow", runId: "r1", agent: "worker" });
+		expect(typeof writer.close).toBe("function");
+		expect(() => writer.close()).not.toThrow();
+	});
 });
