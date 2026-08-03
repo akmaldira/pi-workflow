@@ -16,6 +16,7 @@ import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import type { WorkflowManager } from "./workflow-manager.ts";
 import { getArtifactPaths } from "./artifacts.ts";
 import type { ForkContextOptions } from "./types.ts";
+import { TechnicalFailureError } from "./failure-classifier.ts";
 
 const workflowToolSchema = Type.Object({
 	script: Type.String({
@@ -92,6 +93,7 @@ function createWorkflowAgentRunner(
 			index?: number;
 			context?: "fresh" | "fork";
 			forkContext?: ForkContextOptions;
+			label?: string;
 		},
 	) => Promise<string>,
 	parentSessionId?: string,
@@ -132,6 +134,7 @@ function createWorkflowAgentRunner(
 				onEvent,
 				context: options.context,
 				forkContext,
+				label: options.label,
 			});
 		},
 	};
@@ -286,6 +289,7 @@ export interface WorkflowToolOptionsFull extends WorkflowToolOptions {
 			index?: number;
 			context?: "fresh" | "fork";
 			forkContext?: ForkContextOptions;
+			label?: string;
 		},
 	) => Promise<string>;
 }
@@ -330,13 +334,24 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 
 			const workflowManager = options.workflowManager;
 			const runId = params.resumeRunId || `wf-${Date.now()}`;
+			// The WorkflowManager owns an AbortController for this run so the
+			// /workflows TUI's "stop" action (and any programmatic abort, e.g. an
+			// auto-abort on a technical subagent failure) can cancel the run.
+			// effectiveSignal combines the tool-call's own signal (aborted if the
+			// main agent cancels the tool call) with the manager's controller
+			// (aborted by stopRun()/auto-abort) so runWorkflow() reacts to either.
+			let effectiveSignal = signal;
+			let runAbortController: AbortController | undefined;
 			if (workflowManager) {
 				if (params.journalDir) workflowManager.setJournalDir(params.journalDir);
-				const abortController = new AbortController();
+				runAbortController = new AbortController();
 				if (signal) {
-					signal.addEventListener("abort", () => abortController.abort());
+					signal.addEventListener("abort", () => runAbortController?.abort());
 				}
-				workflowManager.registerRun(runId, parsed.meta, abortController);
+				workflowManager.registerRun(runId, parsed.meta, runAbortController);
+				effectiveSignal = signal
+					? AbortSignal.any([signal, runAbortController.signal])
+					: runAbortController.signal;
 			}
 
 			const update = () => {
@@ -380,18 +395,34 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 				forkContext,
 			);
 
+			let technicalFailure: { agentLabel: string; failureCode: string; failureReason: string } | undefined;
+
 			let result: WorkflowRunResult;
 			try {
 				result = await runWorkflow(script, {
 					cwd: options.cwd ?? ctx.cwd,
 					args: params.args,
-					signal,
+					signal: effectiveSignal,
 					concurrency: options.concurrency,
 					maxConcurrent: options.maxConcurrent,
 					maxAgents: params.maxAgents,
 					tokenBudget: params.tokenBudget,
 					scriptTimeoutMs: params.scriptTimeoutMs,
 					agentRunner,
+					onTechnicalFailure(error) {
+						// Abort the workflow run immediately: this SIGTERMs any
+						// sibling subagents still in flight (via effectiveSignal,
+						// which threads down to execution.ts's spawned child
+						// processes) rather than letting them run to completion
+						// after the failure is already known to be unrecoverable.
+						const techError = error as TechnicalFailureError;
+						technicalFailure = {
+							agentLabel: techError.agentLabel,
+							failureCode: techError.failureCode,
+							failureReason: techError.failureReason,
+						};
+						runAbortController?.abort();
+					},
 					onLog(message) {
 						snapshot.logs.push(message);
 						if (workflowManager) workflowManager.log(runId, message);
@@ -405,7 +436,7 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 						update();
 					},
 					onAgentStart(event) {
-						if (signal?.aborted) throw new Error("Workflow was aborted");
+						if (effectiveSignal?.aborted) throw new Error("Workflow was aborted");
 						recordPhase(event.phase);
 						const agentId = snapshot.agents.length + 1;
 						const artifactsDir = path.join(options.cwd ?? ctx.cwd, ".pi-workflow", "artifacts");
@@ -443,10 +474,46 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 				});
 			} catch (error) {
 				console.error("[Workflow Error]", error);
+
+				if (technicalFailure) {
+					// A subagent hit a technical failure (LLM provider error, process
+					// crash, protocol limit — see failure-classifier.ts). The workflow
+					// was auto-aborted (sibling subagents SIGTERM'd via
+					// runAbortController) rather than letting them keep running or
+					// letting a dependent agent() call consume a corrupted result.
+					// Mark any still-running agents as skipped/aborted-by-dependency
+					// (distinct from the agent that actually failed, which already has
+					// its own status/error from onAgentEnd/markAgentEnd).
+					for (const a of snapshot.agents) {
+						if (a.status === "running") {
+							a.status = "skipped";
+							a.error = "Workflow stopped: a sibling agent hit a technical failure";
+						}
+					}
+					snapshot = recomputeWorkflowSnapshot(snapshot);
+					const failureMessage =
+						`Workflow "${parsed.meta.name}" stopped: agent "${technicalFailure.agentLabel}" hit a technical failure ` +
+						`(${technicalFailure.failureCode}): ${technicalFailure.failureReason}\n\n` +
+						`This was classified as a technical/infrastructure failure (not a normal agent-level error, e.g. failing tests), ` +
+						`so the workflow was stopped and remaining subagents were cancelled to avoid wasting work on corrupted input.\n\n` +
+						`Run ID: ${runId}. Use the workflow_status tool with this runId to inspect the failing agent's full result, error, and tool-call history before deciding how to proceed ` +
+						`(e.g. retry, fix the workflow script, or wait and re-run if this looks like a transient provider outage).`;
+					if (workflowManager) {
+						workflowManager.completeRun(runId, undefined, failureMessage);
+					}
+					if (onUpdate) {
+						onUpdate({
+							content: [{ type: "text" as const, text: renderWorkflowText(snapshot, true, displayOptions) }],
+							details: snapshot,
+						});
+					}
+					throw new Error(failureMessage);
+				}
+
 				if (workflowManager) {
 					workflowManager.completeRun(runId, undefined, error instanceof Error ? error.message : String(error));
 				}
-				if (signal?.aborted || isAbortError(error)) {
+				if (effectiveSignal?.aborted || isAbortError(error)) {
 					for (const agent of snapshot.agents) {
 						if (agent.status === "running") {
 							agent.status = "skipped";

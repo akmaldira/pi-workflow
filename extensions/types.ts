@@ -374,6 +374,18 @@ export interface SingleResult {
 	transcriptError?: string;
 	capabilityCeiling?: ResolvedSubagentCapabilityCeiling;
 	capabilityAudit?: SubagentCapabilityAudit;
+	/** POSIX signal that terminated the child process, if any (e.g. "SIGKILL" from an OOM kill). */
+	exitSignal?: string | null;
+	/**
+	 * Classification of this result's failure, if any: "technical" (LLM
+	 * provider error, process crash, infra problem — should abort a workflow)
+	 * vs "agent" (the agent ran but its own work has errors, e.g. failed
+	 * tests — should NOT abort a workflow) vs "none" (success). Populated by
+	 * runSingleAgent() via classifySingleResultFailure().
+	 */
+	failureClass?: "technical" | "agent" | "none";
+	failureReason?: string;
+	failureCode?: string;
 }
 
 export interface ArtifactPaths {

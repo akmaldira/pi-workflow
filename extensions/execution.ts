@@ -64,6 +64,7 @@ import {
 	formatModelAttemptNote,
 	isRetryableModelFailure,
 } from "./model-fallback.ts";
+import { classifySingleResultFailure } from "./failure-classifier.ts";
 import {
 	createMutatingFailureState,
 	didMutatingToolFail,
@@ -471,6 +472,7 @@ async function runSingleAttempt(
 	progress.status = "completed";
 	progress.durationMs = Date.now() - startTime;
 	result.exitCode = exitCode ?? 1;
+	result.exitSignal = exitSignal;
 
 	if (options.signal?.aborted) {
 		result.interrupted = true;
@@ -668,7 +670,7 @@ export async function runSingleAgent(
 
 	jsonlWriter?.close();
 
-	return lastResult ?? {
+	const finalResult = lastResult ?? {
 		agent: agent.name,
 		task,
 		exitCode: 1,
@@ -676,6 +678,17 @@ export async function runSingleAgent(
 		usage: emptyUsage(),
 		error: "No model candidates available",
 	};
+
+	if (finalResult.exitCode !== 0 || finalResult.error || finalResult.errorMessage) {
+		const classification = classifySingleResultFailure(finalResult, finalResult.exitSignal);
+		finalResult.failureClass = classification.class;
+		finalResult.failureReason = classification.reason;
+		finalResult.failureCode = classification.code;
+	} else {
+		finalResult.failureClass = "none";
+	}
+
+	return finalResult;
 }
 
 export async function buildSystemPrompt(agent: AgentConfig, cwd: string, options: RunSyncOptions): Promise<{ prompt: string; notes: string[]; parentSessionFile?: string }> {

@@ -19,6 +19,7 @@ import { createWorkflowTool } from "./workflow-tool.ts";
 import { runSingleAgent } from "./execution.ts";
 import type { SingleResult, ForkContextOptions } from "./types.ts";
 import { getFinalOutput } from "./utils.ts";
+import { TechnicalFailureError } from "./failure-classifier.ts";
 import { WorkflowManager } from "./workflow-manager.ts";
 import { openWorkflowNavigator } from "./workflow-ui.ts";
 import { registerTaskPanel } from "./task-panel.ts";
@@ -113,7 +114,7 @@ const SubagentParams = Type.Object({
  * Run a single subagent and return just the output text.
  * Used by the workflow tool's agent() global.
  */
-async function runSubagentForWorkflow(
+export async function runSubagentForWorkflow(
 	cwd: string,
 	agent: AgentConfig,
 	task: string,
@@ -125,6 +126,7 @@ async function runSubagentForWorkflow(
 		index?: number;
 		context?: "fresh" | "fork";
 		forkContext?: ForkContextOptions;
+		label?: string;
 	},
 ): Promise<string> {
 	const runId = options.runId ?? `workflow-${Date.now()}`;
@@ -148,7 +150,135 @@ async function runSubagentForWorkflow(
 			cleanupDays: 7,
 		},
 	});
+	// A "technical" failure (LLM provider error, process crash, protocol
+	// limit, etc. — see failure-classifier.ts) is not something the workflow
+	// script should be allowed to silently swallow into a garbage/error-text
+	// result: throw so agent() in workflow.ts halts the whole run instead of
+	// letting a downstream agent() call consume corrupted input.
+	if (result.failureClass === "technical") {
+		throw new TechnicalFailureError(
+			options.label || agent.name,
+			{
+				class: "technical",
+				code: (result.failureCode as any) ?? "provider-error",
+				reason: result.failureReason || result.error || result.errorMessage || "Unknown technical failure",
+			},
+			runId,
+		);
+	}
 	return getResultOutput(result);
+}
+
+const WorkflowStatusParams = Type.Object({
+	runId: Type.String({ description: "The workflow run ID to inspect (e.g. as reported in a workflow's failure message or from /workflows)." }),
+	agentId: Type.Optional(
+		Type.Number({ description: "If provided, return full detail (prompt, result, error, tool-call/output history) for just this one agent. Otherwise returns a summary of all agents in the run." }),
+	),
+	historyLimit: Type.Optional(
+		Type.Number({ description: "Max number of history entries to return per agent when agentId is provided (default 100; entries are chronological, so this trims from the end)." }),
+	),
+});
+
+export function summarizeHistoryEntry(entry: { role: string; text?: string; toolName?: string; args?: string; isError?: boolean; kind?: string }): string {
+	if (entry.role === "assistant" && entry.kind === "toolCall") {
+		return `\u2192 ${entry.toolName}${entry.args ? `(${entry.args})` : ""}`;
+	}
+	if (entry.role === "tool" || entry.role === "toolResult") {
+		const tag = entry.isError ? " [error]" : "";
+		return `\u2190 ${entry.toolName}${tag}: ${(entry.text || "").slice(0, 500)}`;
+	}
+	if (entry.role === "assistant") return `[assistant] ${(entry.text || "").slice(0, 1000)}`;
+	if (entry.role === "user") return `[user] ${(entry.text || "").slice(0, 500)}`;
+	return `[${entry.role}] ${(entry.text || "").slice(0, 500)}`;
+}
+
+export function registerWorkflowStatusTool(pi: ExtensionAPI, workflowManager: WorkflowManager) {
+	pi.registerTool({
+		name: "workflow_status",
+		label: "Workflow Status",
+		description: [
+			"Investigate a workflow run's status, errors, and agent history programmatically \u2014 without needing the interactive /workflows TUI.",
+			"Use this after a workflow tool call reports a failure (especially a technical failure) to inspect exactly which agent failed, why, and what it was doing.",
+			"Call with just runId for a summary of every agent's status/error. Call with runId + agentId for one agent's full prompt, result, error, and tool-call/output history.",
+		].join(" "),
+		parameters: WorkflowStatusParams,
+		async execute(_toolCallId, params) {
+			const run = workflowManager.getRun(params.runId);
+			if (!run) {
+				const persisted = workflowManager.listRuns().find((r) => r.runId === params.runId);
+				if (!persisted) {
+					return {
+						content: [{ type: "text", text: `No workflow run found with runId "${params.runId}". It may have completed and been pruned, or the ID is incorrect.` }],
+						details: { found: false },
+					};
+				}
+				const lines = [
+					`Workflow "${persisted.workflowName}" (${params.runId}) \u2014 status: ${persisted.status}`,
+					`Total tokens: ${persisted.totalTokens}, duration: ${persisted.durationMs}ms`,
+					"",
+					"Agents:",
+					...persisted.agents.map((a) => `  #${a.id} [${a.status}] ${a.label}${a.error ? ` \u2014 ERROR: ${a.error}` : ""}`),
+				];
+				return { content: [{ type: "text", text: lines.join("\n") }], details: { found: true, persisted: true, run: persisted } };
+			}
+
+			const snapshot = run.snapshot;
+
+			if (params.agentId !== undefined) {
+				const agent = snapshot.agents.find((a) => a.id === params.agentId);
+				if (!agent) {
+					return {
+						content: [{ type: "text", text: `No agent with id ${params.agentId} found in run "${params.runId}". Known agent IDs: ${snapshot.agents.map((a) => a.id).join(", ") || "(none)"}` }],
+						details: { found: false },
+					};
+				}
+				const limit = params.historyLimit ?? 100;
+				const history = (agent.history ?? []).slice(0, limit);
+				const truncatedNote = (agent.history?.length ?? 0) > limit ? `\n\n... (${(agent.history?.length ?? 0) - limit} more history entries not shown; increase historyLimit to see more)` : "";
+				const resultText = agent.result !== undefined && agent.result !== null
+					? (typeof agent.result === "string" ? agent.result : JSON.stringify(agent.result, null, 2))
+					: (agent.resultPreview || "(no result yet)");
+				const lines = [
+					`Agent #${agent.id} "${agent.label}" (phase: ${agent.phase ?? "(none)"}) \u2014 status: ${agent.status}`,
+					agent.model ? `Model: ${agent.model}` : undefined,
+					agent.error ? `Error: ${agent.error}` : undefined,
+					"",
+					"Prompt:",
+					agent.prompt || "(none)",
+					"",
+					"Result:",
+					resultText,
+					"",
+					`History (${history.length}${(agent.history?.length ?? 0) > history.length ? ` of ${agent.history?.length}` : ""} entries):`,
+					...history.map((e) => "  " + summarizeHistoryEntry(e as any)),
+				].filter((l): l is string => l !== undefined);
+				return {
+					content: [{ type: "text", text: lines.join("\n") + truncatedNote }],
+					details: { found: true, agent },
+				};
+			}
+
+			const lines = [
+				`Workflow "${snapshot.meta.name}" (${params.runId}) \u2014 status: ${snapshot.status}`,
+				snapshot.error ? `Run error: ${snapshot.error}` : undefined,
+				`Total agents: ${snapshot.totalAgents}, tokens: ${snapshot.totalTokens}`,
+				"",
+				"Agents:",
+				...snapshot.agents.map((a) => {
+					const errSuffix = a.error ? ` \u2014 ERROR: ${a.error}` : "";
+					const resultSuffix = !a.error && a.resultPreview ? ` \u2014 ${a.resultPreview}` : "";
+					return `  #${a.id} [${a.status}] ${a.label} (phase: ${a.phase ?? "(none)"})${errSuffix}${resultSuffix}`;
+				}),
+				"",
+				"Pass agentId to this tool to get one agent's full prompt, result, and tool-call/output history.",
+			].filter((l): l is string => l !== undefined);
+
+			return {
+				content: [{ type: "text", text: lines.join("\n") }],
+				details: { found: true, run: snapshot },
+			};
+		},
+	});
 }
 
 export default function (pi: ExtensionAPI) {
@@ -340,6 +470,7 @@ export default function (pi: ExtensionAPI) {
 		workflowManager: globalWorkflowManager,
 	});
 	pi.registerTool(workflowTool);
+	registerWorkflowStatusTool(pi, globalWorkflowManager);
 
 	// --- Commands ---
 	pi.registerCommand("workflows", {

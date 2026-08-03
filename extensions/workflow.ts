@@ -13,6 +13,7 @@ import { parse } from "acorn";
 import type { AgentConfig } from "./agents.ts";
 import { RunJournal, hashString, agentCallKey } from "./journal.ts";
 import type { JournalResumeState } from "./journal-types.ts";
+import { TechnicalFailureError } from "./failure-classifier.ts";
 
 export interface WorkflowMetaPhase {
 	title: string;
@@ -59,6 +60,14 @@ export interface WorkflowRunOptions {
 	onPhase?: (title: string) => void;
 	onAgentStart?: (event: { label: string; phase?: string; prompt: string; agentName: string }) => void;
 	onAgentEnd?: (event: { label: string; phase?: string; result: unknown; agentName: string }) => void;
+	/**
+	 * Called when a subagent hits a *technical* failure (LLM provider error,
+	 * process crash — see failure-classifier.ts), just before agent() re-throws
+	 * to halt the workflow. Lets the caller (workflow-tool.ts) trigger its own
+	 * AbortController so sibling in-flight subagents are SIGTERM'd immediately,
+	 * rather than waiting for the throw to unwind through pendingAgentRuns.
+	 */
+	onTechnicalFailure?: (error: Error) => void;
 }
 
 export interface WorkflowRunResult<T = unknown> {
@@ -296,6 +305,21 @@ export async function runWorkflow<T = unknown>(
 				return result;
 			} catch (error) {
 				if (options.signal?.aborted) throw error;
+				// A TechnicalFailureError (LLM provider error, process crash, etc.
+				// — see failure-classifier.ts) is deliberately NOT swallowed like
+				// ordinary agent-level failures. It re-throws to halt the whole
+				// workflow: sibling in-flight subagents are aborted via
+				// onTechnicalFailure (which the caller wires to its
+				// AbortController), and the error propagates out of the sandboxed
+				// script so the workflow run ends with a clear failure reason
+				// instead of silently feeding a broken/garbage result to whatever
+				// agent() call depended on this one.
+				if (error instanceof TechnicalFailureError) {
+					log(`agent ${label} hit a technical failure: ${error.message}`);
+					options.onAgentEnd?.({ label, phase: assignedPhase, result: null, agentName: agentName ?? "default" });
+					options.onTechnicalFailure?.(error);
+					throw error;
+				}
 				log(`agent ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
 				options.onAgentEnd?.({ label, phase: assignedPhase, result: null, agentName: agentName ?? "default" });
 				return null;
@@ -321,6 +345,12 @@ export async function runWorkflow<T = unknown>(
 					return await thunk();
 				} catch (error) {
 					if (options.signal?.aborted) throw error;
+					// Technical failures propagate out of parallel() too, rather
+					// than being swallowed into a per-item {error, ok:false} —
+					// a sibling item's agent() call already triggered the
+					// workflow-level abort via onTechnicalFailure, so this whole
+					// parallel() batch (and the workflow) should stop.
+					if (error instanceof TechnicalFailureError) throw error;
 					log(`parallel[${index}] failed: ${error instanceof Error ? error.message : String(error)}`);
 					return { error: error instanceof Error ? error.message : String(error), ok: false };
 				}
@@ -347,6 +377,9 @@ export async function runWorkflow<T = unknown>(
 						checkLimits();
 					} catch (error) {
 						if (options.signal?.aborted) throw error;
+						// See parallel() above: technical failures propagate rather
+						// than being swallowed into a per-item {error, ok:false}.
+						if (error instanceof TechnicalFailureError) throw error;
 						log(`pipeline[${index}] failed: ${error instanceof Error ? error.message : String(error)}`);
 						return { error: error instanceof Error ? error.message : String(error), ok: false };
 					}

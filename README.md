@@ -202,7 +202,12 @@ If `fork` context can't be produced (e.g. no active session, or summarization fa
 
 ### Error Handling
 
-Failed `agent()`, `parallel()`, or `pipeline()` branches return `null` and log the failure. Check for nulls before synthesizing conclusions:
+`pi-workflow` distinguishes two kinds of subagent failure:
+
+- **Agent-level failures** — the subagent ran, but its own work has errors (a test suite failed, a tool call errored, acceptance validation rejected the output). These are **not** treated as fatal: `agent()`, `parallel()`, or `pipeline()` branches return `null` (or `{ error, ok: false }` for `parallel()`/`pipeline()` items) and log the failure. The workflow keeps running.
+- **Technical failures** — infrastructure problems that make the result untrustworthy: LLM provider errors (rate limits, quota exhaustion, auth failures, timeouts, 5xx responses), the subagent process being killed (e.g. an OOM kill / `SIGKILL`), or protocol-level output limits being exceeded. These **automatically abort the whole workflow run**: any sibling subagents still in flight are cancelled (SIGTERM'd), and the `workflow` tool call fails with a clear message identifying which agent failed and why — instead of silently letting a downstream `agent()` call consume a corrupted/garbage result.
+
+Check for nulls (or inspect the failure text) before synthesizing conclusions from agent-level failures:
 
 ```js
 const result = await agent('scout: Find auth code', { label: 'auth scan' })
@@ -211,6 +216,35 @@ if (!result) {
   // ... fallback logic
 }
 ```
+
+When a technical failure aborts a workflow, the tool call itself throws with a message like:
+
+```
+Workflow "build_app" stopped: agent "backend" hit a technical failure (provider-error): rate limit exceeded
+
+This was classified as a technical/infrastructure failure (not a normal agent-level error, e.g. failing tests),
+so the workflow was stopped and remaining subagents were cancelled to avoid wasting work on corrupted input.
+
+Run ID: wf-1234567890. Use the workflow_status tool with this runId to inspect the failing agent's full result,
+error, and tool-call history before deciding how to proceed (e.g. retry, fix the workflow script, or wait and
+re-run if this looks like a transient provider outage).
+```
+
+#### Investigating a failure: the `workflow_status` tool
+
+Use the `workflow_status` tool (available to the main agent, no TUI required) to inspect a run after a failure:
+
+```
+workflow_status({ runId: "wf-1234567890" })
+```
+
+Returns a summary of every agent's status, phase, and error/result preview. To see one agent's full detail — complete prompt, full (untruncated) result, and its tool-call/output history — pass `agentId`:
+
+```
+workflow_status({ runId: "wf-1234567890", agentId: 2, historyLimit: 200 })
+```
+
+This is the same live data the interactive `/workflows` navigator reads, so it works for both in-progress and completed runs.
 
 ### Advanced: Workflow Options
 

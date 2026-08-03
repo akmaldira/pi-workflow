@@ -108,6 +108,34 @@ await agent('worker: run an isolated audit', { context: 'fresh' })
 
 If fork context can't be produced (no active session, or summarization fails), the subagent silently runs fresh instead — it never blocks or throws.
 
+## Error Handling: Agent-Level vs Technical Failures
+
+Two kinds of subagent failure are handled differently:
+
+- **Agent-level** (the agent ran, but its own work has errors — failing tests, a tool error, rejected acceptance): `agent()` returns `null` and logs the failure. The workflow keeps running — always check for `null` before using a result downstream.
+- **Technical** (LLM provider errors, rate limits, quota exhaustion, process crashes/OOM kills, protocol output limits): the whole workflow run is **automatically aborted**. Any sibling subagents still running are cancelled, and the `workflow` tool call fails with a message naming the failing agent, the failure reason, and the `runId` to investigate further.
+
+```javascript
+const result = await agent('scout: find security issues');
+if (!result) {
+  log('scout failed (agent-level) — continuing without findings');
+}
+```
+
+If you see a workflow tool call fail with "hit a technical failure", **do not** assume the workflow script is broken — it's usually transient infrastructure (rate limit, provider outage, OOM). Use `workflow_status` to inspect before retrying or editing the script.
+
+### Investigating a failed run: `workflow_status`
+
+```
+workflow_status({ runId: "wf-1234567890" })
+```
+Summarizes every agent's status/error/result preview in the run.
+
+```
+workflow_status({ runId: "wf-1234567890", agentId: 2 })
+```
+Returns one agent's full prompt, complete (untruncated) result, and tool-call/output history — use this to see exactly what a failing (or any) agent did before it failed, without needing the interactive `/workflows` TUI.
+
 ## Common Patterns
 
 ### Delegate to a specialized agent
