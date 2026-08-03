@@ -209,6 +209,19 @@ function asText(v: unknown): string {
 }
 
 /**
+ * Render an agent's full result for the pager's Result section. Prefers the
+ * untruncated `agent.result` (raw string output, or JSON-stringified for
+ * non-string values) over `agent.resultPreview`, which is intentionally
+ * clipped to ~60 characters for compact views and log lines.
+ */
+function fullResultText(agent: WorkflowAgentSnapshot): string {
+	if (agent.result !== undefined && agent.result !== null) {
+		return typeof agent.result === "string" ? agent.result : JSON.stringify(agent.result, null, 2);
+	}
+	return agent.resultPreview || "";
+}
+
+/**
  * Push a (possibly multi-line) block of text into `body` as separate rows.
  *
  * The navigator renderer treats every `body[]` element as exactly one
@@ -567,10 +580,14 @@ export function renderNavigatorFrame(
 				pushTextBlock(body, "  ", asText(agent.prompt || ""));
 				body.push("");
 				body.push(accent(theme.bold("Result:")));
+				// Render the full stored result (not the truncated resultPreview) in
+				// the full pager view — there is room to show the complete agent
+				// output here, whereas resultPreview is intentionally clipped to ~60
+				// chars for compact views/log lines.
 				const resultText = agent.error
 					? theme.fg("error", asText(agent.error))
-					: asText(agent.resultPreview || "(no result yet)");
-				pushTextBlock(body, "  ", resultText, "  ", 60);
+					: asText(fullResultText(agent) || "(no result yet)");
+				pushTextBlock(body, "  ", resultText, "  ", 200);
 				if (agent.history && agent.history.length > 0) {
 					body.push("");
 					body.push(accent(theme.bold("History:")));

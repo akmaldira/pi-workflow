@@ -429,6 +429,10 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 							.find((a) => a.label === event.label && a.status === "running");
 						if (agent) {
 							agent.status = event.result === null ? "error" : "done";
+							// Store the full result alongside the truncated preview so the
+							// /workflows pager's Result section can render the complete agent
+							// output instead of only the first ~60 characters.
+							agent.result = event.result;
 							agent.resultPreview = preview(event.result);
 							if (workflowManager) {
 								workflowManager.markAgentEnd(runId, agent.id, agent.status === "error" ? "error" : "done", event.result);

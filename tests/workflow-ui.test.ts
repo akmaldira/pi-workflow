@@ -308,4 +308,49 @@ describe("renderNavigatorText", () => {
 		expect(lines.length).toBeLessThan(500);
 		expect(lines.some((l) => l.includes("truncated"))).toBe(true);
 	});
+
+	it("shows the full agent result in the pager, not just the ~60-char resultPreview", () => {
+		// Regression test: markAgentEnd() only ever set agent.resultPreview
+		// (aggressively truncated to ~60 chars via preview()), never
+		// agent.result. The pager's Result section rendered resultPreview even
+		// though it had plenty of room to show the full output, so agents
+		// with substantial output (e.g. a JSON design doc) appeared to have
+		// no real output at all \u2014 only a truncated fragment, with the real
+		// text buried at the bottom of the History list.
+		const manager = new WorkflowManager();
+		manager.registerRun("run-fullresult", {
+			name: "fullresult_wf",
+			phases: [{ title: "Phase 1" }],
+		});
+
+		manager.markAgentStart("run-fullresult", 0, {
+			id: 1,
+			label: "Worker Agent",
+			phase: "Phase 1",
+			prompt: "Design the backend",
+			status: "running",
+		});
+
+		const longResult = JSON.stringify({
+			status: "ok",
+			design: "Backend REST API with in-memory persistence and seed data",
+			endpoints: ["GET /api/pages", "GET /api/pages/search", "GET /api/pages/:id", "POST /api/pages"],
+		});
+		expect(longResult.length).toBeGreaterThan(60);
+
+		manager.markAgentEnd("run-fullresult", 1, "done", longResult);
+
+		const state = new NavigatorState();
+		const model = new NavigatorModel(manager);
+		state.drill(model);
+		state.drill(model);
+		state.drill(model);
+		state.togglePager();
+
+		const lines = renderNavigatorText(state, model, 200, 100);
+		const rendered = lines.join("\n");
+
+		expect(rendered).toContain(longResult);
+		expect(rendered).not.toContain("\u2026");
+	});
 });

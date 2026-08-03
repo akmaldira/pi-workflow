@@ -129,7 +129,10 @@ export class WorkflowManager extends EventEmitter {
 		const agent = run.snapshot.agents.find((a) => a.id === agentId);
 		if (agent) {
 			agent.status = status;
-			if (result !== undefined) agent.resultPreview = preview(result);
+			if (result !== undefined) {
+				agent.result = result;
+				agent.resultPreview = preview(result);
+			}
 			if (error !== undefined) agent.error = error;
 			if (tokens !== undefined) {
 				agent.outputTokens = tokens;
