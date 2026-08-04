@@ -5,7 +5,7 @@
  *        ◀──esc───        ◀──esc────         ◀──esc────
  *
  * Keys: ↑/↓ (or j/k) select · enter/→ drill in · esc/← back (esc at top closes)
- *       On runs: p pause · x stop · r resume · q quit
+ *       On runs: p pause · x stop · r resume · s save workflow script · q quit
  */
 
 import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
@@ -13,6 +13,7 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 import { parseKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { WorkflowManager, PersistedRun, ManagedRun } from "./workflow-manager.ts";
 import type { WorkflowAgentSnapshot, AgentHistoryEntry } from "./workflow-display-types.ts";
+import { saveWorkflowScript } from "./workflow-library.ts";
 
 export type ViewKind = "runs" | "phases" | "agents" | "detail";
 
@@ -346,6 +347,7 @@ export type NavAction =
 	| { type: "pause" }
 	| { type: "stop" }
 	| { type: "resume" }
+	| { type: "save" }
 	| { type: "none" };
 
 export function keyToAction(data: string, kind: ViewKind): NavAction {
@@ -396,6 +398,8 @@ export function keyToAction(data: string, kind: ViewKind): NavAction {
 			return { type: "stop" };
 		case "r":
 			return { type: "resume" };
+		case "s":
+			return { type: "save" };
 		default:
 			return { type: "none" };
 	}
@@ -476,7 +480,7 @@ export function renderNavigatorFrame(
 		}
 
 		lines.push("");
-		lines.push(dim("↑/↓ select · enter open · p pause · x stop · r resume · q quit"));
+		lines.push(dim("↑/↓ select · enter open · p pause · x stop · r resume · s save · q quit"));
 
 	} else if ((state.kind === "phases" || state.kind === "agents") && state.runId) {
 		const phases = model.phases(state.runId);
@@ -560,8 +564,8 @@ export function renderNavigatorFrame(
 		lines.push("");
 		lines.push(dim(
 			inAgents
-				? "enter open detail · esc back · ↑/↓ select · q quit"
-				: "enter select phase · esc back · ↑/↓ select · q quit"
+				? "enter open detail · esc back · ↑/↓ select · s save · q quit"
+				: "enter select phase · esc back · ↑/↓ select · s save · q quit"
 		));
 
 	} else if (state.kind === "detail" && state.runId && state.agentId !== undefined) {
@@ -634,7 +638,7 @@ export function renderNavigatorFrame(
 		lines.push("");
 		lines.push(dim(state.pagerOpen
 			? "↑/↓ scroll · g/G ends · t tail · enter close pager · esc back"
-			: "enter open pager · t tail · esc back · q quit"
+			: "enter open pager · t tail · s save workflow · esc back · q quit"
 		));
 	}
 
@@ -681,6 +685,42 @@ function scrollWindow(total: number, active: number, cap: number): { start: numb
 	if (active < start) start = active;
 	if (active >= start + cap) start = active - cap + 1;
 	return { start, count: cap, more: start + cap < total };
+}
+
+/**
+ * Save the workflow script for a given run to the project-local library
+ * (.pi-workflow/workflows/<meta.name>.js), so it can be re-run later via
+ * the workflow tool's `loadWorkflow` parameter without rewriting it.
+ *
+ * The raw script text is only kept in-memory on the ManagedRun (see
+ * WorkflowManager.registerRun/getRunSource) — it is intentionally never
+ * written to the journal (only a hash is, for cache invalidation), so this
+ * only works for runs still tracked live in this process, not ones
+ * restored purely from a persisted journal after a restart.
+ */
+export async function saveRunWorkflow(manager: WorkflowManager, runId: string, ui: ExtensionUIContext): Promise<void> {
+	const run = manager.getRun(runId);
+	const source = manager.getRunSource(runId);
+	if (!source) {
+		ui.notify(
+			run
+				? "Can't save this workflow: its script is no longer available in memory (only possible right after it starts in this session)."
+				: "Can't save this workflow: it's a persisted run from a prior session, and only a hash of its script (not the script itself) is stored in the journal.",
+			"warning",
+		);
+		return;
+	}
+	const meta = run?.snapshot.meta;
+	if (!meta) {
+		ui.notify("Can't save this workflow: missing metadata.", "warning");
+		return;
+	}
+	try {
+		const saved = saveWorkflowScript(source.cwd, source.script, meta);
+		ui.notify(`Saved workflow "${saved.name}" — rerun it anytime with loadWorkflow: "${saved.name}".`, "info");
+	} catch (err) {
+		ui.notify(`Failed to save workflow: ${err instanceof Error ? err.message : String(err)}`, "error");
+	}
 }
 
 export function openWorkflowNavigator(
@@ -797,6 +837,11 @@ export function openWorkflowNavigator(
 							if (state.runId) manager.resumeRun(state.runId);
 							rerender();
 							break;
+						case "save": {
+							const targetRunId = state.kind === "runs" ? runs[state.cursor]?.runId : state.runId;
+							if (targetRunId) void saveRunWorkflow(manager, targetRunId, ui);
+							break;
+						}
 						case "toggleTail":
 							state.toggleTail();
 							rerender();

@@ -300,6 +300,8 @@ If `loadWorkflow` doesn't match anything saved, the tool throws an error listing
 
 Use `/saved-workflows` to list everything saved in the current project (name, description, `whenToUse`, save timestamp), or `/saved-workflows delete <name>` to remove one. Saved workflow files are plain JS with a small header comment — you can also hand-edit them directly in `.pi-workflow/workflows/`.
 
+**Saving from the `/workflows` TUI:** you don't need to ask the agent to pass `saveWorkflow: true` up front — open `/workflows`, select a run (from the runs list, or drilled into its phases/agents/detail view), and press `s` to save its script to the library right there. This works for any run still live in the current session (its script is kept in memory on the run, never written to the journal), so you can decide to save a workflow *after* seeing that it worked well, without re-running it. Runs restored purely from a persisted journal (e.g. after restarting pi) can't be saved this way, since only a hash of the script — not the script itself — is journaled; only `s`'s not-available warning will show in that case.
+
 > Note: this is separate from journal-based resume (`journalDir`/`resumeRunId` above), which caches *agent results* within a single logical run. Saving a workflow persists the *script itself* for reuse across entirely new runs.
 
 ### Git Worktree Isolation

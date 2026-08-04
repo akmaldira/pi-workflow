@@ -19,6 +19,15 @@ export interface ManagedRun {
 	updatedAt: number;
 	journalDir?: string;
 	abortController?: AbortController;
+	/**
+	 * The raw workflow script source and cwd it ran in, kept in-memory only
+	 * (never persisted to the journal) so the /workflows TUI navigator can
+	 * offer "save this workflow for reuse" without the caller having to
+	 * re-supply the script. Only available for runs still tracked in this
+	 * process (i.e. not runs restored from a journal after a restart).
+	 */
+	script?: string;
+	cwd?: string;
 }
 
 export interface PersistedRun {
@@ -49,7 +58,12 @@ export class WorkflowManager extends EventEmitter {
 		return this.journalDir;
 	}
 
-	registerRun(runId: string, meta: WorkflowMeta, abortController?: AbortController): ManagedRun {
+	registerRun(
+		runId: string,
+		meta: WorkflowMeta,
+		abortController?: AbortController,
+		source?: { script?: string; cwd?: string },
+	): ManagedRun {
 		const run: ManagedRun = {
 			runId,
 			status: "running",
@@ -72,11 +86,25 @@ export class WorkflowManager extends EventEmitter {
 			updatedAt: Date.now(),
 			journalDir: this.journalDir,
 			abortController,
+			script: source?.script,
+			cwd: source?.cwd,
 		};
 
 		this.runs.set(runId, run);
 		this.emit("agentStart", { runId });
 		return run;
+	}
+
+	/**
+	 * Get the raw script + cwd a run executed with, if this process still has
+	 * it in memory (see ManagedRun.script). Returns undefined for runs that
+	 * only exist as persisted journal entries (script text isn't journaled,
+	 * only a hash — see journal-types.ts).
+	 */
+	getRunSource(runId: string): { script: string; cwd: string } | undefined {
+		const run = this.runs.get(runId);
+		if (!run?.script || !run.cwd) return undefined;
+		return { script: run.script, cwd: run.cwd };
 	}
 
 	getRun(runId: string): ManagedRun | undefined {

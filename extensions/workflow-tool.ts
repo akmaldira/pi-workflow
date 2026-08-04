@@ -382,7 +382,7 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 				if (signal) {
 					signal.addEventListener("abort", () => runAbortController?.abort());
 				}
-				workflowManager.registerRun(runId, parsed.meta, runAbortController);
+				workflowManager.registerRun(runId, parsed.meta, runAbortController, { script, cwd: runCwd });
 				effectiveSignal = signal
 					? AbortSignal.any([signal, runAbortController.signal])
 					: runAbortController.signal;

@@ -373,4 +373,18 @@ describe("WorkflowManager", () => {
 		expect(runs[0].agents[0].label).toBe("agent 1");
 		expect(runs[0].agents[0].status).toBe("done");
 	});
+
+	it("getRunSource returns the script/cwd a run was registered with", () => {
+		manager.registerRun("run-1", { name: "test" }, undefined, { script: "export const meta = {};", cwd: "/tmp/project" });
+		expect(manager.getRunSource("run-1")).toEqual({ script: "export const meta = {};", cwd: "/tmp/project" });
+	});
+
+	it("getRunSource returns undefined when a run was registered without source info", () => {
+		manager.registerRun("run-1", { name: "test" });
+		expect(manager.getRunSource("run-1")).toBeUndefined();
+	});
+
+	it("getRunSource returns undefined for an unknown runId", () => {
+		expect(manager.getRunSource("does-not-exist")).toBeUndefined();
+	});
 });
