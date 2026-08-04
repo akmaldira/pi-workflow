@@ -84,6 +84,7 @@ return { inventory, summary }
 ### Commands
 
 - `/workflows` — Open the interactive Claude Code-style dynamic workflow TUI navigator (runs ──▶ phases ──▶ agents ──▶ agent detail)
+- `/saved-workflows` — List workflow scripts saved for reuse (`/saved-workflows delete <name>` to remove one)
 - `/agents` — List available subagents with their configurations
 
 ## Dynamic Workflows
@@ -257,6 +258,8 @@ workflow(script, {
   cwd: '/path/to/project',                            // Working directory
   journalDir: '/tmp/pi-workflow-journals',            // Enable journaling/resume
   resumeRunId: 'run-abc123',                          // Resume a previous run by ID
+  saveWorkflow: true,                                  // Persist script to .pi-workflow/workflows/<name>.js
+  loadWorkflow: 'build_docs',                          // Run a previously saved workflow (script optional/ignored)
 })
 ```
 
@@ -276,6 +279,28 @@ return { overview, analysis }
 ```
 
 The journal tracks: script hash (for cache invalidation on edits), total agents spawned, total tokens, and per-agent cached results. When the script changes, the cache is automatically invalidated.
+
+### Saving & Reusing Workflows
+
+A workflow script only exists in-memory for the duration of a `workflow` tool call by default — there is no automatic persistence. To save a script so it can be re-run later without rewriting it, pass `saveWorkflow: true`:
+
+```js
+workflow(script, { saveWorkflow: true })
+```
+
+This writes the script to `.pi-workflow/workflows/<meta.name>.js` in the project (keyed by `meta.name`; saving again under the same name overwrites the previous version — there is no versioning/history). The tool's response includes a note confirming the save and how to re-run it.
+
+To re-run a saved workflow later, pass `loadWorkflow` with the saved name instead of `script`:
+
+```js
+workflow({ loadWorkflow: 'build_docs', args: { repo: 'github.com/bejorock/pi-workflow' } })
+```
+
+If `loadWorkflow` doesn't match anything saved, the tool throws an error listing the names that *are* available, so the agent can self-correct instead of guessing.
+
+Use `/saved-workflows` to list everything saved in the current project (name, description, `whenToUse`, save timestamp), or `/saved-workflows delete <name>` to remove one. Saved workflow files are plain JS with a small header comment — you can also hand-edit them directly in `.pi-workflow/workflows/`.
+
+> Note: this is separate from journal-based resume (`journalDir`/`resumeRunId` above), which caches *agent results* within a single logical run. Saving a workflow persists the *script itself* for reuse across entirely new runs.
 
 ### Git Worktree Isolation
 
@@ -477,12 +502,14 @@ You are an auditor. Complete within 15 turns max.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `script` | string | Required JavaScript workflow script |
+| `script` | string | JavaScript workflow script. Required unless `loadWorkflow` is provided. |
 | `args` | any | Optional JSON value exposed as `args` global |
 | `agentScope` | string | Agent discovery scope (default: `"user"`) |
 | `cwd` | string | Working directory for subagents (default: project root) |
 | `journalDir` | string | Directory for Journaling & Resume persistence |
 | `resumeRunId` | string | Resume ID for cached results (used with journalDir) |
+| `saveWorkflow` | boolean | If `true`, persist `script` to `.pi-workflow/workflows/<meta.name>.js` after a successful run. See [Saving & Reusing Workflows](#saving--reusing-workflows). |
+| `loadWorkflow` | string | Name of a previously saved workflow to run instead of `script`. |
 
 ## Agent Locations
 

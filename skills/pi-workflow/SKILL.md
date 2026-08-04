@@ -52,6 +52,17 @@ workflow(script="export const meta = { name: 'audit', description: 'Security aud
 - `phase('title')` — Create a progress group
 - `log('message')` — Log output
 
+## Saving and Reusing Workflows
+
+Scripts are not persisted automatically — pass `saveWorkflow: true` to save a script for later reuse, and `loadWorkflow` to re-run one without rewriting it:
+
+```
+workflow(script="...", saveWorkflow=true)                         # persists to .pi-workflow/workflows/<meta.name>.js
+workflow(loadWorkflow="audit", args={ repo: "..." })               # re-runs the saved script; `script` not needed
+```
+
+Before writing a new workflow script from scratch, check whether a matching one was already saved (e.g. via `/saved-workflows` or by trying `loadWorkflow` first) — especially if the user asks to "run that workflow again" or describes a repeatable process. If `loadWorkflow` references an unknown name, the tool error lists the names that do exist. Use `saveWorkflow: true` when the user explicitly asks to save a workflow, or when the task is clearly a repeatable process worth reusing later; don't save one-off exploratory workflows by default.
+
 ## Creating Agents
 
 Create agent files in `~/.pi/agent/agents/*.md` (user scope) or `.pi/agents/*.md` (project scope).

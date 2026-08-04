@@ -18,6 +18,7 @@ import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { createWorkflowTool } from "./workflow-tool.ts";
 import { runSingleAgent } from "./execution.ts";
 import type { SingleResult, ForkContextOptions } from "./types.ts";
+import { listSavedWorkflows, deleteSavedWorkflow } from "./workflow-library.ts";
 import { getFinalOutput } from "./utils.ts";
 import { TechnicalFailureError } from "./failure-classifier.ts";
 import { WorkflowManager } from "./workflow-manager.ts";
@@ -481,6 +482,44 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			await openWorkflowNavigator(pi, globalWorkflowManager, ctx.ui);
+		},
+	});
+
+	pi.registerCommand("saved-workflows", {
+		description: "List saved workflows (or `/saved-workflows delete <name>` to remove one)",
+		handler: async (args, ctx) => {
+			const runCwd = ctx.cwd;
+			const trimmed = (args || "").trim();
+			if (trimmed.startsWith("delete ")) {
+				const name = trimmed.slice("delete ".length).trim();
+				if (!name) {
+					ctx.ui.notify("Usage: /saved-workflows delete <name>", "warning");
+					return;
+				}
+				const removed = deleteSavedWorkflow(runCwd, name);
+				ctx.ui.notify(removed ? `Deleted saved workflow "${name}".` : `No saved workflow named "${name}" found.`, removed ? "info" : "warning");
+				return;
+			}
+
+			const saved = listSavedWorkflows(runCwd);
+			if (saved.length === 0) {
+				ctx.ui.notify(
+					'No saved workflows yet. Run the workflow tool with saveWorkflow: true to persist a script to .pi-workflow/workflows/ for reuse via loadWorkflow.',
+					"info",
+				);
+				return;
+			}
+
+			const lines = ["Saved workflows (.pi-workflow/workflows/):", ""];
+			for (const wf of saved) {
+				const savedAgo = new Date(wf.savedAt).toISOString();
+				lines.push(`• ${wf.name}`);
+				lines.push(`  ${wf.description}`);
+				if (wf.whenToUse) lines.push(`  When to use: ${wf.whenToUse}`);
+				lines.push(`  Saved: ${savedAgo} · ${wf.sizeBytes}B · loadWorkflow: "${wf.name}"`);
+				lines.push("");
+			}
+			ctx.ui.setWidget("saved-workflows", lines);
 		},
 	});
 

@@ -17,16 +17,17 @@ import type { WorkflowManager } from "./workflow-manager.ts";
 import { getArtifactPaths } from "./artifacts.ts";
 import type { ForkContextOptions } from "./types.ts";
 import { TechnicalFailureError } from "./failure-classifier.ts";
+import { saveWorkflowScript, loadSavedWorkflowScript, listSavedWorkflows } from "./workflow-library.ts";
 
 const workflowToolSchema = Type.Object({
-	script: Type.String({
+	script: Type.Optional(Type.String({
 		description: [
-			"Required raw JavaScript workflow script, with no Markdown fences.",
+			"Raw JavaScript workflow script, with no Markdown fences. Required unless loadWorkflow is provided.",
 			"First statement: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. meta.phases is optional documentation; live progress is driven by phase(title).",
 			"Use phase('Name'), agent(prompt, opts), parallel(arrayOfFunctions), pipeline(items, ...stages), log(message), args, and budget. The workflow must call agent() at least once.",
 			"parallel() requires functions, not promises: await parallel(items.map(item => () => agent(...))).",
 		].join(" "),
-	}),
+	})),
 	args: Type.Optional(
 		Type.Any({ description: "Optional JSON value exposed to the workflow script as global `args`." }),
 	),
@@ -51,10 +52,23 @@ const workflowToolSchema = Type.Object({
 	resumeRunId: Type.Optional(
 		Type.String({ description: "Run ID to resume from a prior journal. Script must match (validated by hash) or cache is invalidated." }),
 	),
+	loadWorkflow: Type.Optional(
+		Type.String({
+			description:
+				"Name of a previously saved workflow to run instead of writing `script` from scratch. Looks up .pi-workflow/workflows/<name>.js. " +
+				"When set, `script` is optional and ignored if both are provided. Use the workflow_status tool or /workflows to discover saved workflow names, or check whether a matching workflow already exists before writing a new script.",
+		}),
+	),
+	saveWorkflow: Type.Optional(
+		Type.Boolean({
+			description:
+				"If true, persist this script to .pi-workflow/workflows/<meta.name>.js after a successful run so it can be reused later via loadWorkflow, without re-authoring it. Default: false.",
+		}),
+	),
 });
 
 export type WorkflowToolInput = {
-	script: string;
+	script?: string;
 	args?: unknown;
 	agentScope?: string;
 	maxAgents?: number;
@@ -62,6 +76,8 @@ export type WorkflowToolInput = {
 	scriptTimeoutMs?: number;
 	journalDir?: string;
 	resumeRunId?: string;
+	loadWorkflow?: string;
+	saveWorkflow?: boolean;
 };
 
 export interface WorkflowToolOptions {
@@ -300,12 +316,14 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 		label: "Workflow",
 		description: [
 			"Execute a deterministic JavaScript workflow that orchestrates multiple subagents with agent(), parallel(), and pipeline().",
-			"script is required raw JavaScript. It must start with export const meta = { name, description } and must call agent() at least once; phases are optional metadata.",
+			"Pass `script` (raw JS starting with export const meta = { name, description }) to run a new workflow, or `loadWorkflow: '<name>'` to re-run one previously saved with saveWorkflow: true, without resending the script.",
 		].join(" "),
 		promptSnippet:
-			"Run a deterministic JavaScript workflow. Required script header: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. Use phase(title) at runtime to create progress groups.",
+			"Run a deterministic JavaScript workflow. Required script header: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. Use phase(title) at runtime to create progress groups. Pass loadWorkflow: '<name>' to re-run a previously saved workflow instead of rewriting the script.",
 		promptGuidelines: [
 			"Use workflow only when the user explicitly asks for a workflow, workflows, fan-out, or multi-agent orchestration.",
+			"For workflow, before writing a new script, consider whether a similar workflow was already saved (check with loadWorkflow, or ask the user, or use /workflows). If the user asks to reuse/repeat/run again a workflow they ran before, use loadWorkflow with its saved name instead of re-authoring the script.",
+			"For workflow, when a script is likely to be reused (the user says things like 'save this workflow', 'do this again later', or the task is a repeatable process), pass saveWorkflow: true so it's persisted to .pi-workflow/workflows/<name>.js and can be re-run later via loadWorkflow.",
 			"For workflow, always pass one raw JavaScript string in the required script parameter; do not include Markdown fences or prose around the script.",
 			"For workflow, the script's first statement must be `export const meta = { name: 'short_snake_case', description: 'non-empty human description' }`; meta.name and meta.description are required non-empty strings, and meta.phases is optional metadata for a stable upfront outline.",
 			"For workflow, write plain JavaScript after the meta export. Do not use TypeScript syntax, imports, require(), fs, Date.now(), Math.random(), or new Date().",
@@ -325,7 +343,23 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 			return normalizeWorkflowToolArgs(args);
 		},
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const script = normalizeWorkflowScript(params.script);
+			const runCwd = options.cwd ?? ctx.cwd;
+			let scriptSource = params.script;
+			if (params.loadWorkflow) {
+				const saved = loadSavedWorkflowScript(runCwd, params.loadWorkflow);
+				if (!saved) {
+					const available = listSavedWorkflows(runCwd).map((w) => w.name);
+					const suggestion = available.length
+						? `Available saved workflows: ${available.join(", ")}.`
+						: "No workflows have been saved yet in this project (.pi-workflow/workflows/).";
+					throw new Error(`No saved workflow named "${params.loadWorkflow}" found. ${suggestion}`);
+				}
+				scriptSource = saved;
+			}
+			if (!scriptSource) {
+				throw new Error("workflow requires either `script` or `loadWorkflow`");
+			}
+			const script = normalizeWorkflowScript(scriptSource);
 			const parsed = parseWorkflowScript(script);
 			const agentScope: AgentScope = (params.agentScope as AgentScope) ?? "both";
 
@@ -386,7 +420,7 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 				: undefined;
 
 			const agentRunner = createWorkflowAgentRunner(
-				options.cwd ?? ctx.cwd,
+				runCwd,
 				agentScope,
 				options.runSingleAgent,
 				ctx.sessionManager.getSessionId(),
@@ -400,7 +434,7 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 			let result: WorkflowRunResult;
 			try {
 				result = await runWorkflow(script, {
-					cwd: options.cwd ?? ctx.cwd,
+					cwd: runCwd,
 					args: params.args,
 					signal: effectiveSignal,
 					concurrency: options.concurrency,
@@ -439,7 +473,7 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 						if (effectiveSignal?.aborted) throw new Error("Workflow was aborted");
 						recordPhase(event.phase);
 						const agentId = snapshot.agents.length + 1;
-						const artifactsDir = path.join(options.cwd ?? ctx.cwd, ".pi-workflow", "artifacts");
+						const artifactsDir = path.join(runCwd, ".pi-workflow", "artifacts");
 						const artifactPaths = getArtifactPaths(artifactsDir, runId, event.label, agentId);
 						const agentSnapshot = {
 							id: agentId,
@@ -551,11 +585,26 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 				});
 			}
 
+			// Persist the script for reuse via loadWorkflow, but only after a
+			// successful run (agentCount > 0 already validated above) — saving a
+			// script that turned out broken/pointless would pollute the library.
+			// Skip re-saving when this run itself came from loadWorkflow with no
+			// edits (params.script undefined), since it's already on disk.
+			let savedNote = "";
+			if (params.saveWorkflow && params.script) {
+				try {
+					const saved = saveWorkflowScript(runCwd, script, result.meta);
+					savedNote = `\n\nSaved for reuse: run again anytime with { loadWorkflow: "${saved.name}" } (no need to resend the script). Stored at ${path.relative(runCwd, saved.filePath)}.`;
+				} catch (err) {
+					savedNote = `\n\n(Note: failed to save workflow for reuse: ${err instanceof Error ? err.message : String(err)})`;
+				}
+			}
+
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Workflow ${result.meta.name} completed with ${result.agentCount} agent(s).\n\nResult:\n${JSON.stringify(result.result, null, 2)}`,
+						text: `Workflow ${result.meta.name} completed with ${result.agentCount} agent(s).\n\nResult:\n${JSON.stringify(result.result, null, 2)}${savedNote}`,
 					},
 				],
 				details: {
@@ -583,9 +632,14 @@ export function createWorkflowTool(options: WorkflowToolOptionsFull): ToolDefini
 }
 
 function normalizeWorkflowToolArgs(args: unknown): WorkflowToolInput {
-	if (!args || typeof args !== "object") throw new Error("workflow requires an object argument with a script string");
+	if (!args || typeof args !== "object") throw new Error("workflow requires an object argument with a script string, or a loadWorkflow name");
 	const value = args as Record<string, unknown>;
-	if (typeof value.script !== "string") throw new Error("workflow requires `script` to be a string");
+	if (typeof value.loadWorkflow === "string" && value.loadWorkflow.trim()) {
+		// script is optional/ignored when loading a saved workflow by name; the
+		// actual script text is resolved from disk inside execute().
+		return { ...value, script: typeof value.script === "string" ? normalizeWorkflowScript(value.script) : undefined } as WorkflowToolInput;
+	}
+	if (typeof value.script !== "string") throw new Error("workflow requires either `script` (a string) or `loadWorkflow` (a saved workflow name)");
 	return { ...value, script: normalizeWorkflowScript(value.script) } as WorkflowToolInput;
 }
 
