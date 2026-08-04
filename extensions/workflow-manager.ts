@@ -240,14 +240,19 @@ export class WorkflowManager extends EventEmitter {
 		}
 
 		const stop = () => {
-			stopped = true;
 			clearInterval(timer);
 			try {
 				watcher?.close();
 			} catch {
 				// Ignore close error
 			}
-			readNewLines(); // Final flush
+			// Final flush MUST run before `stopped` is set — readNewLines() bails
+			// out immediately when `stopped` is true, so setting the flag first
+			// would silently turn this into a no-op and drop any transcript lines
+			// written in the last poll window (e.g. an agent's final assistant
+			// message arriving right as markAgentEnd() fires).
+			readNewLines();
+			stopped = true;
 		};
 
 		this.transcriptWatchers.set(key, stop);

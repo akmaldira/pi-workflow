@@ -145,6 +145,49 @@ describe("WorkflowManager", () => {
 		manager.markAgentEnd("run-1", 1, "done");
 	});
 
+	it("does not drop the final transcript line written right before markAgentEnd (poll-race regression)", async () => {
+		// Regression test for a real bug found via a user's actual workflow run:
+		// stop() set `stopped = true` BEFORE calling readNewLines() as its
+		// "final flush", but readNewLines()'s very first line was `if (stopped)
+		// return`, making the flush a permanent no-op. Any transcript line
+		// written in the window between the last 200ms poll tick and
+		// markAgentEnd() being called (e.g. the agent's final assistant
+		// message, which is exactly when markAgentEnd() typically fires) was
+		// silently dropped and never appeared in agent.history or the pager.
+		const transcriptPath = path.join(tempDir, "transcript-race.jsonl");
+		fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+
+		manager.registerRun("run-1", { name: "test" });
+		manager.markAgentStart("run-1", 0, {
+			id: 1,
+			label: "Agent 1",
+			prompt: "do work",
+			status: "running",
+			transcriptPath,
+		});
+
+		// No wait for the poll interval here — write the final line and
+		// immediately call markAgentEnd(), exactly like the real race: the
+		// child process's last message_end event arrives, gets written to the
+		// transcript file, and the workflow tool calls markAgentEnd() right
+		// after, all faster than the next 200ms poll tick.
+		const finalRecord = {
+			version: 1,
+			recordType: "message",
+			role: "assistant",
+			text: "Here is my final answer that must not be dropped",
+			ts: Date.now(),
+		};
+		fs.writeFileSync(transcriptPath, `${JSON.stringify(finalRecord)}\n`);
+
+		manager.markAgentEnd("run-1", 1, "done", "final answer");
+
+		const run = manager.getRun("run-1");
+		const agent = run?.snapshot.agents.find((a) => a.id === 1);
+		expect(agent?.history).toBeDefined();
+		expect(agent?.history?.some((h) => "text" in h && h.text === "Here is my final answer that must not be dropped")).toBe(true);
+	});
+
 	it("records toolCall entries with args populated (not undefined)", async () => {
 		const transcriptPath = path.join(tempDir, "transcript-args.jsonl");
 		fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
