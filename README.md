@@ -526,6 +526,17 @@ By default, you're prompted before running project agents. Only enable project a
 
 Workflow scripts run in a deterministic VM sandbox with no filesystem, network, or time access.
 
+### Compatibility with `pi-permission-system`
+
+pi-workflow's `subagent` and `workflow` tools spawn subagents the same way [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents) does — as CLI subprocesses (`pi --mode json -p`) — and set the exact env vars [`@gotgenes/pi-permission-system`](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-system) documents for that integration pattern:
+
+- `PI_SUBAGENT_CHILD=1`, `PI_SUBAGENT_RUN_ID`, `PI_SUBAGENT_CHILD_AGENT`, `PI_SUBAGENT_DEPTH` — let pi-permission-system detect that a child process is a subagent (no in-process registration needed).
+- `PI_SUBAGENT_PARENT_SESSION` — set to the parent's session id (`ctx.sessionManager.getSessionId()`) so `ask`-state permission prompts triggered inside a subagent are forwarded to and resolved in the parent session's UI, instead of being auto-denied.
+
+If both extensions are installed, this works automatically — no configuration required. You can freely combine pi-workflow's `tools:`/`disallowed_tools:`-style frontmatter with pi-permission-system's `permission:` frontmatter block in the same agent `.md` file; the two are read independently and compose additively (a tool hidden by one is invisible to the other; a tool denied by either stays denied). See pi-permission-system's [permission-frontmatter-for-subagent-extensions guide](https://github.com/gotgenes/pi-packages/blob/main/packages/pi-permission-system/docs/guides/permission-frontmatter-for-subagent-extensions.md) for the full frontmatter format and examples.
+
+**Headless caveat:** if pi itself is run non-interactively (e.g. `pi --mode json`, an IDE extension, or an API integration) and pi-permission-system is installed, it has no UI to forward `ask` prompts to, so `ask`-gated tools (including `subagent`/`workflow` themselves, if policy requires asking for them) are auto-denied rather than silently allowed. Configure pi-permission-system's policy to `allow` the tools/surfaces you need in that mode — see the [Running Without a TUI](skills/pi-workflow/SKILL.md) section of the bundled skill for a config example.
+
 ## Testing
 
 This project includes a comprehensive test suite:

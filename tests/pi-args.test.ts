@@ -416,5 +416,69 @@ describe("pi-args", () => {
 			});
 			expect(result.env.PI_SUBAGENT_CHILD_INDEX).toBe("3");
 		});
+
+		describe("pi-permission-system compatibility", () => {
+			// @gotgenes/pi-permission-system detects "is this a subagent child?"
+			// and forwards `ask` prompts to the parent session's UI by checking
+			// a documented set of env vars (see SUBAGENT_ENV_HINT_KEYS and
+			// SUBAGENT_PARENT_SESSION_ENV_CANDIDATES in that package). These
+			// tests pin the exact contract nicobailon/pi-subagents established
+			// and that pi-workflow's buildPiArgs() must keep satisfying so
+			// permission forwarding keeps working for child processes.
+			it("sets PI_SUBAGENT_CHILD=1 (subagent-detection env hint)", () => {
+				const result = buildPiArgs({
+					baseArgs: ["--mode", "json", "-p"],
+					task: "test",
+					sessionEnabled: false,
+					inheritProjectContext: true,
+					inheritSkills: true,
+				});
+				expect(result.env.PI_SUBAGENT_CHILD).toBe("1");
+			});
+
+			it("sets PI_SUBAGENT_PARENT_SESSION from parentSessionId (ask-forwarding target)", () => {
+				const result = buildPiArgs({
+					baseArgs: ["--mode", "json", "-p"],
+					task: "test",
+					sessionEnabled: false,
+					inheritProjectContext: true,
+					inheritSkills: true,
+					parentSessionId: "session-abc-123",
+				});
+				expect(result.env.PI_SUBAGENT_PARENT_SESSION).toBe("session-abc-123");
+			});
+
+			it("falls back to the parent process's own PI_SUBAGENT_PARENT_SESSION when parentSessionId is not given (nested/grandchild forwarding)", () => {
+				const prior = process.env.PI_SUBAGENT_PARENT_SESSION;
+				process.env.PI_SUBAGENT_PARENT_SESSION = "inherited-session-id";
+				try {
+					const result = buildPiArgs({
+						baseArgs: ["--mode", "json", "-p"],
+						task: "test",
+						sessionEnabled: false,
+						inheritProjectContext: true,
+						inheritSkills: true,
+					});
+					expect(result.env.PI_SUBAGENT_PARENT_SESSION).toBe("inherited-session-id");
+				} finally {
+					if (prior === undefined) delete process.env.PI_SUBAGENT_PARENT_SESSION;
+					else process.env.PI_SUBAGENT_PARENT_SESSION = prior;
+				}
+			});
+
+			it("sets PI_SUBAGENT_RUN_ID and PI_SUBAGENT_CHILD_AGENT (additional env hints pi-permission-system checks)", () => {
+				const result = buildPiArgs({
+					baseArgs: ["--mode", "json", "-p"],
+					task: "test",
+					sessionEnabled: false,
+					inheritProjectContext: true,
+					inheritSkills: true,
+					runId: "run-xyz",
+					childAgentName: "researcher",
+				});
+				expect(result.env.PI_SUBAGENT_RUN_ID).toBe("run-xyz");
+				expect(result.env.PI_SUBAGENT_CHILD_AGENT).toBe("researcher");
+			});
+		});
 	});
 });
