@@ -84,8 +84,22 @@ return { inventory, summary }
 ### Commands
 
 - `/workflows` — Open the interactive Claude Code-style dynamic workflow TUI navigator (runs ──▶ phases ──▶ agents ──▶ agent detail)
+- `/workflow [on|off]` — Toggle workflow-only mode: forces the agent to delegate all work through the `workflow` tool (see below)
 - `/saved-workflows` — List workflow scripts saved for reuse (`/saved-workflows delete <name>` to remove one)
 - `/agents` — List available subagents with their configurations
+
+### Workflow-Only Mode (`/workflow`)
+
+`/workflow on` restricts the agent to a read-only + orchestration tool surface, forcing all file changes and delegation through the `workflow` tool:
+
+- **Disabled**: `write`, `edit`, `subagent` — the agent cannot mutate files directly or delegate to a single subagent, bypassing workflow's journaling/budget/error-resilience machinery.
+- **Read-only**: `bash` stays active but write-shaped commands (`rm`, `mv`, `sed -i`, redirects, `git commit`/`push`, package installs, etc.) are blocked with a message pointing back to the `workflow` tool. Pure investigation commands (`cat`, `grep`, `git status`/`diff`/`log`, `curl`, etc.) still work.
+- **Available**: `read`, `bash` (read-only), `grep`, `find`, `ls`, `workflow`, `workflow_status`, plus any other currently-active non-mutating tools.
+- **System-prompt injection**: while the mode is on, a directive is appended to the system prompt on every turn instructing the model to use `workflow` for any task needing file changes or delegation, and to keep investigation to read-only tools — modeled on the keyword-arming / prompt-injection pattern used by pi-dynamic-workflows' `workflow-editor.ts` (`installWorkflowKeywordArming`/`buildArmedWorkflowPrompt`) and the read-only tool-gating pattern from the bundled `plan-mode` example extension.
+
+`/workflow off` restores the exact tool set that was active before `/workflow on` was run. `/workflow` (no args) or `/workflow status` reports the current state without changing anything.
+
+This is useful when you want to guarantee every code change goes through workflow's journaling, budget tracking, and worktree isolation — e.g. in CI-like or supervised sessions where ad-hoc direct edits should not be possible.
 
 ## Dynamic Workflows
 

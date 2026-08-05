@@ -65,6 +65,14 @@ Before writing a new workflow script from scratch, check whether a matching one 
 
 The user can also save a workflow after the fact from the `/workflows` TUI navigator by selecting a run and pressing `s` — no need to have passed `saveWorkflow: true` up front. This only works for runs still live in the current session (the script is kept in memory, not journaled); it won't work for runs restored from a prior session's journal.
 
+## Workflow-Only Mode (`/workflow`)
+
+`/workflow on` locks the session into workflow-only delegation: `write`, `edit`, and `subagent` are removed from the active tool set, `bash` is restricted to read-only commands (mutation-shaped commands like `rm`, `mv`, `sed -i`, redirects, `git commit`/`push`, package installs are blocked), and a system-prompt directive is injected telling the model to use the `workflow` tool for any task that needs file changes or delegation. `read`, read-only `bash`, `grep`, `find`, `ls`, `workflow`, and `workflow_status` remain available for investigation and orchestration.
+
+`/workflow off` restores the exact tool set active before the mode was entered. `/workflow` or `/workflow status` reports current state without changing anything.
+
+If you are the agent and workflow mode is active (you'll see it in the injected system-prompt directive, or a blocked-tool error message), do not try to work around it — write a workflow script and call the `workflow` tool instead of attempting write/edit/subagent or a mutating bash command.
+
 ## Creating Agents
 
 Create agent files in `~/.pi/agent/agents/*.md` (user scope) or `.pi/agents/*.md` (project scope).

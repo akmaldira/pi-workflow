@@ -12,7 +12,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { createWorkflowTool } from "./workflow-tool.ts";
@@ -24,6 +24,7 @@ import { TechnicalFailureError } from "./failure-classifier.ts";
 import { WorkflowManager } from "./workflow-manager.ts";
 import { openWorkflowNavigator } from "./workflow-ui.ts";
 import { registerTaskPanel } from "./task-panel.ts";
+import { registerWorkflowMode } from "./workflow-mode.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -558,6 +559,9 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setWidget("agents", lines);
 		},
 	});
+
+	// --- Workflow-only mode: /workflow on|off ---
+	registerWorkflowMode(pi, { workflowToolName: workflowTool.name, subagentToolName: "subagent" });
 
 	// --- Session start: activate workflow tool & task panel ---
 	pi.on("session_start", (_event, ctx) => {
