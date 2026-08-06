@@ -40,17 +40,52 @@ subagent(tasks=[{"agent": "scout", "task": "Review auth module"}, {"agent": "sco
 
 ## How to Run a Workflow
 
-The `workflow` tool executes a deterministic JavaScript script that orchestrates multiple subagents:
+The `workflow` tool runs a **graph** of coordinating agents: nodes are agents, edges decide where
+each result goes next. Use it when the path is not known in advance — particularly when an agent
+might hit a wall and need to hand the problem back to whoever can fix it. For a single delegation
+with no coordination, use `subagent` instead.
 
 ```
-workflow(script="export const meta = { name: 'audit', description: 'Security audit' };\nphase('Discovery');\nconst findings = await agent('scout: Find security issues');\nreturn { findings };")
+workflow(script="export const meta = { name: 'audit', description: 'Security audit' };
+const g = graph();
+g.node('scan', agent('scout', (s) => 'Find security issues in: ' + s.target));
+g.node('verify', agent('researcher', (s) => 'Verify these findings with evidence:\n' + s.scan));
+g.edge('scan', 'verify');
+g.edge('verify', END);
+g.run({ target: args.target });", args={ target: "auth module" })
 ```
 
-**Key workflow globals:**
-- `agent('agentName: prompt')` — Spawn a subagent (the agent name must match a file in the agent scope)
-- `parallel([() => agent(...), () => agent(...)])` — Run agents concurrently (pass functions, not promises)
-- `phase('title')` — Create a progress group
-- `log('message')` — Log output
+**Building a graph:**
+- `graph()` — create the graph (exactly one per script)
+- `g.node(id, agent(name, (state) => prompt))` — an agent node
+- `g.node(id, mainAgent(prompt))` — pause for your own judgement mid-run
+- `g.node(id, human(prompt, { options, default }))` — ask the user; always give a `default`
+- `g.edge(from, to)` / `g.edge(from, END)` — direct routing
+- `g.edge(from, (state, result) => target)` — conditional routing
+- `g.run(initialState)` — start it
+
+**State flows between nodes.** Each node's result is stored under its id, so a later node reads an
+earlier one via `s.<nodeId>`. Interpolating a result gives the agent's text; edge conditions get
+`{ status, text, blockedOn, reason }`.
+
+**Route blockers to whoever owns the problem.** When an agent reports `status === 'blocked'`, send
+it back rather than retrying the same node — that is the entire point of the graph:
+
+```
+g.edge('green', (state, result) => {
+  if (result.status === 'blocked') {
+    return result.blockedOn === 'contract' ? 'architect' : 'red';
+  }
+  return 'reviewer';
+});
+```
+
+Cycles are allowed and are how escalation works. A run stops at `maxIterations` (default 25) if a
+loop never resolves.
+
+**Only these globals exist:** `graph`, `agent`, `mainAgent`, `human`, `END`, `args`, `JSON`. No
+`fs`, `process`, `require`, `import`, `fetch`, `Date`, or `Math.random` — a graph describes routing
+only. Scripts are validated before any agent spawns, so a rejected script costs nothing.
 
 ## Saving and Reusing Workflows
 

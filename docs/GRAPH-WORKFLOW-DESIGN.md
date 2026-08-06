@@ -1,7 +1,9 @@
-# Graph-Based Agent Coordination: Final Design
+# Graph-Based Agent Coordination: Design
 
-Status: **approved direction, ready for implementation**
-Supersedes: `docs/COORDINATION-DESIGN.md` (multiple rounds of correction, all reconciled here)
+Status: **built and shipped.** This document records the design and the reasoning behind it. Where
+implementation diverged from the plan, the divergence and its cause are noted inline.
+
+For usage, see the [README](../README.md). This document is for *why*, not *how*.
 
 ## 1. Vision
 
@@ -613,115 +615,115 @@ export function createGraphWorkflowTool(options: WorkflowToolOptionsFull): ToolD
 
 The `subagent` tool stays unchanged alongside it for simple single/parallel delegation.
 
-## 14. Build phases
+## 14. What was built
 
-### Phase 1: Foundation — bundled agents + catalog visibility
+All six phases shipped. The module layout ended up slightly larger than planned, because two
+concerns turned out to deserve their own files:
 
-**Goal:** a team installing pi-workflow gets usable agents immediately, and the main agent can
-see them.
-
-| Task | Files |
+| Module | Role |
 |---|---|
-| Create `bundled-agents/*.md` (planner, architect, monitor, red, green, reviewer, researcher, scout, worker) | `bundled-agents/` |
-| Add `BUNDLED_AGENTS_DIR` + `"builtin"` source to `discoverAgents()` | `extensions/agents.ts` |
-| Add `bundled-agents/` to `package.json` `files` array | `package.json` |
-| Create `extensions/agent-catalog.ts` with `buildAgentCatalogSummary()` + `list_agents` tool | new |
-| Wire catalog summary into `workflow` tool's `promptGuidelines` at `session_start` | `extensions/index.ts` |
-| Add settings-based disable/override for bundled agents | `extensions/agents.ts` |
+| `graph-dsl.ts` | Builder API and structural validation |
+| `graph-validator.ts` | AST allowlist, sandbox, meta extraction |
+| `graph-executor.ts` | The walk: run node, store result, evaluate edge |
+| `graph-node-runner.ts` | Spawning and escalation parsing *(not planned separately)* |
+| `graph-journal.ts` | Per-visit JSONL records and resume |
+| `graph-run-context.ts` | Budget, artifacts, worktree |
+| `graph-interactive.ts` | `human()` and `mainAgent()` handlers *(not planned separately)* |
+| `graph-display-bridge.ts` | Graph walk → display model *(not planned separately)* |
+| `graph-tool.ts` | The `workflow` tool |
+| `agent-catalog.ts` | Roster visibility and `list_agents` |
+| `agent-settings.ts` | Builtin override and disable |
 
-**Depends on:** nothing. Ships first.
+`graph-node-runner.ts` exists because routing and spawning are genuinely separate concerns: the
+executor knows nothing about agents, and the runner knows nothing about routing. They meet at one
+function signature, which is what made the executor testable with scripted results.
 
-### Phase 2: Graph DSL + validator + sandbox
+`graph-display-bridge.ts` exists because the display model predates graphs and thinks in runs
+containing numbered agents. Mapping a cyclic walk onto it is a real translation, not a pass-through.
 
-**Goal:** the main agent can write a graph script, and it's validated before execution.
+### Divergences from the plan
 
-| Task | Files |
-|---|---|
-| Implement `graph()` builder, `agent()`/`mainAgent()`/`human()` node defs, `g.node()`/`g.edge()`/`g.start()`/`g.run()` | `extensions/graph-dsl.ts` |
-| Implement AST validation (allowed globals only, ban require/import/non-determinism) | `extensions/graph-validator.ts` |
-| Implement structural validation (edges point to real nodes, entry exists, END reachable) | `extensions/graph-validator.ts` |
-| Implement sandboxed `vm.createContext` with only graph API | `extensions/graph-validator.ts` |
+**Resume turned out to be easy, not hard.** It had been deferred as needing a redesign, because the
+imperative journal keyed its cache on `hash(prompt + options)` — and a prompt built from earlier
+results changes its own key whenever anything upstream changes. A graph walk is an ordered sequence
+of node executions with stable ids, so "what already ran" needs no heuristic. The feature fell out
+of the data model rather than requiring one.
 
-**Depends on:** Phase 1 (needs agents to exist in the catalog).
+**Structured output was not needed.** The plan assumed agents would need `outputSchema` to produce
+routable results. In practice, parsing a text protocol (`STATUS: blocked` / `BLOCKED_ON: x`) was
+sufficient and much cheaper: no schema plumbing, no validation failures mid-run, and an agent that
+wraps the block in prose still parses correctly.
 
-### Phase 3: Graph executor
+**Agent results needed a `toString()`.** Prompt functions interpolate previous results
+(`` `Implement:\n${s.architect}` ``), and a structured result renders as `[object Object]` — a
+well-formed prompt containing nothing. Results carry a non-enumerable `toString()` returning the
+agent's text, so prompts get text and edge conditions get fields. This had to be re-applied at the
+journal boundary too, since `JSON.parse` on resume produces plain objects.
 
-**Goal:** validated graphs actually run, agents spawn, state flows, edges route.
+**Human answers needed provenance, not just a value.** A handler that resolves a default internally
+and returns a bare string erases the difference between "the human chose hold" and "nobody was
+watching, so hold was assumed". An edge reading the second as approval converts absence into
+consent — the same class of failure as an agent mocking a test to show green. Handlers report
+`{ answer, source }`, and node results carry `status: "ok" | "default" | "skipped"`.
 
-| Task | Files |
-|---|---|
-| Implement `runGraph()` — core loop, state management, node execution | `extensions/graph-executor.ts` |
-| Wire `agent` nodes to existing `runSingleAgent()` | `extensions/graph-executor.ts` |
-| Implement edge evaluation (direct + conditional) | `extensions/graph-executor.ts` |
-| Implement termination (END, max iterations, unknown-node self-correction) | `extensions/graph-executor.ts` |
-| Adapt journaling for per-node records | `extensions/graph-journal.ts` |
-| Wire budget tracking, artifacts, fork context into executor | `extensions/graph-executor.ts` |
+**Tool failures must throw.** pi's agent loop derives a tool call's error status from whether
+`execute()` threw; a returned `isError` field is never read. Returning one reported validation
+failures to the model as *successes* whose text happened to describe a failure.
 
-**Depends on:** Phase 2.
+## 15. Testing
 
-### Phase 4: Replace the workflow tool
+917 tests across 41 files. The counts matter less than what the suite is arranged to prove.
 
-**Goal:** the imperative `workflow` tool is gone; the graph-based one is live.
-
-| Task | Files |
-|---|---|
-| Create `extensions/graph-tool.ts` — new `workflow` tool wrapping `runGraph()` | new |
-| Remove imperative workflow files (9 files, listed in §2) | delete |
-| Update `extensions/index.ts` — register graph tool, remove old wiring | `extensions/index.ts` |
-| Migrate `saveWorkflow`/`loadWorkflow` for graph scripts | `extensions/graph-tool.ts` |
-| Run full test suite, fix breakage | `tests/` |
-
-**Depends on:** Phase 3.
-
-### Phase 5: Human-in-the-loop + main-agent nodes
-
-**Goal:** `human()` and `mainAgent()` nodes work.
-
-| Task | Files |
-|---|---|
-| Implement `human()` node execution via `ctx.ui` | `extensions/graph-executor.ts` |
-| Implement headless degrade (return default, never hang) | `extensions/graph-executor.ts` |
-| Implement `mainAgent()` checkpoint mechanism | `extensions/graph-executor.ts` |
-| Thread `ctx.ui` / `ctx` into `GraphRunOptions` | `extensions/graph-tool.ts` |
-
-**Depends on:** Phase 4.
-
-### Phase 6: TUI + polish
-
-**Goal:** the `/workflows` navigator works with graph runs, real-time display.
-
-| Task | Files |
-|---|---|
-| Rebuild `/workflows` navigator for graph runs (nodes, state, current position) | `extensions/graph-ui.ts` |
-| Adapt task panel for graph execution | `extensions/task-panel.ts` |
-| Real-time display of graph traversal | `extensions/graph-ui.ts` |
-| Re-evaluate `/workflow` mode command (may not be needed with graph model) | TBD |
-
-**Depends on:** Phase 5.
-
-### Phase 7 (deferred): Parallel fan-out edges
-
-`g.edge("a", ["b", "c", "d"])` for concurrent branches with join semantics. Not in initial
-build — sequential nodes with conditional routing covers the coordination use case.
-
-### Phase 8 (deferred): Persistent actor model
-
-Standing agents with mailboxes, synchronous war rooms, on-the-fly agent synthesis. Only if
-Phases 1–6 prove insufficient in practice. Would evaluate XState as the actor substrate.
-
-## 15. Testing strategy
-
-Following the existing convention (one test file per extension module):
-
-| Component | Test file | Key tests |
+| Test file | Tests | What it establishes |
 |---|---|---|
-| `graph-dsl.ts` | `tests/graph-dsl.test.ts` | `graph()` creates builder; `g.node()`/`g.edge()` register correctly; `g.run()` captures initial state; second `graph()` call throws |
-| `graph-validator.ts` | `tests/graph-validator.test.ts` | AST validation bans forbidden globals/require/import/non-determinism; structural validation catches dangling edges, missing entry, no-path-to-END; valid graphs pass cleanly |
-| `graph-executor.ts` | `tests/graph-executor.test.ts` | Sequential execution follows edges correctly; conditional edges route based on result; state accumulates per-node; END terminates; max-iterations cap prevents infinite loops; unknown-node self-correction feeds error back to edge |
-| `graph-tool.ts` | `tests/graph-tool.test.ts` | Tool validates before execution; invalid scripts return errors without spawning agents; valid scripts produce graph runs; saveWorkflow/loadWorkflow round-trip |
-| `agent-catalog.ts` | `tests/agent-catalog.test.ts` | Bundled agents discovered from `BUNDLED_AGENTS_DIR`; same-named user/project agent shadows builtin; `disabled: true` removes from results; `list_agents` tool returns current catalog |
-| `agents.ts` (modified) | `tests/agents.test.ts` | `"builtin"` source loaded; merge precedence (builtin < user < project); settings override/disable |
-| **End-to-end** | `tests/graph-e2e.test.ts` | TDD scenario: planner → architect → green(blocked) → architect(revises) → green(succeeds) → reviewer → approve. Mock `runSingleAgent` returns scripted results. Asserts the graph routes through the escalation loop correctly. |
+| `graph-validator.test.ts` | 55 | Allowlist, determinism, meta extraction, structural checks |
+| `graph-sandbox-escape.test.ts` | 47 | Adversarial: 11 routes to a function constructor, 7 prototype routes, 16 ambient-authority names |
+| `graph-dsl.test.ts` | 43 | Builder semantics, id validation, every `validate()` failure mode |
+| `graph-executor.test.ts` | 40 | Traversal, routing, termination, cancellation, observability |
+| `graph-node-runner.test.ts` | 36 | Escalation parsing, resolution, technical-vs-agent failure split |
+| `graph-journal.test.ts` | 34 | Per-visit records, replay, all resume paths |
+| `graph-run-context.test.ts` | 27 | Budget semantics, artifact config, worktree degradation |
+| `graph-tool.test.ts` | 27 | Validation-before-spawn, reporting, save/load |
+| `graph-interactive.test.ts` | 26 | Both dialog types, dismissal, headless non-hanging |
+| `graph-display-bridge.test.ts` | 14 | Per-visit entries, preview cleanup, escalation-first |
+| `graph-e2e-escalation.test.ts` | 13 | **The premise, end to end** |
+
+### The tests that matter
+
+`graph-e2e-escalation.test.ts` runs the real tool — real validation, sandbox, parsing, executor,
+journal, display. Only the subprocess spawn is stubbed, because the point is to script what agents
+*say*, not to test a model. It asserts:
+
+- the walk loops (`architect → red → green → architect → red → green → reviewer`)
+- the retrying implementer is prompted with the **revised** contract, not the original
+- `BLOCKED_ON` decides *who* gets asked: `tests` routes to red, `contract` routes to architect
+- an unresolved blocker stops at the cap rather than spinning
+
+Disabling escalation parsing fails 8 of its 13 tests. That check matters: a test that passes whether
+or not the mechanism works proves nothing.
+
+`graph-sandbox-escape.test.ts` exists because 55 validator tests passed against a build that leaked
+host intrinsics into the sandbox — `Object.prototype.__pwned = 42` inside a "sandboxed" script set
+`__pwned` on the host's own objects. The unit tests asserted that the things we thought of were
+blocked; they could say nothing about the things we did not think of.
+
+### What repeatedly caught real defects
+
+Not re-running the suite. Changing the *method*:
+
+| Method | Found |
+|---|---|
+| Live pi session | `list_agents` returned its payload in a field pi never forwards |
+| Adversarial probes | host prototype pollution through injected intrinsics |
+| End-to-end test | `[object Object]` in every multi-step prompt |
+| Resume test | the same bug on the replay path |
+| Typechecking | `isError` is never read; failures reported as successes |
+| Reading `index.ts` | `/workflows` permanently empty after the tool swap |
+| Live TUI | a dead `(no phase)` level on every graph run |
+
+The common root cause was verifying a *model of the system* rather than the system. Tests asserted
+`output` where pi reads `content`; a spy that never bound to the module's own `fs`. Every fix is now
+confirmed by reverting it and watching tests fail.
 
 ## 16. What this design deliberately does NOT include
 
