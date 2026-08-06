@@ -2,7 +2,23 @@
  * Workflow display types for real-time TUI monitoring and progress tracking.
  */
 
-import type { WorkflowMeta } from "./workflow.ts";
+/**
+ * Workflow metadata shown in the run list and detail panes.
+ *
+ * Defined here rather than imported from the workflow engine: the display
+ * layer outlived the imperative engine, and graph runs supply the same
+ * fields.
+ */
+export interface WorkflowMetaPhase {
+	title: string;
+}
+
+export interface WorkflowMeta {
+	name: string;
+	description: string;
+	whenToUse?: string;
+	phases?: WorkflowMetaPhase[];
+}
 import type { AgentHistoryEntry } from "./types.ts";
 
 export type { AgentHistoryEntry };

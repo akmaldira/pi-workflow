@@ -14,7 +14,7 @@ import type {
 	WorkflowStats,
 	WorkflowDisplayOptions,
 } from "./workflow-display-types.ts";
-import type { WorkflowMeta } from "./workflow.ts";
+import type { WorkflowMeta } from "./workflow-display-types.ts";
 
 /**
  * Create a new workflow snapshot.

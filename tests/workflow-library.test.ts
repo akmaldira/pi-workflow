@@ -53,8 +53,10 @@ describe("workflow-library", () => {
 	it("overwrites a prior save with the same meta.name", () => {
 		saveWorkflowScript(tempDir, SCRIPT, { name: "my_workflow", description: "v1" });
 		const updated = `export const meta = { name: 'my_workflow', description: 'v2' };
-await agent('scout: something else', { label: 'v2 step' });
-return { ok: true, version: 2 };`;
+const g = graph();
+g.node('a', agent('scout', () => 'v2 step'));
+g.edge('a', END);
+g.run();`;
 		saveWorkflowScript(tempDir, updated, { name: "my_workflow", description: "v2" });
 
 		const files = fs.readdirSync(getWorkflowLibraryDir(tempDir));
@@ -65,12 +67,12 @@ return { ok: true, version: 2 };`;
 	});
 
 	it("lists saved workflows with parsed meta, newest first", async () => {
-		const scriptA = `export const meta = { name: 'workflow_a', description: 'first one' };\nawait agent('do a');\nreturn {};`;
+		const scriptA = `export const meta = { name: 'workflow_a', description: 'first one' };\nconst g = graph();\ng.node('a', agent('scout', () => 'do a'));\ng.edge('a', END);\ng.run();`;
 		saveWorkflowScript(tempDir, scriptA, { name: "workflow_a", description: "first one" });
 		await new Promise((r) => setTimeout(r, 5));
 		saveWorkflowScript(
 			tempDir,
-			`export const meta = { name: 'workflow_b', description: 'second one', whenToUse: 'when doing b things' };\nawait agent('do b');\nreturn {};`,
+			`export const meta = { name: 'workflow_b', description: 'second one', whenToUse: 'when doing b things' };\nconst g = graph();\ng.node('a', agent('scout', () => 'do b'));\ng.edge('a', END);\ng.run();`,
 			{ name: "workflow_b", description: "second one", whenToUse: "when doing b things" },
 		);
 
@@ -91,7 +93,7 @@ return { ok: true, version: 2 };`;
 		const dir = getWorkflowLibraryDir(tempDir);
 		fs.mkdirSync(dir, { recursive: true });
 		fs.writeFileSync(path.join(dir, "corrupt.js"), "this is not valid js {{{");
-		const scriptGood = `export const meta = { name: 'good_workflow', description: 'fine' };\nawait agent('do it');\nreturn {};`;
+		const scriptGood = `export const meta = { name: 'good_workflow', description: 'fine' };\nconst g = graph();\ng.node('a', agent('scout', () => 'do it'));\ng.edge('a', END);\ng.run();`;
 		saveWorkflowScript(tempDir, scriptGood, { name: "good_workflow", description: "fine" });
 
 		const saved = listSavedWorkflows(tempDir);

@@ -469,7 +469,11 @@ export default function (pi: ExtensionAPI) {
 	// --- Workflow Tool ---
 	// Graph-based coordination: nodes are agents, edges decide where each
 	// result goes next. Replaces the imperative agent()/parallel() script.
-	const workflowTool = createGraphWorkflowTool();
+	//
+	// The manager is passed in so runs appear in /workflows, the task panel,
+	// and workflow_status. Without it the tool still runs, but every one of
+	// those surfaces reports an empty run list.
+	const workflowTool = createGraphWorkflowTool({ workflowManager: globalWorkflowManager });
 	pi.registerTool(workflowTool);
 	registerWorkflowStatusTool(pi, globalWorkflowManager);
 

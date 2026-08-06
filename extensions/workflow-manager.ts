@@ -7,7 +7,7 @@ import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { WorkflowSnapshot, WorkflowAgentSnapshot, AgentHistoryEntry } from "./workflow-display-types.ts";
-import type { WorkflowMeta } from "./workflow.ts";
+import type { WorkflowMeta } from "./workflow-display-types.ts";
 
 export type RunStatus = "running" | "paused" | "completed" | "error" | "stopped";
 

@@ -10,7 +10,9 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { parseWorkflowScript, type WorkflowMeta } from "./workflow.ts";
+import { parse } from "acorn";
+import { extractGraphMeta } from "./graph-validator.ts";
+import type { WorkflowMeta } from "./workflow-display-types.ts";
 
 export interface SavedWorkflowInfo {
 	/** meta.name of the saved workflow (also the filename stem) */
@@ -96,7 +98,12 @@ export function listSavedWorkflows(cwd: string): SavedWorkflowInfo[] {
 		const filePath = path.join(dir, entry.name);
 		try {
 			const content = fs.readFileSync(filePath, "utf-8");
-			const { meta } = parseWorkflowScript(content);
+			// Only the meta header is needed to list a workflow, so parse rather
+			// than fully build: a graph that fails validation for an unrelated
+			// reason should still be visible and deletable.
+			const meta = extractGraphMeta(
+				parse(content, { ecmaVersion: "latest", sourceType: "module" }) as never,
+			);
 			const stat = fs.statSync(filePath);
 			results.push({
 				name: meta.name,

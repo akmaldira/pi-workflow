@@ -350,28 +350,97 @@ describe("WorkflowManager", () => {
 		expect(names).toContain("persisted_wf");
 	});
 
-	it("updates WorkflowManager events when workflow tool executes", async () => {
-		const { createWorkflowTool } = await import("../extensions/workflow-tool.ts");
-		const tool = createWorkflowTool({
+	it("populates the manager when the graph workflow tool executes", async () => {
+		// This is the wiring behind /workflows, the task panel, and
+		// workflow_status. When the graph tool replaced the imperative one it
+		// was registered without a manager, so every one of those surfaces
+		// reported "No runs yet" forever while runs completed normally —
+		// invisible to any test that exercised the tool in isolation.
+		const { createGraphWorkflowTool } = await import("../extensions/graph-tool.ts");
+		const tool = createGraphWorkflowTool({
+			cwd: tempDir,
 			workflowManager: manager,
-			runSingleAgent: async () => "agent output",
+			spawnAgent: (async () => ({
+				agent: "scout",
+				task: "t",
+				exitCode: 0,
+				usage: { totalTokens: 5 },
+				messages: [{ role: "assistant", content: [{ type: "text", text: "agent output" }] }],
+			})) as never,
 		});
 
-		const script = `
-			export const meta = { name: "integration_test", description: "test" };
-			phase("Phase 1");
-			await agent("test agent", { label: "agent 1" });
-		`;
+		const script = `export const meta = { name: "integration_test", description: "test" };
+const g = graph();
+g.node("look", agent("scout", () => "inspect"));
+g.edge("look", END);
+g.run();`;
 
-		await tool.execute("call-1", { script }, undefined, undefined, { cwd: tempDir, sessionManager: { getSessionId: () => "s1" } } as any);
+		await tool.execute("call-1", { script }, undefined, undefined, {
+			cwd: tempDir,
+			sessionManager: { getSessionId: () => "s1" },
+		} as any);
 
 		const runs = manager.listRuns();
 		expect(runs.length).toBe(1);
 		expect(runs[0].workflowName).toBe("integration_test");
 		expect(runs[0].status).toBe("completed");
 		expect(runs[0].agents.length).toBe(1);
-		expect(runs[0].agents[0].label).toBe("agent 1");
+		expect(runs[0].agents[0].label).toBe("look (scout)");
 		expect(runs[0].agents[0].status).toBe("done");
+	});
+
+	it("records one manager entry per node visit, so loops stay visible", async () => {
+		const { createGraphWorkflowTool } = await import("../extensions/graph-tool.ts");
+		// Count per agent, not globally: green must block on ITS first call,
+		// which is the second spawn overall.
+		const calls: Record<string, number> = {};
+		const tool = createGraphWorkflowTool({
+			cwd: tempDir,
+			workflowManager: manager,
+			spawnAgent: (async (_cwd: string, agentConfig: { name: string }) => {
+				const name = agentConfig.name;
+				calls[name] = (calls[name] ?? 0) + 1;
+				const blocked = name === "green" && calls[name] === 1;
+				return {
+					agent: name,
+					task: "t",
+					exitCode: 0,
+					usage: { totalTokens: 5 },
+					messages: [
+						{
+							role: "assistant",
+							content: [
+								{ type: "text", text: blocked ? "STATUS: blocked\nBLOCKED_ON: contract" : "done" },
+							],
+						},
+					],
+				};
+			}) as never,
+		});
+
+		const script = `export const meta = { name: "loop_test", description: "escalation" };
+const g = graph();
+g.node("architect", agent("architect", () => "design"));
+g.node("green", agent("green", (s) => "build " + s.architect));
+g.edge("architect", "green");
+g.edge("green", (state, result) => result.status === "blocked" ? "architect" : END);
+g.run();`;
+
+		await tool.execute("call-2", { script }, undefined, undefined, {
+			cwd: tempDir,
+			sessionManager: { getSessionId: () => "s1" },
+		} as any);
+
+		const runs = manager.listRuns();
+		// architect, green, architect, green — collapsing repeats would hide
+		// the escalation loop, which is the thing worth seeing.
+		expect(runs[0].agents.length).toBe(4);
+		expect(runs[0].agents.map((a) => a.label)).toEqual([
+			"architect (architect)",
+			"green (green)",
+			"architect (architect)",
+			"green (green)",
+		]);
 	});
 
 	it("getRunSource returns the script/cwd a run was registered with", () => {

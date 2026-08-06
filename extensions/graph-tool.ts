@@ -25,16 +25,22 @@ import {
 import { createNodeRunner, type InteractiveHandlers } from "./graph-node-runner.ts";
 import { GraphRunContext } from "./graph-run-context.ts";
 import { buildGraphFromScript, GraphValidationError } from "./graph-validator.ts";
+import { GraphDisplayBridge } from "./graph-display-bridge.ts";
+import { loadSavedWorkflowScript, saveWorkflowScript } from "./workflow-library.ts";
+import type { WorkflowManager } from "./workflow-manager.ts";
 import type { ForkContextOptions } from "./types.ts";
 import { runSingleAgent } from "./execution.ts";
 
 const GraphToolParams = Type.Object({
-	script: Type.String({
-		description:
-			"Graph workflow script. Must begin with `export const meta = { name, description }`. " +
+	script: Type.Optional(
+		Type.String({
+			description:
+				"Graph workflow script. Must begin with `export const meta = { name, description }`. " +
 			"Create a graph with graph(), define nodes with g.node(id, agent(name, promptFn) | mainAgent(prompt) | human(prompt, opts)), " +
-			"route with g.edge(from, to | (state, result) => target), and start it with g.run({ ... }).",
-	}),
+				"route with g.edge(from, to | (state, result) => target), and start it with g.run({ ... }). " +
+				"Required unless loadWorkflow names a saved graph.",
+		}),
+	),
 	args: Type.Optional(
 		Type.Any({
 			description: "Values available to the script as `args`. Must be JSON-serialisable.",
@@ -63,6 +69,18 @@ const GraphToolParams = Type.Object({
 				"Resume a previous run, skipping nodes that already completed. Requires an unchanged script.",
 		}),
 	),
+	loadWorkflow: Type.Optional(
+		Type.String({
+			description:
+				"Run a previously saved graph by name instead of passing `script`. See /saved-workflows for what exists.",
+		}),
+	),
+	saveWorkflow: Type.Optional(
+		Type.Boolean({
+			description:
+				"Persist this graph under meta.name after a successful run so it can be re-run later with loadWorkflow. Default false.",
+		}),
+	),
 });
 
 export interface GraphToolOptions {
@@ -70,6 +88,11 @@ export interface GraphToolOptions {
 	cwd?: string;
 	/** Injected so tests can run graphs without spawning processes. */
 	spawnAgent?: typeof runSingleAgent;
+	/**
+	 * Feeds run progress to /workflows, the task panel, and workflow_status.
+	 * Optional so the tool stays usable headless and in tests.
+	 */
+	workflowManager?: WorkflowManager;
 	handlers?: InteractiveHandlers;
 	onRunStart?: (info: { runId: string; name: string; nodeIds: string[] }) => void;
 	onNodeStart?: (info: { step: number; nodeId: string; nodeType: string }) => void;
@@ -156,12 +179,28 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const cwd = options.cwd ?? ctx.cwd;
-			const scriptHash = graphScriptHash(params.script);
+
+			let script: string;
+			if (params.loadWorkflow) {
+				const saved = loadSavedWorkflowScript(cwd, params.loadWorkflow);
+				if (!saved) {
+					throw new Error(
+						`No saved workflow named "${params.loadWorkflow}". Use /saved-workflows to see what exists, or pass a script.`,
+					);
+				}
+				script = saved;
+			} else if (params.script) {
+				script = params.script;
+			} else {
+				throw new Error("workflow requires either `script` or `loadWorkflow`.");
+			}
+
+			const scriptHash = graphScriptHash(script);
 
 			// Validate first: a bad script must cost nothing.
 			let built: ReturnType<typeof buildGraphFromScript>;
 			try {
-				built = buildGraphFromScript(params.script, { args: params.args });
+				built = buildGraphFromScript(script, { args: params.args });
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				const roster =
@@ -230,6 +269,17 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 				initialState: graph.initialState,
 			});
 
+			const display = options.workflowManager
+				? new GraphDisplayBridge({
+						manager: options.workflowManager,
+						runId,
+						name: meta.name,
+						description: meta.description,
+						script,
+						cwd,
+					})
+				: undefined;
+
 			options.onRunStart?.({ runId, name: meta.name, nodeIds });
 
 			const forkContext: ForkContextOptions | undefined = ctx.model
@@ -257,10 +307,19 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 						spawnAgent: spawnAgent as never,
 						handlers: options.handlers,
 					}),
-					onNodeStart: options.onNodeStart,
+					onNodeStart: (info) => {
+						display?.nodeStarted({
+							...info,
+							agentName: graph.nodes.get(info.nodeId)?.def.type === "agent"
+								? (graph.nodes.get(info.nodeId)?.def as { agentName: string }).agentName
+								: undefined,
+						});
+						options.onNodeStart?.(info);
+					},
 					onNodeComplete: (execution) => {
 						journal.recordNode(execution);
 						context.recordNode(execution);
+						display?.nodeCompleted(execution);
 						options.onNodeComplete?.(execution);
 					},
 				});
@@ -274,7 +333,19 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 				durationMs: result.durationMs,
 				error: result.error,
 			});
+			display?.runCompleted(result);
 			options.onRunComplete?.(result);
+
+			// Only persist a graph that actually worked: saving a broken one
+			// would offer it for reuse under a name that implies it runs.
+			let savedAs: string | undefined;
+			if (params.saveWorkflow && result.status === "completed") {
+				try {
+					savedAs = saveWorkflowScript(cwd, script, meta).name;
+				} catch {
+					// Reported below; a save failure must not fail the run.
+				}
+			}
 
 			const summary = context.summary();
 			const lines: string[] = [];
@@ -309,6 +380,12 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 			}
 			if (journal.writeErrors.length > 0) {
 				lines.push(`\nNote: the run journal could not be written (${journal.writeErrors[0]}).`);
+			}
+
+			if (savedAs) {
+				lines.push(`\nSaved as "${savedAs}"; re-run it later with loadWorkflow: "${savedAs}".`);
+			} else if (params.saveWorkflow && result.status !== "completed") {
+				lines.push("\nNot saved: only graphs that complete successfully are persisted.");
 			}
 
 			lines.push(`\nRun ID: ${runId}${result.status !== "completed" ? " (resumable)" : ""}`);
