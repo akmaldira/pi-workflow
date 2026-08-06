@@ -8,6 +8,7 @@ import {
 	createNodeRunner,
 	KNOWN_BLOCKED_ON,
 	parseAgentResult,
+	rehydrateState,
 	resolveGraphAgent,
 } from "../extensions/graph-node-runner.ts";
 import type { SingleResult } from "../extensions/types.ts";
@@ -438,6 +439,76 @@ describe("createNodeRunner: interactive nodes", () => {
 
 		expect(outcome.result).toMatchObject({ status: "skipped" });
 		expect(outcome.technicalFailure).toBeFalsy();
+	});
+
+	// Live-tested regression: human()/mainAgent() node results interpolated
+	// into a downstream prompt (`${state.ask}`) rendered as the literal text
+	// "[object Object]" instead of the chosen value, because only agent()
+	// results were given a toString(). Confirmed against a real model via
+	// the workflow tool's input.md artifact before this fix existed.
+	it("a human node's result interpolates to its answer, not [object Object]", async () => {
+		const onHuman = vi.fn().mockResolvedValue("fast");
+		const runner = createNodeRunner({
+			cwd,
+			runId: "r1",
+			spawnAgent: vi.fn() as never,
+			handlers: { onHuman },
+		});
+
+		const node = { id: "ask", def: human("Pick a mode", { options: ["fast", "thorough"], default: "fast" }) };
+		const outcome = await runner(node, {}, { step: 1, runId: "r1" });
+
+		expect(`${outcome.result}`).toBe("fast");
+		expect(`Chosen mode: "${outcome.result}"`).toBe('Chosen mode: "fast"');
+	});
+
+	it("a headless human node's default-fallback result also interpolates to its answer", async () => {
+		const runner = createNodeRunner({ cwd, runId: "r1", spawnAgent: vi.fn() as never });
+
+		const node = { id: "ask", def: human("Pick a mode", { options: ["fast", "thorough"], default: "fast" }) };
+		const outcome = await runner(node, {}, { step: 1, runId: "r1" });
+
+		expect(`${outcome.result}`).toBe("fast");
+	});
+
+	it("a headless human node with no default interpolates to an empty string, not [object Object]", async () => {
+		const runner = createNodeRunner({ cwd, runId: "r1", spawnAgent: vi.fn() as never });
+
+		const node = { id: "ask", def: human("Approve?") };
+		const outcome = await runner(node, {}, { step: 1, runId: "r1" });
+
+		expect(`${outcome.result}`).toBe("");
+	});
+
+	it("a headless main-agent checkpoint's result interpolates to an empty string, not [object Object]", async () => {
+		const runner = createNodeRunner({ cwd, runId: "r1", spawnAgent: vi.fn() as never });
+
+		const node = { id: "think", def: mainAgent("Review this") };
+		const outcome = await runner(node, {}, { step: 1, runId: "r1" });
+
+		expect(`${outcome.result}`).toBe("");
+		expect(`Review result: "${outcome.result}"`).toBe('Review result: ""');
+	});
+
+	it("a human node's result surviving a JSON round-trip (resume) still interpolates correctly", async () => {
+		// rehydrateState() re-attaches toString() after journal replay, where
+		// JSON.parse has stripped it. Only kicks in for values with a `text`
+		// field — verifies human()/mainAgent() results qualify now too.
+		const onHuman = vi.fn().mockResolvedValue("fast");
+		const runner = createNodeRunner({
+			cwd,
+			runId: "r1",
+			spawnAgent: vi.fn() as never,
+			handlers: { onHuman },
+		});
+		const node = { id: "ask", def: human("Pick a mode", { options: ["fast", "thorough"], default: "fast" }) };
+		const outcome = await runner(node, {}, { step: 1, runId: "r1" });
+
+		const roundTripped = JSON.parse(JSON.stringify({ ask: outcome.result }));
+		expect(`${roundTripped.ask}`).toBe("[object Object]"); // proves toString() was lost by JSON
+
+		rehydrateState(roundTripped);
+		expect(`${roundTripped.ask}`).toBe("fast"); // proves rehydrateState() restores it
 	});
 });
 

@@ -277,11 +277,12 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 					// explicit marker so an edge can notice the checkpoint was
 					// skipped instead of mistaking silence for approval.
 					return {
-						result: {
+						result: withResultText({
 							status: "skipped",
+							text: "",
 							reason: "No main-agent handler is available (headless run).",
 							prompt,
-						},
+						}),
 					};
 				}
 				const reply = await options.handlers.onMainAgent(prompt, state);
@@ -299,16 +300,23 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 			case "human": {
 				const def = node.def;
 				if (!options.handlers?.onHuman) {
+					const answer = def.default;
 					return {
-						result: {
+						result: withResultText({
 							status: def.default !== undefined ? "default" : "skipped",
-							answer: def.default,
+							// `text` mirrors `answer` so interpolating a human node's
+							// result into a downstream prompt (`${state.ask}`) yields
+							// the chosen value instead of "[object Object]" — the same
+							// contract agent() results carry. `answer` stays for callers
+							// that want the structured field by name.
+							text: answer ?? "",
+							answer,
 							reason:
 								def.default !== undefined
 									? "No UI available; used the node's default answer."
 									: "No UI available and no default was set.",
 							prompt: def.prompt,
-						},
+						}),
 					};
 				}
 				const raw = await options.handlers.onHuman(
@@ -329,11 +337,13 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 
 				const status =
 					reported.source === "human" ? "ok" : reported.source === "default" ? "default" : "skipped";
+				const answer = reported.answer || def.default;
 
 				return {
-					result: {
+					result: withResultText({
 						status,
-						answer: reported.answer || def.default,
+						text: answer ?? "",
+						answer,
 						prompt: def.prompt,
 						...(status === "ok"
 							? {}
@@ -343,7 +353,7 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 											? "No answer was given; fell back to the node's default."
 											: "No answer was given and no default was set.",
 								}),
-					},
+					}),
 				};
 			}
 		}
