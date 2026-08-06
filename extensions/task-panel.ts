@@ -31,12 +31,25 @@ export function registerTaskPanel(
 		const key = `wf:${runId}`;
 		if (run.status === "running") {
 			activeKeys.add(key);
-			const total = run.snapshot.agents.length;
-			const done = run.snapshot.agents.filter((a) => a.status === "done").length;
-			const running = run.snapshot.agents.filter((a) => a.status === "running").length;
-			const errors = run.snapshot.agents.filter((a) => a.status === "error").length;
+			const agents = run.snapshot.agents;
+			const done = agents.filter((a) => a.status === "done").length;
+			const errors = agents.filter((a) => a.status === "error").length;
+			const active = agents.filter((a) => a.status === "running");
 
-			const statusText = `▶ Workflow "${run.snapshot.meta.name}": ${done}/${total} done${running ? `, ${running} running` : ""}${errors ? `, ${errors} err` : ""} · ${run.snapshot.totalTokens}t`;
+			// A graph reports which node is running rather than a completion
+			// ratio. "3/5" implies a pipeline with a known end; a graph revisits
+			// nodes, so the denominator grows as it runs and the fraction can
+			// appear to go backwards. The useful question mid-run is "who is
+			// working now", and after a loop, "how many steps has this taken".
+			const position =
+				active.length === 1
+					? `${active[0].label}`
+					: active.length > 1
+						? `${active.length} running`
+						: `${done} step${done === 1 ? "" : "s"} done`;
+
+			const errorPart = errors ? `, ${errors} err` : "";
+			const statusText = `▶ ${run.snapshot.meta.name}: ${position}${errorPart} · step ${agents.length} · ${run.snapshot.totalTokens}t`;
 			ui.setStatus(key, statusText);
 		} else {
 			ui.setStatus(key, undefined);
@@ -64,6 +77,9 @@ export function registerTaskPanel(
 	};
 
 	const events = ["agentStart", "agentEnd", "phase", "log", "paused", "resumed"];
+	// agentStart fires per node visit, so a revisited node refreshes the
+	// panel and the running label tracks the walk rather than freezing on the
+	// first occurrence.
 	for (const ev of events) {
 		manager.on(ev, onRunEvent);
 	}
@@ -92,13 +108,22 @@ export function registerTaskPanel(
 export function deliverResultSummary(run: ManagedRun, error?: string): string {
 	const name = run.snapshot.meta.name || "workflow";
 	const duration = (run.snapshot.durationMs / 1000).toFixed(1);
-	const agentsCount = run.snapshot.agents.length;
+	const steps = run.snapshot.agents.length;
 	const tokens = run.snapshot.totalTokens;
 
+	// Counted as steps rather than agents: a graph that loops runs the same
+	// agent more than once, so "5 agents" would overstate how many distinct
+	// participants were involved.
+	const scale = `${steps} step${steps === 1 ? "" : "s"}, ${tokens}t`;
+
 	if (error) {
-		return `✗ Background workflow "${name}" failed after ${duration}s (${agentsCount} agents, ${tokens}t):\n\nError: ${error}`;
+		return `✗ Workflow "${name}" failed after ${duration}s (${scale}):\n\nError: ${error}`;
 	}
 
+	// The path shows where work actually went, including any loops back.
+	const pathLog = run.snapshot.logs.find((line) => line.startsWith("Path: "));
+	const pathLine = pathLog ? `\n${pathLog}\n` : "";
+
 	const summaryText = renderWorkflowText(run.snapshot, { compact: true });
-	return `✓ Background workflow "${name}" completed in ${duration}s (${agentsCount} agents, ${tokens}t).\n\n${summaryText}`;
+	return `✓ Workflow "${name}" completed in ${duration}s (${scale}).\n${pathLine}\n${summaryText}`;
 }

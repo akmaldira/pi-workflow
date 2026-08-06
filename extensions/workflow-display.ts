@@ -134,9 +134,13 @@ export function renderWorkflowText(snapshot: WorkflowSnapshot, options: Workflow
 	// Header
 	const status = statusIcon(snapshot.status);
 	const title = `${status} Workflow: ${snapshot.meta.name || "unnamed"}`;
+	// Counted as steps: a graph that loops runs the same agent more than
+	// once, so "5 agents" would overstate how many distinct participants took
+	// part. Phased runs execute each agent once, so the two coincide there.
+	const unit = snapshot.totalAgents === 1 ? "step" : "steps";
 	const statsStr = compact
-		? `${snapshot.totalAgents} agents, ${snapshot.totalTokens}t`
-		: `(${snapshot.totalAgents} agents, ${snapshot.totalTokens} tokens used)`;
+		? `${snapshot.totalAgents} ${unit}, ${snapshot.totalTokens}t`
+		: `(${snapshot.totalAgents} ${unit}, ${snapshot.totalTokens} tokens used)`;
 
 	lines.push(`◆ ${title} ${statsStr}`);
 
