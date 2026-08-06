@@ -95,6 +95,84 @@ empirically-grounded patterns found during that research:
 
 ## 4. Phased design
 
+### Phase 0 — Agent catalog: scaffolding + visibility
+
+This phase exists because two things were wrong in the initial draft of this document, caught in
+review and corrected here:
+
+1. The `.pi/agents/*.md` files in this repo today (`planner`, `architect`, `monitor`, `red`,
+   `green`, `reviewer`, plus the pre-existing `researcher`/`reviewer`/`scout`/`worker`) are
+   **dev-time fixtures for this project's own test/dogfood setup, not something an installed
+   copy of pi-workflow ships to a team's project.** `discoverAgents()`
+   (`extensions/agents.ts`) only ever looks in `~/.pi/agent/agents` (user) and
+   `<project>/.pi/agents` (project) — locations outside the installed npm package entirely. A
+   team running `pi install npm:pi-workflow` today gets the tools/commands and **zero agents**;
+   they'd have to hand-author every agent `.md` file themselves before any of Phases 1–6 is
+   useful. That's a real gap this design failed to address, not something already solved.
+2. The main pi agent — the one deciding *whether and how* to write a workflow script in the
+   first place — has **no visibility into which agents exist** when it makes that decision. The
+   `workflow` tool's `promptGuidelines` (`extensions/workflow-tool.ts`) explain `agent()`'s
+   syntax but never enumerate available agents. The only place that catalog is surfaced today is
+   the `/agents` command, which is a human-facing slash command (`ctx.ui.setWidget` output) —
+   the LLM never sees it automatically. So while a *running script* can call any agent by name
+   dynamically (this part was correctly analyzed in §10), the main agent choosing *which* agents
+   a given task needs is working blind unless it happens to read the two agent directories
+   itself, which nothing currently prompts it to do.
+
+**What ships.**
+
+1. **Bundled agent catalog + first-run scaffolding.** The package ships its own agent
+   definitions in a `bundled-agents/` directory alongside `extensions/` (not under `.pi/agents/`,
+   which is a discovery *location*, not a package-distribution mechanism). On `session_start`,
+   the extension checks the project's `.pi/agents/` directory and copies in any bundled agent
+   whose filename doesn't already exist there — non-destructively: never overwrites a file the
+   team has since edited, renamed, or deliberately deleted. After the one-time copy, these are
+   ordinary project agents, fully editable/removable like any other — nothing about them stays
+   "owned" by the package once scaffolded. This directly answers your correction: they are
+   **hardcoded, installed, ready-to-use agents**, not documentation examples a team has to
+   reproduce by hand.
+2. **Catalog-aware `workflow` tool description.** At the same `session_start` point where
+   `discoverAgents()` is already called elsewhere in `index.ts`, build a compact roster string
+   (name + one-line description per discovered agent, both user- and project-scope) and fold it
+   into the `workflow` tool's `promptGuidelines` via `pi.registerTool()` (safe to call again —
+   `pi.registerTool()` refreshes the tool's definition immediately in the same session per the
+   extension API). This makes "here is who's available" ambient context every time the main
+   agent considers using `workflow`, instead of something it has to go discover.
+3. **`list_agents` tool** (distinct from the `/agents` *command*, which stays as the human-facing
+   TUI view) — a small LLM-callable tool returning the same catalog on demand, for cases where
+   the roster changed mid-session (a team added a new agent file) after the baked-in
+   `promptGuidelines` snapshot from step 2 went stale.
+4. **Explicit prompt guidance for composition, not just visibility.** Visibility alone doesn't
+   guarantee the main agent varies its team per task rather than defaulting to the same shape out
+   of habit. Add a `promptGuidelines` bullet along the lines of: "Before writing a workflow
+   script, review the available agent catalog and select only the roles this specific task
+   needs — do not default to running every catalog agent for every task; a one-file bug fix may
+   need only `worker`, while a multi-component feature may need `planner → architect → monitor →
+   red → green → reviewer` or a different subset entirely." This is the piece that actually
+   answers "different task, different team" at the point where team composition is chosen, not
+   just the (already-true) mechanical fact that a script *can* call any agent.
+
+**Where in the codebase.**
+- New `bundled-agents/*.md` directory, package-relative (resolved via `import.meta.url`, which
+  jiti-loaded extensions can use to find their own install location — confirmed working; there is
+  no existing pi mechanism for extensions to contribute a bundled agent search path the way
+  `resources_discover` does for skill/prompt/theme paths, so scaffold-on-first-run is the correct
+  approach here, not a missing engine feature to request upstream).
+- `extensions/index.ts`'s existing `session_start` handler: add the scaffold-copy step (present
+  vs. absent check per filename, copy if absent, skip if present — same idempotent pattern
+  already used for `pi.setActiveTools()` in that same handler) and the catalog-string build step
+  feeding into `pi.registerTool(workflowTool)`.
+- New `extensions/agent-catalog.ts`: `scaffoldBundledAgents(projectDir)` (copy-if-absent),
+  `buildAgentCatalogSummary(discovery)` (formats the roster string for `promptGuidelines`), and
+  the `list_agents` tool definition — kept in a new file rather than growing `index.ts` further,
+  consistent with the project's existing one-concern-per-file convention.
+
+**Why this is Phase 0, not folded into Phase 1.** Every later phase assumes a team actually has
+usable agents and the main agent can see them — without this, Phases 1–6 are correct in the
+abstract but unusable in practice on a fresh install. It has zero dependency on the escalation
+primitive (Phase 1) or anything else, so it can and should ship first, independent of every other
+phase's timeline.
+
 ### Phase 1 — Escalation primitive (`agent()` third outcome)
 
 **What.** Extend the subagent contract so an agent can report `blocked` instead of being forced
@@ -188,12 +266,12 @@ plan" conclusion from our discussion) — it's a distinct, disinterested role.
   files/symbols in the repo, are its interfaces internally consistent, does it look
   implementable as stated. Returns the same `blocked`-or-approved shape as Phase 1, so it
   composes with the same retry-loop pattern.
-- A prewritten `monitor.md`-style example agent ships in the package's `.pi/agents/` examples
-  (alongside the existing `researcher.md`/`reviewer.md`/`scout.md`/`worker.md`), with frontmatter
-  scoped to read-only tools plus repo search — it must never be able to write, only assess.
-- This is a **script-level convention**, not a new engine feature — Phase 2 needs zero changes to
-  `workflow.ts`'s runtime once Phase 1 ships. It's a documented pattern (`SKILL.md` gets a new
-  "Plan review gate" section) plus one example agent file.
+- The `monitor` agent this phase needs already exists by this point — it's one of the six bundled,
+  auto-scaffolded roles from Phase 0 (§9), with frontmatter scoped to read-only tools plus repo
+  search; it must never be able to write, only assess. Phase 2 adds no new agent file of its own.
+- This is otherwise a **script-level convention**, not a new engine feature — Phase 2 needs zero
+  changes to `workflow.ts`'s runtime once Phase 1 ships. It's a documented pattern (`SKILL.md`
+  gets a new "Plan review gate" section) plus the optional `reviewPlan()` helper.
 
 **Why phase 2, not phase 1.** It only pays off once Phase 1's escalation shape exists (the
 monitor's "send it back" signal *is* a `blocked` result), so it's sequenced after.
@@ -314,28 +392,37 @@ Reasons to defer:
 
 | Phase | New engine surface | New docs/examples | Depends on |
 |---|---|---|---|
+| 0. Agent catalog: scaffolding + visibility | `bundled-agents/*.md`, `scaffoldBundledAgents()`, `buildAgentCatalogSummary()`, `list_agents` tool in new `agent-catalog.ts` | README/SKILL.md: bundled roster list, first-run scaffolding note | none |
 | 1. Escalation primitive | `AgentBlockedResult` shape in `structured-output.ts`, third `agent()` return branch in `workflow.ts` | `workflow-api.md`: `isBlocked()` helper, escalation-loop example | none |
-| 2. Plan review gate | none (pure script convention) | `SKILL.md` "Plan review gate" section, `monitor.md` example agent | Phase 1 |
+| 2. Plan review gate | none (pure script convention) | `SKILL.md` "Plan review gate" section | Phase 1 (+ Phase 0 for the `monitor` agent to exist) |
 | 3. Contract artifacts | `contract` sandboxed global, `writeContractRevision()` in `artifacts.ts` | `workflow-api.md`: `contract.read()/revise()` reference | Phase 1 (revisions are usually escalation responses) |
-| 4. Verification tightening | `taskMayMutate()` wired into `resolveEffectiveAcceptance()` | `SKILL.md`: default acceptance for implementation tasks | none (independent of 1–3) |
+| 4. Verification tightening | `taskMayMutate()` wired into `resolveEffectiveAcceptance()` | `SKILL.md`: default acceptance for implementation tasks | none (independent of 0–3) |
 | 5. Human escalation + delegation threshold | `askHuman` sandboxed global, `ui` threaded into `WorkflowRunOptions` | `SKILL.md`: `askHuman()` reference, headless-degrade behavior | Phase 1 (mainly triggered by exhausted `blocked` retries) |
-| 6. Standing coordinator | — deferred — | — deferred — | 1–5 shipped + real usage evidence |
+| 6. Standing coordinator | — deferred — | — deferred — | 0–5 shipped + real usage evidence |
 
-Phases 1 and 4 have no interdependency and can be built in parallel. Phase 2 and 3 both build on
-Phase 1's shape. Phase 5 is mostly independent but its most common trigger (exhausted blocked
-retries) is more useful once Phase 1 exists.
+Phase 0 has no dependency on anything and should ship first — every later phase assumes a team
+already has usable, visible agents. Phases 1 and 4 have no interdependency and can be built in
+parallel once Phase 0 lands. Phase 2 and 3 both build on Phase 1's shape (Phase 2 additionally
+needs Phase 0's `monitor` agent to exist). Phase 5 is mostly independent but its most common
+trigger (exhausted blocked retries) is more useful once Phase 1 exists.
 
 ## 6. Testing strategy
 
 Following the project's existing convention (every extension module has a matching
 `tests/*.test.ts`, currently 530 tests across 32 files):
 
+- **Phase 0**: unit tests for `scaffoldBundledAgents()` (copies missing files, never overwrites
+  an existing file with the same name, idempotent on repeated calls); unit tests for
+  `buildAgentCatalogSummary()` (formats a `discoverAgents()` result into the expected
+  `promptGuidelines` string, handles zero-agents and many-agents cases); unit tests for the
+  `list_agents` tool (returns current catalog, reflects agents added after the tool was first
+  registered — this is the main reason it exists alongside the baked-in snapshot).
 - **Phase 1**: unit tests for the new `agent()` branch (mock `agentRunner.run()` returning a
   `blocked` shape, assert `agent()` returns it un-thrown, un-swallowed); unit tests for
   `structured-output.ts`'s new decode path.
 - **Phase 2**: no new runtime tests needed (pure convention); integration test using the existing
-  mock-`pi`-harness pattern (see `tests/workflow-mode.test.ts`) to verify the example `monitor.md`
-  agent parses correctly via `discoverAgents()`.
+  mock-`pi`-harness pattern (see `tests/workflow-mode.test.ts`) to verify the bundled `monitor.md`
+  agent (shipped via Phase 0) parses correctly via `discoverAgents()`.
 - **Phase 3**: unit tests for `writeContractRevision()` (append-not-overwrite behavior, changelog
   format); unit tests for the `contract` sandboxed global (mirrors existing `budget` global
   tests).
@@ -386,9 +473,11 @@ These were open questions in the initial draft; resolved by the team:
    if a team wants a decision to persist across runs, that's an explicit human action (copy
    relevant context into the next run's initial prompt or a checked-in doc), not something the
    engine does automatically.
-3. **Pre-built agent catalog ships with the package.** See §9 below — planner, architect,
-   monitor, red, green, and reviewer example agents are added to the package's shipped
-   `.pi/agents/` examples, not left as a "write your own" exercise per team.
+3. **Pre-built agent catalog ships with the package, bundled and auto-scaffolded, not just
+   documented.** See §9 below and Phase 0 — planner, architect, monitor, red, green, and reviewer
+   agents ship inside the package and are copied into a team's `.pi/agents/` automatically on
+   first run, so a team gets a working roster immediately after `pi install`, not a "write your
+   own from these examples" exercise.
 
 Phase 2's monitor agent (and the other new catalog roles in §9) still need real prompt tuning
 through actual dogfooding on a live TDD-style workflow before being considered production-ready
@@ -398,39 +487,43 @@ contract mismatch, not just passed a unit test of the plumbing.
 
 ## 9. Pre-built agent catalog
 
-To make Phases 1–5 usable out of the box rather than requiring every team to author their own
-agent `.md` files from scratch, the package ships a small set of common, reusable roles under
-`.pi/agents/` (project scope, following the existing example-agent convention already used for
-`researcher.md`/`reviewer.md`/`scout.md`/`worker.md`). These are starting points, not a fixed
-cast — see §10 for how a workflow script picks a subset of them per run rather than always using
-all of them.
+Correction from the initial draft: these are **not documentation examples a team reproduces by
+hand** — per Phase 0, they are bundled `.md` files that ship inside the pi-workflow package and
+get copied into a team's `.pi/agents/` automatically on first run (scaffold-if-absent, never
+overwrite). A team that runs `pi install npm:pi-workflow` gets all six roles below, ready to use,
+without writing a single frontmatter file themselves. From that point on they behave exactly like
+any other project agent — fully theirs to edit, rename, or delete; nothing about them stays
+"owned" by the package after the one-time scaffold copy, and nothing about them is special-cased
+in the engine (`discoverAgents()`/`AgentConfig` treat them identically to a hand-authored agent).
+
+These are a **starting roster, not a fixed cast** — see §10 for how the *main agent* selects a
+task-appropriate subset of them (or agents a team has added beyond this set) per run, rather than
+always using all of them or always using the same subset.
 
 | Agent | Role | Tools | Notes |
 |---|---|---|---|
-| `planner` | Decomposes a task into a plan; read-only, no implementation | read-only (`read`, `grep`, `find`, `ls`) | Existing convention: never given write tools, so it structurally cannot slide into implementation (mirrors coding-agent's finding). |
+| `planner` | Decomposes a task into a plan; read-only, no implementation | read-only (`read`, `grep`, `find`, `ls`) | Never given write tools, so it structurally cannot slide into implementation (mirrors coding-agent's finding). |
 | `architect` | Turns a plan into concrete interfaces/contracts | read-only + `contract.revise()` (Phase 3) | Owns the contract artifact; the only role that should call `contract.revise()` in a typical script, by convention not enforcement. |
 | `monitor` | Independent plan-feasibility gate (Phase 2) | read-only, repo search | Never implements, never grades its own output — reviews architect's contract before implementation starts. |
-| `red` | Writes failing tests against a contract | `read`, `write` (tests only, by prompt convention), `bash` (test runner) | Existing `worker`-style agent, scoped by prompt to test files. |
+| `red` | Writes failing tests against a contract | `read`, `write` (tests only, by prompt convention), `bash` (test runner) | Scoped by prompt to test files. |
 | `green` | Implements to make tests pass | `read`, `write`, `edit`, `bash` | The role most likely to hit the "blocked" case (Phase 1) — its frontmatter should have `canEscalate: true` (the default). |
-| `reviewer` | Independent code review, no self-grading | read-only | Already exists in the package's examples; documented here as part of the same catalog for discoverability. |
+| `reviewer` | Independent code review, no self-grading | read-only | Included in the bundled set for discoverability alongside the newer roles above. |
 
-Each ships as a normal frontmatter `.md` file — no new agent-definition mechanism, just more
-examples using the existing `discoverAgents()`/`AgentConfig` machinery (`extensions/agents.ts`).
-Teams can copy, rename, or override any of them the same way they already can with the existing
-example agents; nothing about this catalog is special-cased in the engine.
+A team is expected to add their own roles to this roster over time (a `security_specialist`, a
+`migration_specialist`, a domain-specific reviewer) the same way they'd add any project agent —
+the bundled six are a floor to get started productively on day one, not a ceiling.
 
 ## 10. Does this design support dynamically assembling a team per problem?
 
-Short answer: **yes, and it already does today, without any new engine mechanism** — but it's
-worth being precise about what "dynamic" means here, because there are two different things that
-could be meant, and this design deliberately supports one and defers the other.
+Corrected answer from the initial draft: **partially yes, partially no — and the initial draft
+overclaimed on the "yes" part by only checking one of the two capabilities this actually
+requires.** There are three distinct tiers here, worth separating precisely:
 
-**What's supported now (script-level dynamic composition).** A workflow script is arbitrary JS
-running in the sandbox — which agents get called, in what order, and how many times, is a runtime
-decision the script makes, not something declared upfront in a fixed pipeline. Nothing in
-Phases 1–5 changes this; if anything, Phase 1's `blocked` result and Phase 5's `askHuman()` make
-it *easier* to write scripts that branch into different team shapes based on what happens
-mid-run:
+**Tier 1 — a running script can call any agent dynamically. (True, already, unchanged from the
+initial draft.)** `agent()`'s resolution (`resolveAgent()` in `extensions/workflow-tool.ts`)
+looks up any discovered agent by name on every call — there's no fixed "team" object instantiated
+once at the start of a run. A script can branch mid-run and call an agent it didn't use earlier,
+including one named by an escalation's `blockedOn` field that wasn't part of the original plan:
 
 ```js
 // Illustrative: team composition decided at runtime, not hardcoded upfront
@@ -454,26 +547,40 @@ if (green?.status === "blocked") {
 }
 ```
 
-This works today because `agent()`'s agent-resolution (`resolveAgent()` in
-`extensions/workflow-tool.ts`) looks up **any** discovered agent by name on **every call** — there
-is no fixed "team" object instantiated once at the start of a run that would need to be extended.
-The "roster" is really just "whatever agents exist in `.pi/agents/`" plus whatever the script's
-control flow decides to call, when. §9's catalog is exactly this: a bigger pool of pre-built roles
-available for scripts to pull from, and a script for problem A might use `planner → architect →
-green` while a script for problem B pulls in `planner → architect → security_specialist → green →
-reviewer` — same engine, same `agent()` primitive, different composition, decided by whoever
-writes (or an LLM writes) the script for that specific problem.
+**Tier 2 — the main agent can see and choose an appropriate subset of the roster before writing
+the script. (False as originally designed — this is exactly the gap you caught. Fixed by Phase
+0.)** Tier 1 being true says nothing about whether the *main pi agent*, at the point it decides
+whether and how to write a workflow script, actually knows the roster exists or is prompted to
+vary its choice per task. Before Phase 0, the `workflow` tool's guidelines describe `agent()`'s
+syntax but never enumerate available agents, and the only catalog view (`/agents`) is a
+human-facing command the LLM never sees automatically — so in practice the main agent was either
+guessing agent names or defaulting to habitually reaching for the same one or two it happened to
+remember, regardless of what the task actually needed. Phase 0 closes this specific gap: a
+catalog summary baked into the `workflow` tool's guidelines, a `list_agents` tool for on-demand
+refresh, and an explicit instruction to select a task-appropriate subset rather than defaulting.
+With Phase 0 shipped, tiers 1 and 2 together are what actually deliver "different task, different
+team" — a bug fix might get `worker` alone, a multi-component feature might get `planner →
+architect → monitor → red → green → reviewer`, a schema change might additionally pull in a
+`migration_specialist` a team added beyond the bundled six (§9) — with the *choice* made
+knowingly by the main agent reading the catalog, not by accident or by only ever remembering the
+same names.
 
-**What's genuinely not supported, and is the deferred Phase 6 territory.** What the current
-design does *not* do is let the system decide team composition *for you*, autonomously, without a
-human or script author having written the branching logic in advance — i.e., a coordinator that
-looks at an unfamiliar problem and decides on its own "this needs a security specialist" with no
-script author having anticipated that branch, or a coordinator that can synthesize a *new* agent
-definition on the fly for a role that doesn't exist yet in `.pi/agents/`. That's the more radical
-version of dynamic team assembly from our earlier discussion, and it requires something with
-authority to make staffing decisions at runtime and (optionally) author new agent frontmatter —
-which is squarely Phase 6 (standing coordinator), not Phases 1–5. Phases 1–5 give you dynamic
-composition *as code a human (or an LLM asked to write a workflow script) decides in advance*;
-Phase 6 would give you dynamic composition *as a runtime decision an agent makes for you*. The
-former is what's being built now; the latter is deliberately deferred pending evidence the
-former isn't enough.
+**Tier 3 — the system decides team composition for you, autonomously, without any human or script
+author having written that branch in advance, and can synthesize entirely new agent roles on the
+fly. (Not supported, and deliberately out of scope — this is Phase 6 territory, unchanged from
+the initial draft.)** This is the more radical version from our earlier "wild" discussion: a
+standing coordinator that looks at an unfamiliar problem and decides on its own "this needs a
+role that doesn't exist yet," authors a new agent definition, and adds it to the roster mid-run
+without a human or script author having anticipated that possibility at all. That requires
+something with actual staffing *authority* at runtime, not just visibility — a materially
+different, larger piece of infrastructure than Phase 0's "make the existing choice informed"
+fix. Deferred for the same reasons as before: no evidence yet that Tiers 1+2 are insufficient,
+and it introduces its own new failure modes (an agent inventing unnecessary specialist roles,
+cost/scope creep) that need their own design work, not a quick add-on here.
+
+**Summary of what changed in this correction.** The initial draft answered "yes" based on Tier 1
+alone and didn't check Tier 2 at all — which is the tier that actually matters for "when the main
+agent is given a task, it can compose the team that task needs," since Tier 1 only governs what a
+script can do *after* the main agent has already decided what to write. Tier 2 is now Phase 0,
+sequenced first, with no dependency on any other phase. Tier 3 remains correctly deferred to
+Phase 6.
