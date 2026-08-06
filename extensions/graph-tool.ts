@@ -168,11 +168,11 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 					error instanceof GraphValidationError
 						? `\n\n${buildAgentCatalogSummary(discoverAgents(cwd, "both").agents)}`
 						: "";
-				return {
-					content: [{ type: "text" as const, text: `Graph was not run.\n\n${message}${roster}` }],
-					isError: true,
-					details: { validated: false, error: message },
-				};
+				// Throw rather than returning isError: the agent loop derives a
+				// tool result's error status from whether execute() threw and
+				// ignores a returned isError field, so returning one would report
+				// this failure to the model as a success containing error text.
+				throw new Error(`Graph was not run.\n\n${message}${roster}`);
 			}
 
 			const { meta, graph } = built;
@@ -190,13 +190,7 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 				});
 
 				if (!resumeState.isValid) {
-					return {
-						content: [
-							{ type: "text" as const, text: `Cannot resume: ${resumeState.invalidReason}` },
-						],
-						isError: true,
-						details: { resumed: false, error: resumeState.invalidReason },
-					};
+					throw new Error(`Cannot resume: ${resumeState.invalidReason}`);
 				}
 
 				if (resumeState.resumeFrom === null) {
@@ -319,9 +313,16 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 
 			lines.push(`\nRun ID: ${runId}${result.status !== "completed" ? " (resumable)" : ""}`);
 
+			// An aborted run throws so the model sees a failed tool call rather
+			// than a successful one whose text happens to describe a failure. The
+			// full report is preserved in the message, including the resumable run
+			// id, so nothing is lost by throwing.
+			if (result.status === "aborted") {
+				throw new Error(lines.join("\n"));
+			}
+
 			return {
 				content: [{ type: "text" as const, text: lines.join("\n") }],
-				isError: result.status === "aborted",
 				details: {
 					runId,
 					name: meta.name,

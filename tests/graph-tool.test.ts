@@ -35,15 +35,28 @@ describe("graph workflow tool", () => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	function run(script: string, params: Record<string, unknown> = {}, spawn = vi.fn()) {
+	/**
+	 * Runs the tool, normalising a thrown failure into a result shape.
+	 *
+	 * The agent loop marks a tool call failed only when execute() throws — a
+	 * returned isError field is ignored — so hard failures throw. Tests assert
+	 * on `failed` rather than on a returned flag that the runtime never reads.
+	 */
+	async function run(script: string, params: Record<string, unknown> = {}, spawn = vi.fn()) {
 		const tool = createGraphWorkflowTool({ cwd: tempDir, spawnAgent: spawn as never });
-		return tool.execute(
-			"id",
-			{ script, ...params },
-			new AbortController().signal,
-			() => {},
-			{ cwd: tempDir } as never,
-		);
+		try {
+			const result = await tool.execute(
+				"id",
+				{ script, ...params },
+				new AbortController().signal,
+				() => {},
+				{ cwd: tempDir } as never,
+			);
+			return { failed: false, result, text: textOf(result), details: result.details };
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return { failed: true, result: undefined, text: message, details: undefined };
+		}
 	}
 
 	const LINEAR = `${META}
@@ -60,8 +73,8 @@ g.run({ task: args.task });
 			const spawn = vi.fn();
 			const result = await run(`${META}\nconst fs = require("fs");`, {}, spawn);
 
-			expect(result.isError).toBe(true);
-			expect(textOf(result)).toMatch(/not available in a graph script/);
+			expect(result.failed).toBe(true);
+			expect(result.text).toMatch(/not available in a graph script/);
 			// The point of validating first: a bad script costs nothing.
 			expect(spawn).not.toHaveBeenCalled();
 		});
@@ -76,8 +89,8 @@ g.run();
 `;
 			const result = await run(script, {}, spawn);
 
-			expect(result.isError).toBe(true);
-			expect(textOf(result)).toMatch(/undefined node/);
+			expect(result.failed).toBe(true);
+			expect(result.text).toMatch(/undefined node/);
 			expect(spawn).not.toHaveBeenCalled();
 		});
 
@@ -86,15 +99,15 @@ g.run();
 			// not exist, so the reply should say which ones do.
 			const result = await run(`${META}\nconst x = process.env;`);
 
-			expect(textOf(result)).toMatch(/Available agents/);
-			expect(textOf(result)).toMatch(/planner/);
+			expect(result.text).toMatch(/Available agents/);
+			expect(result.text).toMatch(/planner/);
 		});
 
 		it("rejects a missing meta header", async () => {
 			const result = await run(`const g = graph();`);
 
-			expect(result.isError).toBe(true);
-			expect(textOf(result)).toMatch(/must be the first statement/);
+			expect(result.failed).toBe(true);
+			expect(result.text).toMatch(/must be the first statement/);
 		});
 	});
 
@@ -103,9 +116,9 @@ g.run();
 			const spawn = vi.fn().mockResolvedValue(reply("done"));
 			const result = await run(LINEAR, { args: { task: "ship" } }, spawn);
 
-			expect(result.isError).toBeFalsy();
-			expect(textOf(result)).toContain("completed in 2 steps");
-			expect(textOf(result)).toContain("Path: plan -> build -> END");
+			expect(result.failed).toBe(false);
+			expect(result.text).toContain("completed in 2 steps");
+			expect(result.text).toContain("Path: plan -> build -> END");
 			expect(spawn).toHaveBeenCalledTimes(2);
 		});
 
@@ -147,8 +160,8 @@ g.run();
 `;
 			const result = await run(script);
 
-			expect(result.isError).toBe(true);
-			expect(textOf(result)).toMatch(/Unknown agent "does_not_exist"/);
+			expect(result.failed).toBe(true);
+			expect(result.text).toMatch(/Unknown agent "does_not_exist"/);
 		});
 
 		it("stops at the iteration cap and says so", async () => {
@@ -161,7 +174,7 @@ g.run();
 `;
 			const result = await run(script, { maxIterations: 3 }, spawn);
 
-			expect(textOf(result)).toContain("stopped at the iteration cap");
+			expect(result.text).toContain("stopped at the iteration cap");
 			expect(spawn).toHaveBeenCalledTimes(3);
 		});
 	});
@@ -187,9 +200,9 @@ g.run();
 `;
 			const result = await run(script, {}, spawn);
 
-			expect(textOf(result)).toContain("Escalations reported:");
-			expect(textOf(result)).toContain("blocked on: contract");
-			expect(textOf(result)).toContain("cannot express soft-delete");
+			expect(result.text).toContain("Escalations reported:");
+			expect(result.text).toContain("blocked on: contract");
+			expect(result.text).toContain("cannot express soft-delete");
 		});
 
 		it("routes a blocker back and shows the loop in the path", async () => {
@@ -210,7 +223,7 @@ g.run();
 `;
 			const result = await run(script, {}, spawn);
 
-			expect(textOf(result)).toContain(
+			expect(result.text).toContain(
 				"Path: architect -> green -> architect -> green -> END",
 			);
 			// The retry saw the revised contract.
@@ -227,17 +240,17 @@ g.run();
 
 			const result = await run(LINEAR, { args: { task: "t" }, tokenBudget: 1000 }, spawn);
 
-			expect(textOf(result)).toMatch(/Token budget/);
+			expect(result.text).toMatch(/Token budget/);
 			// Tracked, not enforced: both nodes still ran.
 			expect(spawn).toHaveBeenCalledTimes(2);
-			expect(textOf(result)).toContain("completed");
+			expect(result.text).toContain("completed");
 		});
 
 		it("stays quiet when within budget", async () => {
 			const spawn = vi.fn().mockResolvedValue(reply("done"));
 			const result = await run(LINEAR, { args: { task: "t" }, tokenBudget: 100000 }, spawn);
 
-			expect(textOf(result)).not.toMatch(/Token budget/);
+			expect(result.text).not.toMatch(/Token budget/);
 		});
 	});
 
@@ -259,13 +272,17 @@ g.run();
 				.mockRejectedValueOnce(new Error("spawn exploded"));
 
 			const first = await run(LINEAR, { args: { task: "t" } }, failing);
-			expect(first.isError).toBe(true);
-			const runId = (first.details as { runId: string }).runId;
+			expect(first.failed).toBe(true);
+			// A failed run reports its id as resumable in the message itself,
+			// which is the only way a caller learns it — so read it from there
+			// rather than from details, exercising the affordance.
+			const runId = /Run ID: (\S+)/.exec(first.text)?.[1];
+			expect(runId, "failed run must report a resumable run id").toBeTruthy();
 
 			const retry = vi.fn().mockResolvedValue(reply("BUILT"));
 			const second = await run(LINEAR, { args: { task: "t" }, resumeRunId: runId }, retry);
 
-			expect(textOf(second)).toContain("completed");
+			expect(second.text).toContain("completed");
 			// Only the failed node re-ran.
 			expect(retry).toHaveBeenCalledTimes(1);
 			expect(retry.mock.calls[0][2]).toContain("PLAN OK");
@@ -274,13 +291,13 @@ g.run();
 		it("refuses to resume when the script changed", async () => {
 			const spawn = vi.fn().mockRejectedValue(new Error("boom"));
 			const first = await run(LINEAR, { args: { task: "t" } }, spawn);
-			const runId = (first.details as { runId: string }).runId;
+			const runId = /Run ID: (\S+)/.exec(first.text)?.[1];
 
 			const changed = LINEAR.replace("Plan: ", "Plan v2: ");
 			const second = await run(changed, { args: { task: "t" }, resumeRunId: runId }, vi.fn());
 
-			expect(second.isError).toBe(true);
-			expect(textOf(second)).toMatch(/script changed/);
+			expect(second.failed).toBe(true);
+			expect(second.text).toMatch(/script changed/);
 		});
 
 		it("reports when there is nothing to resume", async () => {
@@ -290,14 +307,14 @@ g.run();
 
 			const second = await run(LINEAR, { args: { task: "t" }, resumeRunId: runId }, vi.fn());
 
-			expect(textOf(second)).toMatch(/already completed/);
+			expect(second.text).toMatch(/already completed/);
 		});
 
 		it("reports a missing run rather than starting a fresh one", async () => {
 			const spawn = vi.fn();
 			const result = await run(LINEAR, { args: { task: "t" }, resumeRunId: "nope" }, spawn);
 
-			expect(result.isError).toBe(true);
+			expect(result.failed).toBe(true);
 			expect(spawn).not.toHaveBeenCalled();
 		});
 	});
@@ -337,7 +354,7 @@ g.run();
 `;
 			const result = await run(script, {}, spawn);
 
-			expect(textOf(result)).toContain("completed");
+			expect(result.text).toContain("completed");
 		});
 	});
 
@@ -346,6 +363,32 @@ g.run();
 
 		it("is registered as `workflow`", () => {
 			expect(tool.name).toBe("workflow");
+		});
+
+		it("throws on failure rather than returning an isError flag", async () => {
+			// The agent loop decides a tool call failed by catching an exception
+			// from execute(); a returned isError field is never read. Returning
+			// one reports the failure to the model as a SUCCESS whose text merely
+			// describes an error, which is how a validation failure came to look
+			// like a completed run.
+			const failing = createGraphWorkflowTool({ cwd: tempDir, spawnAgent: vi.fn() as never });
+
+			await expect(
+				failing.execute(
+					"id",
+					{ script: `${META}\nconst x = process.env;` },
+					new AbortController().signal,
+					() => {},
+					{ cwd: tempDir } as never,
+				),
+			).rejects.toThrow(/not available in a graph script/);
+		});
+
+		it("returns normally for a successful run", async () => {
+			const spawn = vi.fn().mockResolvedValue(reply("done"));
+			const result = await run(LINEAR, { args: { task: "t" } }, spawn);
+
+			expect(result.failed).toBe(false);
 		});
 
 		it("documents the sandbox limits in its guidelines", () => {
