@@ -551,6 +551,10 @@ If both extensions are installed, this works automatically — no configuration 
 
 **Headless caveat:** if pi itself is run non-interactively (e.g. `pi --mode json`, an IDE extension, or an API integration) and pi-permission-system is installed, it has no UI to forward `ask` prompts to, so `ask`-gated tools (including `subagent`/`workflow` themselves, if policy requires asking for them) are auto-denied rather than silently allowed. Configure pi-permission-system's policy to `allow` the tools/surfaces you need in that mode — see the [Running Without a TUI](skills/pi-workflow/SKILL.md) section of the bundled skill for a config example.
 
+## Roadmap: Multi-Agent Coordination
+
+Today's `workflow` script runs agents in a strictly forward pipeline (plan → architect → red → green → reviewer style), which breaks down when an early-stage plan doesn't survive contact with reality — a later agent gets stuck with no legitimate way to say "this is impossible as specified" and route the question back, and often takes a shortcut (mocking, stubbing) instead. `docs/COORDINATION-DESIGN.md` lays out a phased, research-backed design to fix this: a first-class `blocked`/escalate outcome for `agent()`, an independent plan-review gate, mechanism-backed contract artifacts, non-self-graded completion verification, and human-in-the-loop escalation — all built directly on the existing sandboxed `workflow` engine, with no external framework dependency. Proposed, not yet implemented; see that doc for the full design and research basis.
+
 ## Testing
 
 This project includes a comprehensive test suite:
