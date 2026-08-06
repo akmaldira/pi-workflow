@@ -7,6 +7,12 @@
     "pi-package"
   ],
   "license": "MIT",
+  "files": [
+    "extensions/",
+    "bundled-agents/",
+    "skills/",
+    "README.md"
+  ],
   "pi": {
     "extensions": [
       "./extensions"

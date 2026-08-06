@@ -5,9 +5,30 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 
 export type AgentScope = "user" | "project" | "both";
+
+/**
+ * Source of an agent definition, in ascending order of precedence.
+ * A `project` agent shadows a `user` agent of the same name, which in turn
+ * shadows a `builtin` one.
+ */
+export type AgentSource = "builtin" | "user" | "project";
+
+/**
+ * Directory holding the agents bundled with this package.
+ *
+ * Resolved live from this module's location rather than copied into the
+ * user's project at install time, so that package upgrades propagate
+ * automatically and we never write into a team's repository.
+ */
+export const BUILTIN_AGENTS_DIR = path.resolve(
+	path.dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"bundled-agents",
+);
 
 export interface AgentMemoryConfig {
 	scope: "project" | "user";
@@ -64,7 +85,7 @@ export interface AgentConfig {
 	extraFields?: Record<string, string>;
 	// Runtime fields
 	systemPrompt: string;
-	source: "user" | "project";
+	source: AgentSource;
 	filePath: string;
 }
 
@@ -116,26 +137,33 @@ function parseStringOrArray(value: unknown): string[] | undefined {
 	return undefined;
 }
 
-function parseTurnBudget(raw: string | undefined): TurnBudgetConfig | undefined {
-	if (!raw || !raw.trim()) return undefined;
+/**
+ * Parses a frontmatter value that may arrive either as a JSON string
+ * (`turnBudget: {"maxTurns": 5}` when the parser leaves it raw) or as an
+ * already-decoded object (when the YAML parser decodes the inline map).
+ */
+function parseObjectField<T>(raw: unknown): T | undefined {
+	if (raw === undefined || raw === null) return undefined;
+	if (typeof raw === "object") {
+		if (Array.isArray(raw)) return undefined;
+		return raw as T;
+	}
+	if (typeof raw !== "string" || !raw.trim()) return undefined;
 	try {
 		const parsed = JSON.parse(raw);
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-		return parsed as TurnBudgetConfig;
+		return parsed as T;
 	} catch {
 		return undefined;
 	}
 }
 
-function parseToolBudget(raw: string | undefined): ToolBudgetConfig | undefined {
-	if (!raw || !raw.trim()) return undefined;
-	try {
-		const parsed = JSON.parse(raw);
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-		return parsed as ToolBudgetConfig;
-	} catch {
-		return undefined;
-	}
+function parseTurnBudget(raw: unknown): TurnBudgetConfig | undefined {
+	return parseObjectField<TurnBudgetConfig>(raw);
+}
+
+function parseToolBudget(raw: unknown): ToolBudgetConfig | undefined {
+	return parseObjectField<ToolBudgetConfig>(raw);
 }
 
 function parseAcceptance(raw: unknown): string | AgentAcceptanceConfig | undefined {
@@ -158,7 +186,7 @@ function parseMemory(raw: unknown): AgentMemoryConfig | undefined {
 	return undefined;
 }
 
-function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
+function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
 	if (!fs.existsSync(dir)) {
@@ -215,10 +243,10 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 		}
 
 		// Parse turnBudget as JSON if it's a string
-		const turnBudget = parseTurnBudget(frontmatter.turnBudget as string | undefined);
+		const turnBudget = parseTurnBudget(frontmatter.turnBudget);
 
 		// Parse toolBudget as JSON
-		const toolBudget = parseToolBudget(frontmatter.toolBudget as string | undefined);
+		const toolBudget = parseToolBudget(frontmatter.toolBudget);
 
 		// Parse acceptance - can be scalar level string or object
 		const acceptance = parseAcceptance(frontmatter.acceptance);
@@ -337,21 +365,42 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
 	}
 }
 
-export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
+export interface DiscoverAgentsOptions {
+	/**
+	 * Include the agents bundled with this package. Defaults to true.
+	 * Set false to inspect only the agents a project/user actually authored.
+	 */
+	includeBuiltins?: boolean;
+	/** Override the bundled agents directory. Primarily for tests. */
+	builtinDir?: string;
+}
+
+export function discoverAgents(
+	cwd: string,
+	scope: AgentScope,
+	options: DiscoverAgentsOptions = {},
+): AgentDiscoveryResult {
+	const { includeBuiltins = true, builtinDir = BUILTIN_AGENTS_DIR } = options;
+
 	const userDir = path.join(getAgentDir(), "agents");
 	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
 
+	// Builtins ship with the package and are always in scope: `scope` selects
+	// between user- and project-authored agents, not whether the package's own
+	// agents exist.
+	const builtinAgents = includeBuiltins ? loadAgentsFromDir(builtinDir, "builtin") : [];
 	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
 	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
 
+	// Later writes win, so insert in ascending precedence:
+	// builtin < user < project.
 	const agentMap = new Map<string, AgentConfig>();
 
-	if (scope === "both") {
+	for (const agent of builtinAgents) agentMap.set(agent.name, agent);
+	if (scope === "both" || scope === "user") {
 		for (const agent of userAgents) agentMap.set(agent.name, agent);
-		for (const agent of projectAgents) agentMap.set(agent.name, agent);
-	} else if (scope === "user") {
-		for (const agent of userAgents) agentMap.set(agent.name, agent);
-	} else {
+	}
+	if (scope === "both" || scope === "project") {
 		for (const agent of projectAgents) agentMap.set(agent.name, agent);
 	}
 
