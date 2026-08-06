@@ -16,7 +16,7 @@ import { discoverAgents } from "./agents.ts";
 import { classifySingleResultFailure } from "./failure-classifier.ts";
 import type { GraphNode, GraphState } from "./graph-dsl.ts";
 import type { NodeRunOutcome, NodeRunner } from "./graph-executor.ts";
-import type { ForkContextOptions, SingleResult } from "./types.ts";
+import type { ArtifactConfig, ForkContextOptions, SingleResult } from "./types.ts";
 import { getFinalOutput } from "./utils.ts";
 
 /**
@@ -155,6 +155,12 @@ export interface AgentSpawnOptions {
 	forkContext?: ForkContextOptions;
 	onEvent?: (event: Record<string, unknown>) => void;
 	artifactsDir?: string;
+	/**
+	 * Required for artifacts to actually be written: runSingleAgent gates on
+	 * this, not on artifactsDir. Passing a directory without a config writes
+	 * nothing, silently.
+	 */
+	artifactConfig?: ArtifactConfig;
 	agentScope?: "user" | "project" | "both";
 	availableModels?: Array<{ provider: string; id: string; fullId: string }>;
 	preferredModelProvider?: string;
@@ -277,6 +283,7 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 				forkContext: options.forkContext,
 				onEvent: options.onEvent,
 				artifactsDir: options.artifactsDir,
+				artifactConfig: options.artifactConfig,
 				context: resolved.agent.defaultContext ?? "fork",
 				availableModels: options.availableModels,
 				preferredModelProvider: options.preferredModelProvider,
