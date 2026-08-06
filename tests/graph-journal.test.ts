@@ -332,6 +332,40 @@ describe("loadGraphResumeState", () => {
 		expect(state.resumeFrom).toBe("green");
 	});
 
+	it("restores result interpolation after JSON round-tripping", () => {
+		// Replayed results come back from JSON.parse as plain objects, losing
+		// the toString() that makes `${state.architect}` render the agent's
+		// text. Without re-attaching it, a resumed run silently interpolates
+		// "[object Object]" into every prompt built from an earlier node — the
+		// prompt still looks well-formed, so nothing errors.
+		journalWith([
+			header,
+			{
+				type: "node",
+				step: 1,
+				nodeId: "architect",
+				result: { status: "ok", text: "Contract v2", agent: "architect" },
+				routedTo: "green",
+			},
+		]);
+
+		const state = loadGraphResumeState({ journalDir, runId: "run1", scriptHash: "hash1" });
+
+		expect(`Implement:\n${state.state.architect}`).toBe("Implement:\nContract v2");
+	});
+
+	it("leaves non-result state values alone", () => {
+		journalWith([
+			header,
+			{ type: "node", step: 1, nodeId: "architect", result: "plain string", routedTo: "green" },
+		]);
+
+		const state = loadGraphResumeState({ journalDir, runId: "run1", scriptHash: "hash1" });
+
+		expect(state.state.architect).toBe("plain string");
+		expect(state.state.task).toBe("ship");
+	});
+
 	it("rejects a journal with no header", () => {
 		journalWith([{ type: "node", step: 1, nodeId: "a", result: "x", routedTo: "END" }]);
 

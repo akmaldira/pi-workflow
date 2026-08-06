@@ -1,0 +1,339 @@
+/**
+ * The `workflow` tool — graph-based multi-agent coordination.
+ *
+ * Assembles the pieces: validate the script (before any agent spawns),
+ * build the run context, walk the graph, journal each node, and report.
+ */
+
+import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { buildAgentCatalogSummary } from "./agent-catalog.ts";
+import { discoverAgents } from "./agents.ts";
+import type { GraphState } from "./graph-dsl.ts";
+import {
+	DEFAULT_MAX_ITERATIONS,
+	formatPath,
+	type GraphRunResult,
+	type NodeExecution,
+	runGraph,
+} from "./graph-executor.ts";
+import {
+	GraphJournal,
+	graphScriptHash,
+	loadGraphResumeState,
+} from "./graph-journal.ts";
+import { createNodeRunner, type InteractiveHandlers } from "./graph-node-runner.ts";
+import { GraphRunContext } from "./graph-run-context.ts";
+import { buildGraphFromScript, GraphValidationError } from "./graph-validator.ts";
+import type { ForkContextOptions } from "./types.ts";
+import { runSingleAgent } from "./execution.ts";
+
+const GraphToolParams = Type.Object({
+	script: Type.String({
+		description:
+			"Graph workflow script. Must begin with `export const meta = { name, description }`. " +
+			"Create a graph with graph(), define nodes with g.node(id, agent(name, promptFn) | mainAgent(prompt) | human(prompt, opts)), " +
+			"route with g.edge(from, to | (state, result) => target), and start it with g.run({ ... }).",
+	}),
+	args: Type.Optional(
+		Type.Any({
+			description: "Values available to the script as `args`. Must be JSON-serialisable.",
+		}),
+	),
+	maxIterations: Type.Optional(
+		Type.Number({
+			description: `Cap on node executions before the run stops. Default ${DEFAULT_MAX_ITERATIONS}. Raise it for graphs with legitimate long loops.`,
+		}),
+	),
+	tokenBudget: Type.Optional(
+		Type.Number({
+			description:
+				"Soft token budget. Warnings are reported at 80% and when exceeded; the run is never killed.",
+		}),
+	),
+	useWorktree: Type.Optional(
+		Type.Boolean({
+			description:
+				"Run agents inside an isolated git worktree so the project tree is untouched until you review the result. Default false.",
+		}),
+	),
+	resumeRunId: Type.Optional(
+		Type.String({
+			description:
+				"Resume a previous run, skipping nodes that already completed. Requires an unchanged script.",
+		}),
+	),
+});
+
+export interface GraphToolOptions {
+	/** Overrides ctx.cwd. Primarily for tests. */
+	cwd?: string;
+	/** Injected so tests can run graphs without spawning processes. */
+	spawnAgent?: typeof runSingleAgent;
+	handlers?: InteractiveHandlers;
+	onRunStart?: (info: { runId: string; name: string; nodeIds: string[] }) => void;
+	onNodeStart?: (info: { step: number; nodeId: string; nodeType: string }) => void;
+	onNodeComplete?: (execution: NodeExecution) => void;
+	onRunComplete?: (result: GraphRunResult) => void;
+}
+
+function summariseResult(value: unknown, limit = 400): string {
+	if (value === null || value === undefined) return "(no result)";
+	const text = typeof value === "string" ? value : String(value);
+	const collapsed = text.replace(/\s+/g, " ").trim();
+	return collapsed.length <= limit ? collapsed : `${collapsed.slice(0, limit - 1)}…`;
+}
+
+/**
+ * Renders the walk with each node's outcome.
+ *
+ * The path is the most useful thing to report: it shows which agents ran,
+ * in what order, and where escalations sent work back.
+ */
+function formatHistory(history: NodeExecution[]): string {
+	if (history.length === 0) return "(no nodes ran)";
+
+	return history
+		.map((execution) => {
+			const who = execution.agentName ? `${execution.nodeId} (${execution.agentName})` : execution.nodeId;
+			const arrow = execution.routedTo ? ` -> ${execution.routedTo}` : "";
+			const marker = execution.status === "failed" ? " [failed]" : "";
+			const detail = execution.error ? ` — ${execution.error}` : "";
+			return `  ${execution.step}. ${who}${marker}${arrow}${detail}`;
+		})
+		.join("\n");
+}
+
+/**
+ * Reports blocked outcomes separately.
+ *
+ * A blocked agent is the signal this whole design exists to surface: it
+ * means an agent hit a real wall and said so instead of faking progress.
+ * Burying it in the walk would waste the escalation.
+ */
+function formatEscalations(state: GraphState): string {
+	const escalations: string[] = [];
+
+	for (const [nodeId, value] of Object.entries(state)) {
+		if (!value || typeof value !== "object") continue;
+		const result = value as { status?: string; blockedOn?: string; reason?: string };
+		if (result.status !== "blocked") continue;
+
+		const target = result.blockedOn ? ` (blocked on: ${result.blockedOn})` : "";
+		const reason = result.reason ? ` — ${result.reason}` : "";
+		escalations.push(`  ${nodeId}${target}${reason}`);
+	}
+
+	return escalations.join("\n");
+}
+
+export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDefinition {
+	const spawnAgent = options.spawnAgent ?? runSingleAgent;
+
+	return defineTool({
+		name: "workflow",
+		label: "Workflow",
+		description: [
+			"Run a graph of coordinating agents. Nodes are agents; edges decide where each result goes next.",
+			"Agents coordinate through routing and shared state: when one reports it is blocked, an edge can send the work back to whoever can resolve it, and that agent sees the blocker in the state it receives.",
+			"Use it for multi-step work where the path is not known in advance. For a single delegation, use the subagent tool instead.",
+		].join(" "),
+		promptSnippet:
+			"Run a coordinating graph of agents. Required header: export const meta = { name, description }. Nodes are agent()/mainAgent()/human(); edges are direct or (state, result) => target.",
+		promptGuidelines: [
+			"For workflow, write the script as one raw JavaScript string with no Markdown fences or surrounding prose.",
+			"For workflow, the first statement must be `export const meta = { name: 'short_snake_case', description: 'what this graph does' }`.",
+			"For workflow, available globals are graph, agent, mainAgent, human, END, args, and JSON. There is no fs, process, require, import, fetch, Date, or Math.random — a graph describes routing only.",
+			"For workflow, define every node before routing it, give each node exactly one outgoing edge, and make sure some path reaches END.",
+			"For workflow, a node's prompt function receives the accumulated state, where each previous node's result is stored under its node id: agent('green', (s) => `Implement:\\n${s.architect}`).",
+			"For workflow, use a conditional edge when the next step depends on what an agent produced: g.edge('green', (state, result) => result.status === 'blocked' ? 'architect' : 'reviewer').",
+			"For workflow, agent results carry { status, text, blockedOn, reason } — status is 'blocked' when the agent escalated. Interpolating a result into a prompt yields its text.",
+			"For workflow, prefer routing a blocked agent back to whoever owns the problem (contract issues to the designer, test issues to whoever wrote them) rather than retrying the same node.",
+			"For workflow, cycles are allowed and are how escalation works; the run stops at maxIterations if a loop never resolves.",
+			"For workflow, use mainAgent(prompt) to pause for your own judgement mid-run, and human(prompt, { options, default }) to ask the user. Always give human() a default so a headless run cannot hang.",
+		],
+		parameters: GraphToolParams,
+
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const cwd = options.cwd ?? ctx.cwd;
+			const scriptHash = graphScriptHash(params.script);
+
+			// Validate first: a bad script must cost nothing.
+			let built: ReturnType<typeof buildGraphFromScript>;
+			try {
+				built = buildGraphFromScript(params.script, { args: params.args });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				const roster =
+					error instanceof GraphValidationError
+						? `\n\n${buildAgentCatalogSummary(discoverAgents(cwd, "both").agents)}`
+						: "";
+				return {
+					content: [{ type: "text" as const, text: `Graph was not run.\n\n${message}${roster}` }],
+					isError: true,
+					details: { validated: false, error: message },
+				};
+			}
+
+			const { meta, graph } = built;
+			const nodeIds = [...graph.nodes.keys()];
+			const runId = params.resumeRunId ?? `graph-${Date.now()}`;
+			const journalDir = `${cwd}/.pi-workflow/runs`;
+
+			// Resolve resume before doing any work, so a stale resume fails fast.
+			let resume: Parameters<typeof runGraph>[1]["resume"];
+			if (params.resumeRunId) {
+				const resumeState = loadGraphResumeState({
+					journalDir,
+					runId: params.resumeRunId,
+					scriptHash,
+				});
+
+				if (!resumeState.isValid) {
+					return {
+						content: [
+							{ type: "text" as const, text: `Cannot resume: ${resumeState.invalidReason}` },
+						],
+						isError: true,
+						details: { resumed: false, error: resumeState.invalidReason },
+					};
+				}
+
+				if (resumeState.resumeFrom === null) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Run "${params.resumeRunId}" already completed; there is nothing to resume.`,
+							},
+						],
+						details: { resumed: false, alreadyComplete: true },
+					};
+				}
+
+				resume = {
+					state: resumeState.state,
+					resumeFrom: resumeState.resumeFrom,
+					completedSteps: resumeState.completedSteps,
+				};
+			}
+
+			const context = new GraphRunContext({
+				cwd,
+				runId,
+				tokenBudget: params.tokenBudget,
+				useWorktree: params.useWorktree,
+			});
+
+			const journal = GraphJournal.create({
+				journalDir,
+				runId,
+				scriptHash,
+				name: meta.name,
+				description: meta.description,
+				entry: graph.entry,
+				nodeIds,
+				initialState: graph.initialState,
+			});
+
+			options.onRunStart?.({ runId, name: meta.name, nodeIds });
+
+			const forkContext: ForkContextOptions | undefined = ctx.model
+				? {
+						sessionManager: ctx.sessionManager,
+						modelRegistry: ctx.modelRegistry,
+						fallbackModel: ctx.model,
+					}
+				: undefined;
+
+			let result: GraphRunResult;
+			try {
+				result = await runGraph(graph, {
+					runId,
+					signal,
+					maxIterations: params.maxIterations,
+					resume,
+					runNode: createNodeRunner({
+						cwd: context.cwd,
+						runId,
+						signal,
+						forkContext,
+						artifactsDir: context.artifactsDir,
+						artifactConfig: context.artifactConfig,
+						spawnAgent: spawnAgent as never,
+						handlers: options.handlers,
+					}),
+					onNodeStart: options.onNodeStart,
+					onNodeComplete: (execution) => {
+						journal.recordNode(execution);
+						context.recordNode(execution);
+						options.onNodeComplete?.(execution);
+					},
+				});
+			} finally {
+				context.cleanup();
+			}
+
+			journal.recordResult({
+				status: result.status,
+				iterations: result.iterations,
+				durationMs: result.durationMs,
+				error: result.error,
+			});
+			options.onRunComplete?.(result);
+
+			const summary = context.summary();
+			const lines: string[] = [];
+
+			const heading =
+				result.status === "completed"
+					? `Graph "${meta.name}" completed in ${result.iterations} step${result.iterations === 1 ? "" : "s"}.`
+					: result.status === "max_iterations"
+						? `Graph "${meta.name}" stopped at the iteration cap.`
+						: `Graph "${meta.name}" aborted.`;
+			lines.push(heading);
+
+			if (result.error) lines.push(`\n${result.error}`);
+
+			lines.push(`\nPath: ${formatPath(result)}`);
+			lines.push(`\nNodes:\n${formatHistory(result.history)}`);
+
+			const escalations = formatEscalations(result.state);
+			if (escalations) {
+				lines.push(`\nEscalations reported:\n${escalations}`);
+			}
+
+			if (result.status === "completed") {
+				lines.push(`\nFinal result:\n${summariseResult(result.finalResult)}`);
+			}
+
+			for (const warning of summary.warnings) {
+				lines.push(`\n⚠ ${warning.message}`);
+			}
+			if (summary.worktreeSkipped) {
+				lines.push(`\nNote: ${summary.worktreeSkipped}`);
+			}
+			if (journal.writeErrors.length > 0) {
+				lines.push(`\nNote: the run journal could not be written (${journal.writeErrors[0]}).`);
+			}
+
+			lines.push(`\nRun ID: ${runId}${result.status !== "completed" ? " (resumable)" : ""}`);
+
+			return {
+				content: [{ type: "text" as const, text: lines.join("\n") }],
+				isError: result.status === "aborted",
+				details: {
+					runId,
+					name: meta.name,
+					status: result.status,
+					iterations: result.iterations,
+					path: result.path,
+					durationMs: result.durationMs,
+					budget: summary.budget,
+					state: result.state,
+					error: result.error,
+				},
+			};
+		},
+	});
+}

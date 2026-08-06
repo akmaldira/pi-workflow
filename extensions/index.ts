@@ -16,7 +16,7 @@ import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI } from "@earendil-works
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { buildAgentCatalogGuideline, createListAgentsTool } from "./agent-catalog.ts";
-import { createWorkflowTool } from "./workflow-tool.ts";
+import { createGraphWorkflowTool } from "./graph-tool.ts";
 import { runSingleAgent } from "./execution.ts";
 import type { SingleResult, ForkContextOptions } from "./types.ts";
 import { listSavedWorkflows, deleteSavedWorkflow } from "./workflow-library.ts";
@@ -467,11 +467,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// --- Workflow Tool ---
-	const workflowTool = createWorkflowTool({
-		cwd: undefined, // will use ctx.cwd at execution time
-		runSingleAgent: runSubagentForWorkflow,
-		workflowManager: globalWorkflowManager,
-	});
+	// Graph-based coordination: nodes are agents, edges decide where each
+	// result goes next. Replaces the imperative agent()/parallel() script.
+	const workflowTool = createGraphWorkflowTool();
 	pi.registerTool(workflowTool);
 	registerWorkflowStatusTool(pi, globalWorkflowManager);
 

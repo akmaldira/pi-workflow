@@ -18,6 +18,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { NodeExecution } from "./graph-executor.ts";
 import type { GraphState } from "./graph-dsl.ts";
+import { rehydrateState } from "./graph-node-runner.ts";
 import { hashString } from "./journal.ts";
 
 export interface GraphJournalRunRecord {
@@ -268,6 +269,12 @@ export function loadGraphResumeState(options: {
 	for (const execution of executions) {
 		state[execution.nodeId] = execution.result;
 	}
+
+	// Results came back through JSON.parse, so they are plain objects that
+	// have lost the toString() making `${state.architect}` render the agent's
+	// text. Without this a resumed run silently interpolates "[object Object]"
+	// into every prompt built from an earlier node.
+	rehydrateState(state);
 
 	const finished = records.find((r): r is GraphJournalResultRecord => r.type === "graph_result");
 	const last = executions[executions.length - 1];

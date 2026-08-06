@@ -83,18 +83,45 @@ export const KNOWN_BLOCKED_ON = new Set([
  * BLOCKED_ON is preserved verbatim so an edge can still see it, rather than
  * being coerced into a category the agent did not choose.
  */
-export function parseAgentResult(text: string, agentName: string): AgentNodeResult {
-	const result: AgentNodeResult = { status: "ok", text, agent: agentName };
-
-	// Non-enumerable so it never appears in JSON.stringify output or in the
-	// journal, while still making string interpolation do the right thing.
+/**
+ * Attaches the text-returning toString() to an agent result.
+ *
+ * Non-enumerable so it never lands in JSON.stringify output or the journal,
+ * while still making `${state.architect}` interpolate to the agent's text.
+ *
+ * Exported because results also arrive from JSON.parse on resume, where the
+ * prototype is lost. Without re-attaching, a resumed run silently renders
+ * "[object Object]" into every prompt built from an earlier node.
+ */
+export function withResultText<T extends { text?: unknown }>(result: T): T {
 	Object.defineProperty(result, "toString", {
-		value: function toString(this: AgentNodeResult) {
-			return this.text;
+		value: function toString(this: { text?: unknown }) {
+			return typeof this.text === "string" ? this.text : "";
 		},
 		enumerable: false,
 		writable: true,
+		configurable: true,
 	});
+	return result;
+}
+
+/**
+ * Re-attaches result behaviour to a state object rebuilt from JSON.
+ *
+ * Journal replay produces plain objects, so anything that looked like an
+ * agent result needs its toString() back before prompts are built from it.
+ */
+export function rehydrateState(state: Record<string, unknown>): Record<string, unknown> {
+	for (const value of Object.values(state)) {
+		if (value && typeof value === "object" && !Array.isArray(value) && "text" in value) {
+			withResultText(value as { text?: unknown });
+		}
+	}
+	return state;
+}
+
+export function parseAgentResult(text: string, agentName: string): AgentNodeResult {
+	const result: AgentNodeResult = withResultText({ status: "ok", text, agent: agentName });
 
 	const statusMatch = STATUS_LINE.exec(text);
 	if (statusMatch && statusMatch[1].toLowerCase() === "blocked") {
