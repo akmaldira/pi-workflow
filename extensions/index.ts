@@ -205,7 +205,7 @@ export function registerWorkflowStatusTool(pi: ExtensionAPI, workflowManager: Wo
 			"Call with just runId for a summary of every agent's status/error. Call with runId + agentId for one agent's full prompt, result, error, and tool-call/output history.",
 		].join(" "),
 		parameters: WorkflowStatusParams,
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 			const run = workflowManager.getRun(params.runId);
 			if (!run) {
 				const persisted = workflowManager.listRuns().find((r) => r.runId === params.runId);

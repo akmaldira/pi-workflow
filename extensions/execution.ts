@@ -26,13 +26,16 @@ import {
 	INTERCOM_DETACH_REQUEST_EVENT,
 	INTERCOM_DETACH_RESPONSE_EVENT,
 	type AcceptanceLedger,
+	type MaxOutputConfig,
 	type ResolvedAcceptanceConfig,
+	type RunSyncOptions,
 	truncateOutput,
 	getSubagentDepthEnv,
 } from "./types.ts";
 import {
 	DEFAULT_CONTROL_CONFIG,
 	buildControlEvent,
+	resolveControlConfig,
 	claimControlNotification,
 	deriveActivityState,
 	shouldNotifyControlEvent,
@@ -51,7 +54,7 @@ import { generateForkSummary, formatForkContextBlock } from "./fork-context.ts";
 import { evaluateCompletionMutationGuard } from "./completion-guard.ts";
 import { getPiSpawnCommand } from "./pi-spawn.ts";
 import * as fs from "fs";
-import { createJsonlWriter } from "./jsonl-writer.ts";
+import { createJsonlWriter, type JsonlWriter } from "./jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "./post-exit-stdio-guard.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir, resolvePiLaunchToolPlan } from "./pi-args.ts";
 import { decodeSubagentCapabilityCeiling, resolveCurrentSubagentCapabilityCeiling, SUBAGENT_CAPABILITY_CEILING_ENV } from "./capability-ceiling.ts";
@@ -79,16 +82,8 @@ import {
 import { acceptanceFailureMessage, buildSkippedAcceptanceLedger, evaluateAcceptance, formatAcceptancePrompt, resolveEffectiveAcceptance, stripAcceptanceReport } from "./acceptance.ts";
 import { appendTurnBudgetSystemPrompt, formatTurnBudgetOutput, initialTurnBudgetState, turnBudgetDecision, turnBudgetDeferredNote, turnBudgetDeferredState, turnBudgetExceededMessage, turnBudgetSoftNote, turnBudgetState } from "./turn-budget.ts";
 import { initialToolBudgetState, toolBudgetState } from "./tool-budget.ts";
-import { resolveWatchdogConfig } from "./watchdog/settings.ts";
 import { agentDefinitionDigest, launchBindingDigest } from "./launch-contract.ts";
 import { createBoundedByteTail, createBoundedLineReader, formatProtocolOutputLimit, MAX_CHILD_STDERR_BYTES, projectChildLifecycle, type ChildLifecycleAction, type ProtocolOutputLimit as ProtocolOutputLimitType } from "./child-protocol.ts";
-import {
-	acceptChildWatchdogEvent,
-	childWatchdogIsActive,
-	isChildWatchdogStatusEvent,
-	resolveChildWatchdogConfig,
-	type ChildWatchdogStateSnapshot,
-} from "./watchdog/child-status.ts";
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
@@ -201,6 +196,7 @@ async function runSingleAttempt(
 		modelCandidates?: string[];
 		skillsWarning?: string;
 		jsonlPath?: string;
+		jsonlWriter?: JsonlWriter;
 		artifactPaths?: ArtifactPaths;
 		transcriptWriter?: ChildTranscriptWriter;
 		attemptNotes: string[];
@@ -213,15 +209,6 @@ async function runSingleAttempt(
 	const effectiveThinking = options.thinkingOverride ?? agent.thinking;
 	const modelArg = applyThinkingSuffix(model, effectiveThinking, options.thinkingOverride !== undefined);
 	const resolvedThinking = resolveEffectiveThinking(modelArg, effectiveThinking);
-	const watchdogConfig = resolveWatchdogConfig(options.cwd ?? runtimeCwd);
-	const childWatchdog = watchdogConfig.ok
-		? resolveChildWatchdogConfig({
-			config: watchdogConfig.config,
-			agent: agent.name,
-			runId: options.runId,
-			childIndex: options.index ?? 0,
-		})
-		: undefined;
 	const { args, env: sharedEnv, tempDir, toolDiagnosticPath, capabilityAudit } = buildPiArgs({
 		baseArgs: ["--mode", "json", "-p"],
 		task,
@@ -254,7 +241,6 @@ async function runSingleAttempt(
 		structuredOutput: options.structuredOutput,
 		toolBudget: options.toolBudget,
 		allowZeroToolBudget: options.allowZeroToolBudget,
-		childWatchdog,
 		waitToolEnabled: options.waitToolEnabled,
 		capabilityCeiling: options.capabilityCeiling,
 	});
@@ -278,7 +264,7 @@ async function runSingleAttempt(
 		modelCandidates: shared.modelCandidates,
 		...(resolvedThinking ? { thinking: resolvedThinking } : {}),
 		systemPrompt: effectiveSystemPrompt,
-		systemPromptMode: agent.systemPromptMode,
+		systemPromptMode: agent.systemPromptMode ?? "append",
 		inheritProjectContext: agent.inheritProjectContext,
 		inheritSkills: agent.inheritSkills,
 		skills: shared.resolvedSkillNames ?? [],
@@ -316,7 +302,7 @@ async function runSingleAttempt(
 			// Missing/stale structured-output files are handled after the child exits.
 		}
 	}
-	const controlConfig = options.controlConfig ?? DEFAULT_CONTROL_CONFIG;
+	const controlConfig = resolveControlConfig(options.controlConfig).config;
 	let interruptedByControl = false;
 	const allControlEvents: any[] = [];
 	let pendingControlEvents: any[] = [];
@@ -513,8 +499,13 @@ async function runSingleAttempt(
 		result.finalOutput = getFinalOutput(result.messages ?? []);
 	}
 
-	// Truncate output
-	const maxOutput = options.maxOutput ?? DEFAULT_MAX_OUTPUT;
+	// Truncate output. Coalesce to Required<MaxOutputConfig> so the optional
+	// fields on MaxOutputConfig do not leak as `number | undefined` into a
+	// function that requires concrete numbers.
+	const maxOutput: Required<MaxOutputConfig> = {
+		bytes: options.maxOutput?.bytes ?? DEFAULT_MAX_OUTPUT.bytes,
+		lines: options.maxOutput?.lines ?? DEFAULT_MAX_OUTPUT.lines,
+	};
 	const truncated = truncateOutput(result.finalOutput || "", { bytes: maxOutput.bytes, lines: maxOutput.lines }, shared.artifactPaths?.outputPath);
 	result.finalOutput = truncated.text;
 	if (truncated.truncated) {

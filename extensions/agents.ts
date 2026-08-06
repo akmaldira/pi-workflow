@@ -12,6 +12,17 @@ import { type AgentSettings, applyAgentSettings, loadAgentSettings } from "./age
 export type AgentScope = "user" | "project" | "both";
 
 /**
+ * Whether a parsed agent inherits the project's compiled context.
+ *
+ * Matches pi-subagents' default: only a `delegate` agent inherits; everything
+ * else gets a fresh view. Bundled agents in this package are never delegates,
+ * so the default is false for all of them.
+ */
+export function defaultInheritProjectContext(name: string): boolean {
+	return name === "delegate";
+}
+
+/**
  * Source of an agent definition, in ascending order of precedence.
  * A `project` agent shadows a `user` agent of the same name, which in turn
  * shadows a `builtin` one.
@@ -65,8 +76,8 @@ export interface AgentConfig {
 	fallbackModels?: string[];
 	thinking?: string | false;
 	systemPromptMode?: "replace" | "append";
-	inheritProjectContext?: boolean;
-	inheritSkills?: boolean;
+	inheritProjectContext: boolean;
+	inheritSkills: boolean;
 	defaultContext?: "fresh" | "fork";
 	skills?: string[];
 	skillPath?: string[];
@@ -308,11 +319,11 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 			inheritProjectContext:
 				frontmatter.inheritProjectContext === "true" ? true :
 				frontmatter.inheritProjectContext === "false" ? false :
-				undefined,
+				defaultInheritProjectContext(String(frontmatter.name)),
 			inheritSkills:
 				frontmatter.inheritSkills === "true" ? true :
 				frontmatter.inheritSkills === "false" ? false :
-				undefined,
+				false,
 			defaultContext:
 				frontmatter.defaultContext === "fork" ? "fork" :
 				frontmatter.defaultContext === "fresh" ? "fresh" :

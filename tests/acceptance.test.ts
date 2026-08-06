@@ -33,7 +33,7 @@ describe("acceptance", () => {
 		});
 
 		it("should throw for invalid level string", () => {
-			expect(() => normalizeAcceptanceInput("invalid")).toThrow();
+			expect(() => normalizeAcceptanceInput("invalid" as any)).toThrow();
 		});
 
 		it("should handle config object", () => {
@@ -227,17 +227,17 @@ describe("acceptance", () => {
 
 	describe("acceptanceFailureMessage", () => {
 		it("should return undefined for accepted", () => {
-			const ledger = { status: "accepted" as const, evidenceStatus: "verified", explicit: true, effectiveAcceptance: {} as any, inferredReason: [], criteria: [], runtimeChecks: [], verifyRuns: [] };
+			const ledger = { status: "accepted" as const, evidenceStatus: "claimed" as const, explicit: true, effectiveAcceptance: {} as any, inferredReason: [], criteria: [], runtimeChecks: [], verifyRuns: [] };
 			expect(acceptanceFailureMessage(ledger)).toBeUndefined();
 		});
 
 		it("should return message for rejected", () => {
-			const ledger = { status: "rejected" as const, evidenceStatus: "pending", explicit: true, effectiveAcceptance: {} as any, inferredReason: [], criteria: [], runtimeChecks: [], verifyRuns: [] };
+			const ledger = { status: "rejected" as const, evidenceStatus: "pending" as const, explicit: true, effectiveAcceptance: {} as any, inferredReason: [], criteria: [], runtimeChecks: [], verifyRuns: [] };
 			expect(acceptanceFailureMessage(ledger)).toBe("Acceptance was rejected.");
 		});
 
 		it("should return message for pending", () => {
-			const ledger = { status: "pending" as const, evidenceStatus: "pending", explicit: true, effectiveAcceptance: {} as any, inferredReason: [], criteria: [], runtimeChecks: [], verifyRuns: [] };
+			const ledger = { status: "pending" as const, evidenceStatus: "pending" as const, explicit: true, effectiveAcceptance: {} as any, inferredReason: [], criteria: [], runtimeChecks: [], verifyRuns: [] };
 			expect(acceptanceFailureMessage(ledger)).toContain("not met");
 		});
 	});

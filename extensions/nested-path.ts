@@ -51,7 +51,7 @@ export function parseNestedPathEnv(value: string | undefined): NestedPathEntry[]
 	}
 }
 
-export function encodeNestedPathEnv(value: NestedPathEntry[]): string {
+export function encodeNestedPathEnv(value: unknown): string {
 	const sanitized = sanitizeNestedPath(value);
 	return sanitized.length ? JSON.stringify(sanitized) : "";
 }

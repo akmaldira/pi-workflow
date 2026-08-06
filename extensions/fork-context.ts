@@ -20,8 +20,8 @@
 import {
 	generateSummaryWithUsage,
 	sessionEntryToContextMessages,
-	type ReadonlySessionManager,
 } from "@earendil-works/pi-coding-agent";
+import type { ReadonlySessionManager } from "./types.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
 export interface ForkContextInput {
@@ -98,7 +98,7 @@ async function generateForkSummaryUncached(input: ForkContextInput): Promise<For
 	if (!contextEntries || contextEntries.length === 0) return undefined;
 
 	// Convert session entries to AgentMessage[] for summarization.
-	const messages = contextEntries.flatMap((entry) => sessionEntryToContextMessages(entry));
+	const messages = contextEntries.flatMap((entry: any) => sessionEntryToContextMessages(entry));
 	if (messages.length === 0) return undefined;
 
 	const model = input.fallbackModel;

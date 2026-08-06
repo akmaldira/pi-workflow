@@ -138,7 +138,7 @@ describe("WorkflowManager", () => {
 		const agent = run?.snapshot.agents.find((a) => a.id === 1);
 		expect(agent?.history).toBeDefined();
 		expect(agent?.history?.length).toBeGreaterThanOrEqual(2);
-		expect(agent?.history?.[0].toolName).toBe("bash");
+		expect((agent?.history?.[0] as any)?.toolName).toBe("bash");
 		expect(agent?.history?.[1].text).toBe("I ran the command");
 		expect(historyEmitted).toBe(true);
 

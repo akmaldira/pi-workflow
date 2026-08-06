@@ -96,7 +96,7 @@ function trimToUtf8Boundary(buffer: Buffer, maxBytes: number): Buffer {
 	if (buffer.length <= maxBytes) return buffer;
 	let start = buffer.length - maxBytes;
 	while (start < buffer.length && (buffer[start]! & 0xc0) === 0x80) start++;
-	return buffer.subarray(start);
+	return Buffer.from(buffer.subarray(start));
 }
 
 export function createBoundedByteTail(maxBytes = MAX_CHILD_STDERR_BYTES): {
@@ -105,11 +105,11 @@ export function createBoundedByteTail(maxBytes = MAX_CHILD_STDERR_BYTES): {
 	byteLength(): number;
 } {
 	if (!Number.isInteger(maxBytes) || maxBytes < 1) throw new Error("maxBytes must be a positive integer.");
-	let tail = Buffer.alloc(0);
+	let tail: Buffer = Buffer.alloc(0);
 	return {
 		push(chunk) {
 			const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
-			tail = trimToUtf8Boundary(Buffer.concat([tail, bytes]), maxBytes);
+			tail = Buffer.from(trimToUtf8Boundary(Buffer.concat([tail, bytes]), maxBytes));
 		},
 		text: () => tail.toString("utf8"),
 		byteLength: () => tail.length,

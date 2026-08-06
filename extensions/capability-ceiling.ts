@@ -134,10 +134,10 @@ export function registerSubagentCapabilityCeiling(options: RegisterSubagentCapab
 	};
 }
 
-export function intersectSubagentCapabilityCeilings(...ceilings: Array<ResolvedSubagentCapabilityCeiling | undefined>): ResolvedSubagentCapabilityCeiling | undefined {
-	const active = ceilings.filter((ceiling): ceiling is ResolvedSubagentCapabilityCeiling => ceiling !== undefined);
+export function intersectSubagentCapabilityCeilings(...ceilings: Array<Partial<ResolvedSubagentCapabilityCeiling> | undefined>): ResolvedSubagentCapabilityCeiling | undefined {
+	const active = ceilings.filter((ceiling): ceiling is Partial<ResolvedSubagentCapabilityCeiling> => ceiling !== undefined);
 	if (active.length === 0) return undefined;
-	const definedLists = active.filter((ceiling) => ceiling.allowedTools !== undefined).map((ceiling) => new Set(ceiling.allowedTools));
+	const definedLists = active.filter((ceiling) => ceiling.allowedTools !== undefined).map((ceiling) => new Set(ceiling.allowedTools!));
 	let allowedTools: string[] | undefined;
 	if (definedLists.length > 0) {
 		allowedTools = [...definedLists[0]!].filter((tool) => definedLists.every((list) => list.has(tool))).sort();
@@ -146,7 +146,7 @@ export function intersectSubagentCapabilityCeilings(...ceilings: Array<ResolvedS
 		version: SUBAGENT_CAPABILITY_CEILING_VERSION,
 		...(allowedTools ? { allowedTools } : {}),
 		denyExtensions: active.some((ceiling) => ceiling.denyExtensions),
-		sources: [...new Set(active.flatMap((ceiling) => ceiling.sources))].sort(),
+		sources: [...new Set(active.flatMap((ceiling) => ceiling.sources ?? []))].sort(),
 	};
 }
 

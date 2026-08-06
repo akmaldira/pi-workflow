@@ -829,7 +829,7 @@ export function openWorkflowNavigator(
 					const terminalRows = tui.terminal?.rows ?? 24;
 					const overlayRows = Math.max(8, Math.floor(terminalRows * 0.92));
 					const contentRows = Math.max(6, overlayRows - 2);
-					const raw = renderNavigatorFrame(state, model, innerWidth, theme, contentRows);
+					const raw = renderNavigatorFrame(state, model, innerWidth, theme as any, contentRows);
 					const title = titleColor(" workflows ");
 					const dashes = (n: number) => "\u2500".repeat(Math.max(0, n));
 					const topBorder = borderColor("\u256d\u2500") + title + borderColor(dashes(innerWidth - 10)) + borderColor("\u256e");

@@ -29,8 +29,8 @@ const LEVEL_RANK: Record<Exclude<AcceptanceLevel, "auto">, number> = {
 	verified: 3,
 };
 
-const VALID_LEVELS = new Set<AcceptanceLevel>(["auto", "none", "attested", "checked", "verified"]);
-const VALID_EVIDENCE = new Set<AcceptanceEvidenceKind>([
+const VALID_LEVELS = new Set<string>(["auto", "none", "attested", "checked", "verified"]);
+const VALID_EVIDENCE = new Set<string>([
 	"changed-files",
 	"tests-added",
 	"commands-run",
@@ -71,13 +71,13 @@ export function normalizeAcceptanceInput(input: AcceptanceInput | undefined): Ac
 	if (input === undefined) return undefined;
 	if (input === false) return { level: "none", reason: "Acceptance explicitly disabled." };
 	if (typeof input === "string") {
-		if (!VALID_LEVELS.has(input)) throw new Error(`Invalid acceptance level '${input}'. Valid: auto, none, attested, checked, verified.`);
-		if (input === "none") return { level: "none", reason: "Acceptance level 'none' requires a reason." };
-		return { level: input };
+		if (!VALID_LEVELS.has(input as AcceptanceLevel)) throw new Error(`Invalid acceptance level '${input}'. Valid: auto, none, attested, checked, verified.`);
+		if ((input as string) === "none") return { level: "none", reason: "Acceptance level 'none' requires a reason." };
+		return { level: input as AcceptanceLevel };
 	}
-	if (typeof input !== "object" || Array.isArray(input)) throw new Error("Acceptance config must be an object or a level string.");
+	if (typeof input !== "object" || input === null || Array.isArray(input)) throw new Error("Acceptance config must be an object or a level string.");
 	for (const key of Object.keys(input)) {
-		if (!ACCEPTANCE_CONFIG_KEYS.has(key)) throw new Error(`Unknown acceptance config key '${key}'.`);
+		if (!ACCEPTANCE_CONFIG_KEYS.has(key as any)) throw new Error(`Unknown acceptance config key '${key}'.`);
 	}
 	return input;
 }
@@ -86,19 +86,19 @@ export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"
 	if (input === undefined) return [];
 	if (input === false) return [];
 	if (typeof input === "string") {
-		if (!VALID_LEVELS.has(input)) return [`Invalid acceptance level '${input}'.`];
+		if (!VALID_LEVELS.has(input as any)) return [`Invalid acceptance level '${input}'.`];
 		return [];
 	}
-	if (typeof input !== "object" || Array.isArray(input)) return [`Acceptance must be a level string, false, or an object.`];
+	if (typeof input !== "object" || input === null || Array.isArray(input)) return [`Acceptance must be a level string, false, or an object.`];
 	const errors: string[] = [];
 	for (const key of Object.keys(input)) {
-		if (!ACCEPTANCE_CONFIG_KEYS.has(key)) errors.push(`Unknown acceptance key '${key}'.`);
+		if (!ACCEPTANCE_CONFIG_KEYS.has(key as any)) errors.push(`Unknown acceptance key '${key}'.`);
 	}
 	const config = input as AcceptanceConfig;
-	if (config.level !== undefined && !VALID_LEVELS.has(config.level)) errors.push(`Invalid acceptance level '${config.level}'.`);
+	if (config.level !== undefined && !VALID_LEVELS.has(config.level as any)) errors.push(`Invalid acceptance level '${config.level}'.`);
 	if (config.evidence !== undefined) {
 		for (const ev of config.evidence) {
-			if (!VALID_EVIDENCE.has(ev)) errors.push(`Invalid acceptance evidence '${ev}'.`);
+			if (!VALID_EVIDENCE.has(ev as any)) errors.push(`Invalid acceptance evidence '${ev}'.`);
 		}
 	}
 	if (config.criteria !== undefined) {
@@ -109,7 +109,7 @@ export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"
 				continue;
 			}
 			for (const key of Object.keys(criterion)) {
-				if (!ACCEPTANCE_GATE_KEYS.has(key)) errors.push(`Unknown acceptance gate key '${key}'.`);
+				if (!ACCEPTANCE_GATE_KEYS.has(key as any)) errors.push(`Unknown acceptance gate key '${key}'.`);
 			}
 		}
 	}
@@ -132,17 +132,30 @@ export function resolveEffectiveAcceptance(input: {
 	agentName: string;
 	acceptance?: AcceptanceInput;
 	acceptanceContext?: { mode?: "single" | "parallel" | "chain"; async?: boolean; dynamic?: boolean; dynamicGroup?: boolean };
-}): { level: Exclude<AcceptanceLevel, "auto">; explicit: boolean; reasons: string[]; criteria: string[]; evidence: AcceptanceEvidenceKind[]; review?: { agent?: string; required?: boolean } } {
+}): ResolvedAcceptanceConfig {
 	const agent = input.agentName.toLowerCase();
-	const task = "";
 	const reasons: string[] = [];
 
 	const config = normalizeAcceptanceInput(input.acceptance);
 	if (config?.level && config.level !== "auto") {
-		const level = config.level;
+		const level = config.level as Exclude<AcceptanceLevel, "auto">;
 		const evidence = unique([...(config.evidence ?? []), ...requiredEvidenceForLevel(level)]);
-		const criteria = (config.criteria ?? []).map((c) => (typeof c === "string" ? c : c.must));
-		return { level, explicit: true, reasons, criteria, evidence, review: config.review === false ? undefined : config.review };
+		const criteria: ResolvedAcceptanceGate[] = (config.criteria ?? []).map((c, idx) => ({
+			id: typeof c === "string" ? `gate-${idx + 1}` : c.id ?? `gate-${idx + 1}`,
+			must: typeof c === "string" ? c : c.must,
+			evidence: typeof c === "string" ? [] : (c.evidence ?? []),
+			severity: typeof c === "string" ? "required" : (c.severity ?? "required"),
+		}));
+		return {
+			level,
+			explicit: true,
+			inferredReason: reasons,
+			criteria,
+			evidence,
+			verify: config.verify ?? [],
+			review: config.review === false ? undefined : config.review,
+			stopRules: config.stopRules ?? [],
+		};
 	}
 
 	// Auto-inference
@@ -150,12 +163,36 @@ export function resolveEffectiveAcceptance(input: {
 	const writeAgent = /\bworker\b/.test(agent);
 
 	if (readOnlyAgent) {
-		return { level: "none", explicit: false, reasons: ["Agent name suggests read-only role"], criteria: [], evidence: [] };
+		return {
+			level: "none",
+			explicit: false,
+			inferredReason: ["Agent name suggests read-only role"],
+			criteria: [],
+			evidence: [],
+			verify: [],
+			stopRules: [],
+		};
 	}
 	if (writeAgent) {
-		return { level: "checked", explicit: false, reasons: ["Agent name suggests writer role"], criteria: [], evidence: requiredEvidenceForLevel("checked") };
+		return {
+			level: "checked",
+			explicit: false,
+			inferredReason: ["Agent name suggests writer role"],
+			criteria: [],
+			evidence: requiredEvidenceForLevel("checked"),
+			verify: [],
+			stopRules: [],
+		};
 	}
-	return { level: "none", explicit: false, reasons: ["No explicit acceptance and no heuristic match"], criteria: [], evidence: [] };
+	return {
+		level: "none",
+		explicit: false,
+		inferredReason: ["No explicit acceptance and no heuristic match"],
+		criteria: [],
+		evidence: [],
+		verify: [],
+		stopRules: [],
+	};
 }
 
 export function formatAcceptancePrompt(acceptance: ResolvedAcceptanceConfig, options: { reportOptional?: boolean } = {}): string {

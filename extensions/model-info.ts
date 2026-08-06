@@ -27,7 +27,6 @@ export function splitKnownThinkingSuffix(model: string): SplitThinkingSuffixResu
 
 export function resolveEffectiveThinking(model: string | undefined, configThinking: string | false | undefined): string | undefined {
 	if (!configThinking) return undefined;
-	if (configThinking === false) return undefined;
 	return configThinking;
 }
 

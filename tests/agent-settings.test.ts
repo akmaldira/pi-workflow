@@ -18,6 +18,8 @@ function makeAgent(name: string, overrides: Partial<AgentConfig> = {}): AgentCon
 		systemPrompt: `# ${name}\n\nOriginal body.`,
 		source: "builtin",
 		filePath: `/fake/${name}.md`,
+		inheritProjectContext: false,
+		inheritSkills: false,
 		...overrides,
 	};
 }

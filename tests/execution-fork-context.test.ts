@@ -30,6 +30,8 @@ function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
 		systemPrompt: "You are a worker.",
 		source: "user",
 		filePath: "/tmp/worker.md",
+		inheritProjectContext: false,
+		inheritSkills: false,
 		...overrides,
 	};
 }

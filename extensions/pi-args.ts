@@ -79,7 +79,7 @@ export interface BuildPiArgsInput {
 	};
 	toolBudget?: ResolvedToolBudget;
 	allowZeroToolBudget?: boolean;
-	capabilityCeiling?: ResolvedSubagentCapabilityCeiling;
+	capabilityCeiling?: ResolvedSubagentCapabilityCeiling | Partial<ResolvedSubagentCapabilityCeiling>;
 	waitToolEnabled?: boolean;
 }
 
@@ -116,7 +116,7 @@ export interface ResolvePiLaunchToolPlanInput {
 	cwd?: string;
 	requireReadTool?: boolean;
 	structuredOutput?: boolean;
-	capabilityCeiling?: ResolvedSubagentCapabilityCeiling;
+	capabilityCeiling?: ResolvedSubagentCapabilityCeiling | Partial<ResolvedSubagentCapabilityCeiling>;
 	inheritedCapabilityCeiling?: ResolvedSubagentCapabilityCeiling;
 }
 

@@ -2,7 +2,8 @@
  * Model fallback resolution with fuzzy matching and scope enforcement.
  */
 
-import type { ModelInfo as AvailableModelInfo } from "./model-info.ts";
+import { splitKnownThinkingSuffix as splitThinkingSuffix, type ModelInfo as AvailableModelInfo } from "./model-info.ts";
+export { splitThinkingSuffix };
 import type { Usage } from "./types.ts";
 import { checkModelScope, type ModelScopeConfig, type ModelSource } from "./model-scope.ts";
 

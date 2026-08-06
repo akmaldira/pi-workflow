@@ -6,7 +6,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { Message } from "@earendil-works/pi-ai";
-import type { ReadonlySessionManager } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+export type ReadonlySessionManager = ExtensionContext["sessionManager"];
 import type { AgentConfig } from "./agents.ts";
 import type { ModelScopeConfig } from "./model-scope.ts";
 import type { ResolvedSubagentCapabilityCeiling, SubagentCapabilityAudit } from "./capability-ceiling.ts";
@@ -114,7 +115,7 @@ export interface ToolBudgetConfig {
 export interface ResolvedToolBudget {
 	soft?: number;
 	hard: number;
-	block: string[] | "*";
+	block: readonly string[] | string[] | "*";
 }
 
 export type ToolBudgetOutcome = "within-budget" | "soft-reached" | "hard-blocked";
@@ -414,6 +415,50 @@ export interface NestedRouteInfo {
 	capabilityToken: string;
 }
 
+export type ControlEventType = "active_long_running" | "needs_attention" | "idle" | "error";
+
+export interface ControlConfig {
+	enabled?: boolean;
+	needsAttentionAfterMs?: number;
+	activeNoticeAfterMs?: number;
+	activeNoticeAfterTurns?: number;
+	activeNoticeAfterTokens?: number;
+	failedToolAttemptsBeforeAttention?: number;
+	notifyOn?: ControlEventType[];
+	notifyChannels?: string[];
+}
+
+export interface ResolvedControlConfig {
+	enabled: boolean;
+	needsAttentionAfterMs: number;
+	activeNoticeAfterMs: number;
+	activeNoticeAfterTurns?: number;
+	activeNoticeAfterTokens?: number;
+	failedToolAttemptsBeforeAttention: number;
+	notifyOn: ControlEventType[];
+	notifyChannels: string[];
+}
+
+export interface ControlEvent {
+	type: ControlEventType;
+	from?: string;
+	to: string;
+	ts: number;
+	agent: string;
+	index?: number;
+	runId: string;
+	message: string;
+	reason?: string;
+	turns?: number;
+	tokens?: number;
+	toolCount?: number;
+	currentTool?: string;
+	currentToolDurationMs?: number;
+	currentPath?: string;
+	elapsedMs?: number;
+	recentFailureSummary?: string;
+}
+
 export interface RunSyncOptions {
 	parentSessionId?: string;
 	onEvent?: (event: Record<string, unknown>) => void;
@@ -455,6 +500,18 @@ export interface RunSyncOptions {
 		schemaPath: string;
 		outputPath: string;
 	};
+	/**
+	 * Intercom wiring, forwarded to the child process as environment.
+	 *
+	 * Read by execution.ts and consumed by pi-args.ts, but not currently set
+	 * by any caller in this package: the intercom surface was carried over
+	 * from pi-subagents and is inert until something opts into it.
+	 */
+	intercomSessionName?: string;
+	orchestratorIntercomTarget?: string;
+	/** Control-event policy. Defaults to DEFAULT_CONTROL_CONFIG when unset. */
+	controlConfig?: ControlConfig;
+	onControlEvent?: (event: ControlEvent) => void;
 	agentContract?: { version: 1 };
 	acceptance?: AcceptanceInput;
 	acceptanceContext?: {

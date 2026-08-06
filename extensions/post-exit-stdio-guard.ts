@@ -10,7 +10,7 @@ export function attachPostExitStdioGuard(proc: ChildProcess): void {
 
 export function trySignalChild(proc: ChildProcess, signal: string): boolean {
 	try {
-		proc.kill(signal);
+		proc.kill(signal as any);
 		return true;
 	} catch {
 		return false;
