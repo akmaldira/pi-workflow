@@ -23,6 +23,7 @@ import {
 	loadGraphResumeState,
 } from "./graph-journal.ts";
 import { createNodeRunner, type InteractiveHandlers } from "./graph-node-runner.ts";
+import { createInteractiveHandlers } from "./graph-interactive.ts";
 import { GraphRunContext } from "./graph-run-context.ts";
 import { buildGraphFromScript, GraphValidationError } from "./graph-validator.ts";
 import { GraphDisplayBridge } from "./graph-display-bridge.ts";
@@ -93,6 +94,10 @@ export interface GraphToolOptions {
 	 * Optional so the tool stays usable headless and in tests.
 	 */
 	workflowManager?: WorkflowManager;
+	/**
+	 * Overrides the ctx-derived interactive handlers. Tests inject stubs;
+	 * production leaves it unset so human()/mainAgent() reach the real UI.
+	 */
 	handlers?: InteractiveHandlers;
 	onRunStart?: (info: { runId: string; name: string; nodeIds: string[] }) => void;
 	onNodeStart?: (info: { step: number; nodeId: string; nodeType: string }) => void;
@@ -305,7 +310,15 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 						artifactsDir: context.artifactsDir,
 						artifactConfig: context.artifactConfig,
 						spawnAgent: spawnAgent as never,
-						handlers: options.handlers,
+						// Built from ctx so human() actually asks and mainAgent()
+						// actually checkpoints. Both degrade to their defaults when
+						// the run has no UI.
+						handlers:
+							options.handlers ??
+							createInteractiveHandlers({
+								ctx,
+								onEvent: (message) => display?.log(message),
+							}),
 					}),
 					onNodeStart: (info) => {
 						display?.nodeStarted({

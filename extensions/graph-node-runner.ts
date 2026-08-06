@@ -206,11 +206,25 @@ export type SpawnAgentFn = (
  * Supplied by the tool layer, which owns the UI and the parent session.
  * Absent handlers degrade rather than hang: see task #16/#17.
  */
+/**
+ * What a human node produced, and how.
+ *
+ * `source` is not decoration: an edge that cannot tell "the human chose
+ * hold" from "nobody was watching, so hold was assumed" would convert
+ * absence into consent. A handler that resolved the default internally and
+ * returned a bare string would erase that difference before the runner
+ * could record it.
+ */
+export interface HumanHandlerResult {
+	answer: string;
+	source: "human" | "default" | "none";
+}
+
 export interface InteractiveHandlers {
 	onHuman?: (
 		node: { prompt: string; options?: string[]; default?: string },
 		state: GraphState,
-	) => Promise<string>;
+	) => Promise<string | HumanHandlerResult>;
 	onMainAgent?: (prompt: string, state: GraphState) => Promise<string>;
 }
 
@@ -256,7 +270,15 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 					};
 				}
 				const reply = await options.handlers.onMainAgent(prompt, state);
-				return { result: { status: "ok", text: reply, prompt } };
+				const answered = typeof reply === "string" && reply.trim() !== "";
+				return {
+					result: withResultText({
+						status: answered ? "ok" : "skipped",
+						text: answered ? reply : "",
+						prompt,
+						...(answered ? {} : { reason: "No decision was given at this checkpoint." }),
+					}),
+				};
 			}
 
 			case "human": {
@@ -274,11 +296,40 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 						},
 					};
 				}
-				const answer = await options.handlers.onHuman(
+				const raw = await options.handlers.onHuman(
 					{ prompt: def.prompt, options: def.options, default: def.default },
 					state,
 				);
-				return { result: { status: "ok", answer, prompt: def.prompt } };
+
+				// A bare string is accepted for convenience, but cannot say how it
+				// was obtained, so it is inferred conservatively: only a non-empty
+				// value that differs from the default counts as a real answer.
+				const reported: HumanHandlerResult =
+					typeof raw === "string"
+						? {
+								answer: raw,
+								source: raw === "" ? "none" : raw === def.default ? "default" : "human",
+							}
+						: raw;
+
+				const status =
+					reported.source === "human" ? "ok" : reported.source === "default" ? "default" : "skipped";
+
+				return {
+					result: {
+						status,
+						answer: reported.answer || def.default,
+						prompt: def.prompt,
+						...(status === "ok"
+							? {}
+							: {
+									reason:
+										status === "default"
+											? "No answer was given; fell back to the node's default."
+											: "No answer was given and no default was set.",
+								}),
+					},
+				};
 			}
 		}
 	};
