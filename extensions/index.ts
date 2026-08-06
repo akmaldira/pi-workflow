@@ -207,9 +207,17 @@ export function registerWorkflowStatusTool(pi: ExtensionAPI, workflowManager: Wo
 			"Call with just runId for a summary of every agent's status/error. Call with runId + agentId for one agent's full prompt, result, error, and tool-call/output history.",
 		].join(" "),
 		parameters: WorkflowStatusParams,
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const run = workflowManager.getRun(params.runId);
 			if (!run) {
+				// A process that never itself executed a workflow (e.g. a fresh
+				// session asking about a run from an earlier CLI invocation) has
+				// no journalDir set yet — the graph tool only sets it as a side
+				// effect of running. Compute it the same way graph-tool.ts does,
+				// so a cross-process lookup works even when nothing has run here.
+				if (!workflowManager.getJournalDir() && ctx.cwd) {
+					workflowManager.setJournalDir(`${ctx.cwd}/.pi-workflow/runs`);
+				}
 				const persisted = workflowManager.listRuns().find((r) => r.runId === params.runId);
 				if (!persisted) {
 					return {
@@ -516,6 +524,13 @@ export default function (pi: ExtensionAPI) {
 			if (!ctx.hasUI) {
 				ctx.ui.notify("The /workflows navigator requires an interactive TUI session.", "warning");
 				return;
+			}
+			// Same cross-process gap as workflow_status: without a workflow
+			// having run in this process yet, journalDir is unset and the
+			// navigator would show "no runs" despite completed runs sitting
+			// on disk from earlier sessions.
+			if (!globalWorkflowManager.getJournalDir() && ctx.cwd) {
+				globalWorkflowManager.setJournalDir(`${ctx.cwd}/.pi-workflow/runs`);
 			}
 			await openWorkflowNavigator(pi, globalWorkflowManager, ctx.ui);
 		},

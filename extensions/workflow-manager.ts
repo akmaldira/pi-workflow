@@ -400,6 +400,16 @@ export class WorkflowManager extends EventEmitter {
 	}
 }
 
+/**
+ * Parses a graph-engine journal file (`graph_run` / `node` / `graph_result`
+ * records, see graph-journal.ts) into the flat shape /workflows and
+ * workflow_status expect for a run this process never held in memory —
+ * either because it was created by a previous CLI invocation, or because
+ * this WorkflowManager was never wired up to observe it live.
+ *
+ * The graph engine is the only thing that writes to journalDir; there is no
+ * other journal format on disk to handle.
+ */
 function parsePersistedJournal(filePath: string, runId: string): PersistedRun | undefined {
 	try {
 		const content = fs.readFileSync(filePath, "utf8");
@@ -410,34 +420,33 @@ function parsePersistedJournal(filePath: string, runId: string): PersistedRun | 
 		let status: RunStatus = "completed";
 		const agents: WorkflowAgentSnapshot[] = [];
 		let totalTokens = 0;
+		let durationMs = 0;
 
 		for (const line of lines) {
 			const rec = JSON.parse(line);
-			if (rec.type === "run") {
+			if (rec.type === "graph_run") {
 				workflowName = rec.name || workflowName;
-			} else if (rec.type === "agent") {
+			} else if (rec.type === "node") {
+				const label = rec.agentName ? `${rec.nodeId} (${rec.agentName})` : rec.nodeId;
+				const nodeFailed = rec.status === "failed";
 				agents.push({
-					id: rec.seq || agents.length + 1,
-					label: rec.label || "agent",
-					prompt: rec.prompt || "",
-					status: "done",
+					id: rec.step ?? agents.length + 1,
+					label,
+					prompt: `${rec.nodeType ?? "agent"} node "${rec.nodeId}"`,
+					status: nodeFailed ? "error" : "done",
 					resultPreview: preview(rec.result),
-					outputTokens: rec.outputTokens || 0,
+					error: nodeFailed ? rec.error : undefined,
+					outputTokens: rec.tokens || 0,
 					durationMs: rec.durationMs || 0,
 				});
-				totalTokens += rec.outputTokens || 0;
-			} else if (rec.type === "error") {
-				agents.push({
-					id: rec.seq || agents.length + 1,
-					label: rec.label || "agent",
-					prompt: "",
-					status: "error",
-					error: rec.error,
-					durationMs: rec.durationMs || 0,
-				});
-				status = "error";
-			} else if (rec.type === "result") {
-				if (!rec.ok) status = "error";
+				totalTokens += rec.tokens || 0;
+				if (nodeFailed) status = "error";
+			} else if (rec.type === "graph_result") {
+				if (rec.status === "aborted") status = "stopped";
+				else if (rec.status === "max_iterations" || rec.error) status = "error";
+				else if (rec.status === "completed") status = "completed";
+				totalTokens = rec.totalTokens ?? totalTokens;
+				durationMs = rec.durationMs ?? durationMs;
 			}
 		}
 
@@ -448,7 +457,7 @@ function parsePersistedJournal(filePath: string, runId: string): PersistedRun | 
 			status,
 			agents,
 			totalTokens,
-			durationMs: 0,
+			durationMs,
 			updatedAt: stats.mtimeMs,
 		};
 	} catch {

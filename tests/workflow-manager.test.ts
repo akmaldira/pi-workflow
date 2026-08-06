@@ -335,13 +335,16 @@ describe("WorkflowManager", () => {
 	it("lists both active and persisted runs from journal directory", () => {
 		manager.registerRun("run-active", { name: "active_wf" });
 
-		// Create a mock journal file
+		// Create a mock journal file in the real graph-engine format (the only
+		// format the graph tool ever writes — see graph-journal.ts).
 		const journalPath = path.join(tempDir, "run-persisted.jsonl");
 		fs.writeFileSync(
 			journalPath,
-			JSON.stringify({ type: "run", name: "persisted_wf" }) +
+			JSON.stringify({ type: "graph_run", runId: "run-persisted", name: "persisted_wf", entry: "step1", nodeIds: ["step1"], startedAt: Date.now() }) +
 				"\n" +
-				JSON.stringify({ type: "agent", seq: 1, label: "Agent P1", outputTokens: 200 }),
+				JSON.stringify({ type: "node", step: 1, nodeId: "step1", nodeType: "agent", agentName: "scout", status: "ok", result: { status: "ok", text: "done" }, routedTo: "END", tokens: 200, startedAt: Date.now(), durationMs: 10 }) +
+				"\n" +
+				JSON.stringify({ type: "graph_result", status: "completed", iterations: 1, totalTokens: 200, durationMs: 10 }),
 		);
 
 		const runs = manager.listRuns();
@@ -350,6 +353,12 @@ describe("WorkflowManager", () => {
 		const names = runs.map((r) => r.workflowName);
 		expect(names).toContain("active_wf");
 		expect(names).toContain("persisted_wf");
+
+		const persisted = runs.find((r) => r.workflowName === "persisted_wf");
+		expect(persisted?.status).toBe("completed");
+		expect(persisted?.totalTokens).toBe(200);
+		expect(persisted?.agents.length).toBe(1);
+		expect(persisted?.agents[0].label).toBe("step1 (scout)");
 	});
 
 	it("populates the manager when the graph workflow tool executes", async () => {
@@ -389,6 +398,50 @@ g.run();`;
 		expect(runs[0].agents.length).toBe(1);
 		expect(runs[0].agents[0].label).toBe("look (scout)");
 		expect(runs[0].agents[0].status).toBe("done");
+	});
+
+	it("a fresh WorkflowManager (simulating a new process) can look up a completed run by runId", async () => {
+		// Live-tested regression: the graph tool computes journalDir per-run
+		// (cwd-derived) but never called manager.setJournalDir(), so
+		// workflow_status's cross-process lookup (getRun() -> listRuns()
+		// journal scan) silently found nothing for any run outside the
+		// process that created it — even though the journal file was right
+		// there on disk.
+		const { createGraphWorkflowTool } = await import("../extensions/graph-tool.ts");
+		const tool = createGraphWorkflowTool({
+			cwd: tempDir,
+			workflowManager: manager,
+			spawnAgent: (async () => ({
+				agent: "scout",
+				task: "t",
+				exitCode: 0,
+				usage: { totalTokens: 5 },
+				messages: [{ role: "assistant", content: [{ type: "text", text: "agent output" }] }],
+			})) as never,
+		});
+
+		const script = `export const meta = { name: "cross_process_test", description: "test" };
+const g = graph();
+g.node("look", agent("scout", () => "inspect"));
+g.edge("look", END);
+g.run();`;
+
+		const result = await tool.execute("call-1", { script }, undefined, undefined, {
+			cwd: tempDir,
+			sessionManager: { getSessionId: () => "s1" },
+		} as unknown as ExtensionContext);
+		const runId = (result.details as { runId: string }).runId;
+
+		// A brand-new manager, with nothing in memory — exactly what
+		// workflow_status sees when called from a separate `pi` invocation
+		// than the one that ran the workflow.
+		const freshManager = new WorkflowManager();
+		freshManager.setJournalDir(`${tempDir}/.pi-workflow/runs`);
+
+		const found = freshManager.listRuns().find((r) => r.runId === runId);
+		expect(found).toBeDefined();
+		expect(found?.workflowName).toBe("cross_process_test");
+		expect(found?.status).toBe("completed");
 	});
 
 	it("records one manager entry per node visit, so loops stay visible", async () => {

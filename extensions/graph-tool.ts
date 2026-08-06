@@ -274,6 +274,13 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 				initialState: graph.initialState,
 			});
 
+			// Point the manager at this run's journal directory so
+			// workflow_status and /workflows can look up completed runs by
+			// runId even after this process exits (each call may use a
+			// different cwd, so this is set per-run rather than once at
+			// extension init — see workflow-manager.ts's setJournalDir()).
+			options.workflowManager?.setJournalDir(journalDir);
+
 			const display = options.workflowManager
 				? new GraphDisplayBridge({
 						manager: options.workflowManager,

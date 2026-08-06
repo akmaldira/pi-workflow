@@ -63,6 +63,30 @@ PROPOSED_FIX: Add deletedAt to the User type
 		expect(result.proposedFix).toBe("Add deletedAt to the User type");
 	});
 
+	it("detects escalation even when a model prepends an empty <think></think> marker", () => {
+		// Live-tested regression: some models prefix every reply with
+		// "<think></think>" even when they have nothing to think about, which
+		// pushed "STATUS: blocked" off the start of the line and silently
+		// defeated the line-anchored regex — the graph routed to END instead
+		// of back to the escalation target.
+		const text = "<think></think>STATUS: blocked\nBLOCKED_ON: contract\nThe contract is ambiguous.";
+		const result = parseAgentResult(text, "green");
+
+		expect(result.status).toBe("blocked");
+		expect(result.blockedOn).toBe("contract");
+		// The raw text (including the marker) must still be preserved verbatim
+		// for prompt interpolation — only the *parser's* view is cleaned.
+		expect(result.text).toBe(text);
+	});
+
+	it("detects escalation with a non-empty <think>...</think> reasoning block", () => {
+		const text = "<think>Let me consider the options here.</think>\nSTATUS: blocked\nBLOCKED_ON: tests";
+		const result = parseAgentResult(text, "red");
+
+		expect(result.status).toBe("blocked");
+		expect(result.blockedOn).toBe("tests");
+	});
+
 	it("tolerates prose around the escalation block", () => {
 		// Agents wrap the block in explanation. Rejecting that would push them
 		// back toward silently giving up, which is the failure being designed

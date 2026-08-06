@@ -120,10 +120,25 @@ export function rehydrateState(state: Record<string, unknown>): Record<string, u
 	return state;
 }
 
+/**
+ * Strips reasoning-trace markers some models prepend to every reply (e.g.
+ * `<think></think>` before the actual content, or `<think>...</think>` with
+ * a real trace inside). Escalation parsing is line-anchored (`^STATUS:`), so
+ * a leading marker on the same line as STATUS silently defeats it — the
+ * agent's escalation gets treated as an ordinary completion and the graph
+ * routes to END instead of back to whoever owns the problem. Stripping here,
+ * once, at the one place that decides routing, is cheaper than teaching
+ * every regex about `<think>`.
+ */
+function stripThinkingMarkers(text: string): string {
+	return text.replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/<\/?think>/gi, "");
+}
+
 export function parseAgentResult(text: string, agentName: string): AgentNodeResult {
 	const result: AgentNodeResult = withResultText({ status: "ok", text, agent: agentName });
+	const searchText = stripThinkingMarkers(text);
 
-	const statusMatch = STATUS_LINE.exec(text);
+	const statusMatch = STATUS_LINE.exec(searchText);
 	if (statusMatch && statusMatch[1].toLowerCase() === "blocked") {
 		result.status = "blocked";
 	}
@@ -132,7 +147,7 @@ export function parseAgentResult(text: string, agentName: string): AgentNodeResu
 	// passing mention of "REASON:" in ordinary prose cannot fake a blocker.
 	if (result.status === "blocked") {
 		for (const [field, pattern] of FIELD_PATTERNS) {
-			const match = pattern.exec(text);
+			const match = pattern.exec(searchText);
 			if (match) {
 				const value = match[1].trim();
 				if (value) result[field] = value;
