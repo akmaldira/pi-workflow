@@ -551,9 +551,21 @@ If both extensions are installed, this works automatically — no configuration 
 
 **Headless caveat:** if pi itself is run non-interactively (e.g. `pi --mode json`, an IDE extension, or an API integration) and pi-permission-system is installed, it has no UI to forward `ask` prompts to, so `ask`-gated tools (including `subagent`/`workflow` themselves, if policy requires asking for them) are auto-denied rather than silently allowed. Configure pi-permission-system's policy to `allow` the tools/surfaces you need in that mode — see the [Running Without a TUI](skills/pi-workflow/SKILL.md) section of the bundled skill for a config example.
 
-## Roadmap: Multi-Agent Coordination
+## Roadmap: Graph-Based Agent Coordination
 
-Today's `workflow` script runs agents in a strictly forward pipeline (plan → architect → red → green → reviewer style), which breaks down when an early-stage plan doesn't survive contact with reality — a later agent gets stuck with no legitimate way to say "this is impossible as specified" and route the question back, and often takes a shortcut (mocking, stubbing) instead. `docs/COORDINATION-DESIGN.md` lays out a phased, research-backed design to fix this: a first-class `blocked`/escalate outcome for `agent()`, an independent plan-review gate, mechanism-backed contract artifacts, non-self-graded completion verification, and human-in-the-loop escalation — all built directly on the existing sandboxed `workflow` engine, with no external framework dependency. Proposed, not yet implemented; see that doc for the full design and research basis.
+The imperative `workflow` script (agent/parallel/pipeline) is being **replaced** with a
+**graph-based coordination system**: agents are nodes, edges handle routing (direct or
+conditional), and shared state flowing through the graph IS the blackboard. The main pi agent
+composes a different graph for each task — dynamic team assembly as constrained, validated code.
+Agents coordinate *with each other* through the graph's routing, not through a central
+dispatcher. A `green` node hitting a wall routes back to `architect` through an edge condition,
+not through a messaging system.
+
+The full design is in [`docs/GRAPH-WORKFLOW-DESIGN.md`](./docs/GRAPH-WORKFLOW-DESIGN.md) —
+covering the graph DSL (constrained code, validated with acorn + vm sandbox), node types
+(agent/mainAgent/human), edge types (direct/conditional), the graph executor, bundled agent
+catalog, dynamic team composition, human-in-the-loop, persistence/resume, and a phased build
+plan. (The earlier `docs/COORDINATION-DESIGN.md` is superseded.)
 
 ## Testing
 

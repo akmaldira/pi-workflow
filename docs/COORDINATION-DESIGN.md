@@ -1,3 +1,7 @@
+> **⚠️ SUPERSEDED** — This document went through multiple rounds of correction and has been
+> replaced by [`GRAPH-WORKFLOW-DESIGN.md`](./GRAPH-WORKFLOW-DESIGN.md), which is the final
+> approved plan. Kept here for history only.
+
 # Multi-Agent Coordination: Production Design
 
 Status: **proposed, not yet implemented**
