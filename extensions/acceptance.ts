@@ -41,8 +41,8 @@ const VALID_EVIDENCE = new Set<string>([
 	"review-findings",
 	"manual-notes",
 ]);
-const ACCEPTANCE_CONFIG_KEYS = new Set(["level", "criteria", "evidence", "verify", "review", "stopRules", "reason"]);
-const ACCEPTANCE_GATE_KEYS = new Set(["id", "must", "evidence", "severity"]);
+const ACCEPTANCE_CONFIG_KEYS = new Set<string>(["level", "criteria", "evidence", "verify", "review", "stopRules", "reason"]);
+const ACCEPTANCE_GATE_KEYS = new Set<string>(["id", "must", "evidence", "severity"]);
 const ACCEPTANCE_VERIFY_KEYS = new Set(["id", "command", "timeoutMs", "cwd", "env", "allowFailure"]);
 const ACCEPTANCE_REVIEW_KEYS = new Set(["agent", "focus", "required"]);
 
@@ -77,7 +77,7 @@ export function normalizeAcceptanceInput(input: AcceptanceInput | undefined): Ac
 	}
 	if (typeof input !== "object" || input === null || Array.isArray(input)) throw new Error("Acceptance config must be an object or a level string.");
 	for (const key of Object.keys(input)) {
-		if (!ACCEPTANCE_CONFIG_KEYS.has(key as any)) throw new Error(`Unknown acceptance config key '${key}'.`);
+		if (!ACCEPTANCE_CONFIG_KEYS.has(key)) throw new Error(`Unknown acceptance config key '${key}'.`);
 	}
 	return input;
 }
@@ -86,19 +86,19 @@ export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"
 	if (input === undefined) return [];
 	if (input === false) return [];
 	if (typeof input === "string") {
-		if (!VALID_LEVELS.has(input as any)) return [`Invalid acceptance level '${input}'.`];
+		if (!VALID_LEVELS.has(input)) return [`Invalid acceptance level '${input}'.`];
 		return [];
 	}
 	if (typeof input !== "object" || input === null || Array.isArray(input)) return [`Acceptance must be a level string, false, or an object.`];
 	const errors: string[] = [];
 	for (const key of Object.keys(input)) {
-		if (!ACCEPTANCE_CONFIG_KEYS.has(key as any)) errors.push(`Unknown acceptance key '${key}'.`);
+		if (!ACCEPTANCE_CONFIG_KEYS.has(key)) errors.push(`Unknown acceptance key '${key}'.`);
 	}
 	const config = input as AcceptanceConfig;
-	if (config.level !== undefined && !VALID_LEVELS.has(config.level as any)) errors.push(`Invalid acceptance level '${config.level}'.`);
+	if (config.level !== undefined && !VALID_LEVELS.has(config.level)) errors.push(`Invalid acceptance level '${config.level}'.`);
 	if (config.evidence !== undefined) {
 		for (const ev of config.evidence) {
-			if (!VALID_EVIDENCE.has(ev as any)) errors.push(`Invalid acceptance evidence '${ev}'.`);
+			if (!VALID_EVIDENCE.has(ev)) errors.push(`Invalid acceptance evidence '${ev}'.`);
 		}
 	}
 	if (config.criteria !== undefined) {
@@ -109,7 +109,7 @@ export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"
 				continue;
 			}
 			for (const key of Object.keys(criterion)) {
-				if (!ACCEPTANCE_GATE_KEYS.has(key as any)) errors.push(`Unknown acceptance gate key '${key}'.`);
+				if (!ACCEPTANCE_GATE_KEYS.has(key)) errors.push(`Unknown acceptance gate key '${key}'.`);
 			}
 		}
 	}

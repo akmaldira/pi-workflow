@@ -4,10 +4,10 @@
 
 import type { Message } from "@earendil-works/pi-ai";
 
-export function getFinalOutput(messages: any[]): string {
+export function getFinalOutput(messages: Message[]): string {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
-		if (msg.role === "assistant") {
+		if (msg.role === "assistant" && Array.isArray(msg.content)) {
 			for (const part of msg.content) {
 				if (part.type === "text") return part.text;
 			}
@@ -44,7 +44,7 @@ export function hasEmptyTerminalAssistantResponse(messages: Message[] | undefine
 	return true;
 }
 
-export function extractToolArgsPreview(event: any): string {
+export function extractToolArgsPreview(event: { args?: unknown }): string {
 	if (event.args) {
 		const args = typeof event.args === "string" ? event.args : JSON.stringify(event.args);
 		return args.length > 200 ? args.slice(0, 200) + "..." : args;
@@ -58,7 +58,7 @@ export function extractTextFromContent(message: Message): string[] {
 	if (Array.isArray(message.content)) {
 		return message.content
 			.filter((part) => part.type === "text")
-			.map((part) => (part as any).text || "");
+			.map((part) => (part as { text?: string }).text || "");
 	}
 	return [];
 }
