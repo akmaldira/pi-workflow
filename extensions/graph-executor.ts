@@ -78,6 +78,24 @@ export type NodeRunner = (
 	context: { step: number; runId: string; signal?: AbortSignal },
 ) => Promise<NodeRunOutcome>;
 
+/**
+ * State carried over from a previous run.
+ *
+ * Replaying a graph is well-defined because a walk is an ordered sequence
+ * of node executions with stable ids: re-apply the recorded results, then
+ * continue from where the last one routed.
+ */
+export interface GraphResumeInput {
+	/** State rebuilt from the journal, replacing the graph's initial state. */
+	state: GraphState;
+	/** Node to continue from. */
+	resumeFrom: string;
+	/** Executions already done, so the iteration cap covers the whole run. */
+	completedSteps: number;
+	/** Prior executions, prepended to history so the run reads as one walk. */
+	history?: NodeExecution[];
+}
+
 export interface GraphRunOptions {
 	runId: string;
 	/** Cap on node executions. Cycles are legal, so this bounds them. */
@@ -89,6 +107,8 @@ export interface GraphRunOptions {
 	onNodeComplete?: (execution: NodeExecution) => void;
 	/** Called before each node execution. */
 	onNodeStart?: (info: { step: number; nodeId: string; nodeType: NodeDef["type"] }) => void;
+	/** Continue a previous run instead of starting from the entry node. */
+	resume?: GraphResumeInput;
 }
 
 export const DEFAULT_MAX_ITERATIONS = 25;
@@ -178,14 +198,27 @@ export async function runGraph(
 		}
 	}
 
-	const startedAt = Date.now();
-	const state: GraphState = { ...graph.initialState };
-	const history: NodeExecution[] = [];
-	const path: string[] = [];
+	const resume = options.resume;
+	if (resume && !graph.nodes.has(resume.resumeFrom)) {
+		throw new GraphExecutionError(
+			`Cannot resume from "${resume.resumeFrom}": no such node in this graph.`,
+		);
+	}
 
-	let current: string | EndSymbol = graph.entry;
-	let iterations = 0;
-	let finalResult: unknown;
+	const startedAt = Date.now();
+	// A resumed run replaces the graph's initial state with the replayed one,
+	// which already includes those initial values plus every recorded result.
+	const state: GraphState = resume ? { ...resume.state } : { ...graph.initialState };
+	const history: NodeExecution[] = resume?.history ? [...resume.history] : [];
+	const path: string[] = history.map((execution) => execution.nodeId);
+
+	let current: string | EndSymbol = resume ? resume.resumeFrom : graph.entry;
+	// Prior executions count toward the cap, so resuming repeatedly cannot be
+	// used to walk past it.
+	let iterations = resume?.completedSteps ?? 0;
+	let finalResult: unknown = resume
+		? history[history.length - 1]?.result
+		: undefined;
 
 	const finish = (status: GraphRunStatus, error?: string): GraphRunResult => ({
 		status,
