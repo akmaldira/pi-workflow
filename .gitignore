@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Runtime state produced by the extension itself
+.pi-workflow/
+.pi-subagents/
+
+# Editor / OS noise
+.DS_Store
+*.log

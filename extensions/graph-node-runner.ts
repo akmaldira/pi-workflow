@@ -53,7 +53,11 @@ export interface AgentNodeResult {
 }
 
 const STATUS_LINE = /^\s*STATUS:\s*(\w[\w-]*)\s*$/im;
-const FIELD_PATTERNS: [keyof AgentNodeResult, RegExp][] = [
+
+/** Escalation fields, narrowed to the string-valued keys so no cast is needed. */
+type EscalationField = "blockedOn" | "reason" | "evidence" | "proposedFix";
+
+const FIELD_PATTERNS: [EscalationField, RegExp][] = [
 	["blockedOn", /^\s*BLOCKED_ON:\s*(.+)$/im],
 	["reason", /^\s*REASON:\s*(.+)$/im],
 	["evidence", /^\s*EVIDENCE:\s*(.+)$/im],
@@ -104,7 +108,7 @@ export function parseAgentResult(text: string, agentName: string): AgentNodeResu
 			const match = pattern.exec(text);
 			if (match) {
 				const value = match[1].trim();
-				if (value) (result as Record<string, unknown>)[field] = value;
+				if (value) result[field] = value;
 			}
 		}
 		if (result.blockedOn) result.blockedOn = result.blockedOn.toLowerCase();

@@ -432,12 +432,22 @@ describe("end to end: escalation through a real runner", () => {
 		};
 		const calls: Record<string, number> = {};
 
-		const spawnAgent = vi.fn(async (_cwd, agentConfig) => {
-			const name = agentConfig.name as string;
-			const index = calls[name] ?? 0;
-			calls[name] = index + 1;
-			return withText(replies[name][index]);
-		});
+		// Typed with the full spawn signature so the prompt argument is
+		// reachable below; the assertion that green was re-prompted with the
+		// revised contract depends on it.
+		const spawnAgent = vi.fn(
+			async (
+				_cwd: string,
+				agentConfig: { name: string },
+				_prompt: string,
+				_options: Record<string, unknown>,
+			) => {
+				const name = agentConfig.name;
+				const index = calls[name] ?? 0;
+				calls[name] = index + 1;
+				return withText(replies[name][index]);
+			},
+		);
 
 		const g = new GraphBuilder();
 		g.node("architect", agent("architect", (s) => `Design: ${s.task}`));
@@ -466,8 +476,8 @@ describe("end to end: escalation through a real runner", () => {
 
 		// The retrying implementer was prompted with the REVISED contract.
 		const greenPrompts = spawnAgent.mock.calls
-			.filter((call) => (call[1] as { name: string }).name === "green")
-			.map((call) => call[2] as string);
+			.filter((call) => call[1].name === "green")
+			.map((call) => call[2]);
 		expect(greenPrompts[0]).toContain("Contract v1");
 		expect(greenPrompts[1]).toContain("Contract v2");
 	});

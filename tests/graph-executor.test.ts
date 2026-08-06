@@ -16,8 +16,16 @@ import {
  * A value may be a constant or a function of (state, callCount), so a node
  * revisited after an escalation can answer differently the second time.
  */
+/**
+ * A scripted response is either a constant or a function of
+ * (state, callCount), so a node revisited after an escalation can answer
+ * differently the second time.
+ */
+type ScriptedFn = (state: GraphState, call: number) => unknown;
+type ScriptedResponse = ScriptedFn | string | number | boolean | null | object;
+
 function scriptedRunner(
-	responses: Record<string, unknown | ((state: GraphState, call: number) => unknown)>,
+	responses: Record<string, ScriptedResponse>,
 	options: { tokens?: number } = {},
 ): NodeRunner {
 	const calls: Record<string, number> = {};
@@ -25,7 +33,7 @@ function scriptedRunner(
 	return async (node, state) => {
 		const call = (calls[node.id] = (calls[node.id] ?? 0) + 1);
 		const scripted = responses[node.id];
-		const result = typeof scripted === "function" ? scripted(state, call) : scripted;
+		const result = typeof scripted === "function" ? (scripted as ScriptedFn)(state, call) : scripted;
 		return { result, tokens: options.tokens };
 	};
 }
