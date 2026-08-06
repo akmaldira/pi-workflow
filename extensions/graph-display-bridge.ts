@@ -29,11 +29,52 @@ export interface GraphDisplayOptions {
 	abortController?: AbortController;
 }
 
+/**
+ * Strips reasoning blocks and markdown scaffolding from an agent's reply.
+ *
+ * Agent output regularly begins with `<think></think>` or a heading, which
+ * would otherwise fill the preview with text that says nothing about what
+ * the agent actually concluded.
+ */
+function cleanForPreview(text: string): string {
+	return (
+		text
+			.replace(/<think>[\s\S]*?<\/think>/g, " ")
+			.replace(/<\/?think>/g, " ")
+			.replace(/^#{1,6}\s+/gm, "")
+			.replace(/\*\*/g, "")
+			.replace(/`/g, "")
+			.replace(/\s+/g, " ")
+			// Headings must also be stripped after whitespace collapsing: a
+			// reply opening with "<think></think>## Answer" leaves the heading
+			// mid-line, where the line-anchored pass above cannot see it.
+			.replace(/(^|\s)#{1,6}\s+/g, "$1")
+			.trim()
+	);
+}
+
 function previewOf(value: unknown, limit = 60): string {
 	if (value === null || value === undefined) return "";
 	const text = typeof value === "string" ? value : String(value);
-	const collapsed = text.replace(/\s+/g, " ").trim();
+	const collapsed = cleanForPreview(text);
 	return collapsed.length <= limit ? collapsed : `${collapsed.slice(0, limit - 1)}…`;
+}
+
+/**
+ * Escalations are the reason this system exists, so a blocked result leads
+ * with that fact rather than with whatever prose preceded it.
+ */
+function resultPreview(result: unknown): string {
+	if (result && typeof result === "object") {
+		const r = result as { status?: string; blockedOn?: string; reason?: string; answer?: string };
+		if (r.status === "blocked") {
+			const target = r.blockedOn ? ` on ${r.blockedOn}` : "";
+			const why = r.reason ? `: ${previewOf(r.reason, 40)}` : "";
+			return `blocked${target}${why}`;
+		}
+		if (r.answer !== undefined) return `answered "${previewOf(r.answer, 30)}"`;
+	}
+	return previewOf(result);
 }
 
 /**
@@ -45,7 +86,7 @@ function previewOf(value: unknown, limit = 60): string {
  */
 function routeSuffix(execution: NodeExecution): string {
 	if (!execution.routedTo) return "";
-	return ` → ${execution.routedTo}`;
+	return `→ ${execution.routedTo}`;
 }
 
 /**
@@ -100,7 +141,12 @@ export class GraphDisplayBridge {
 		this.activeIds.delete(execution.step);
 
 		const status = execution.status === "failed" ? "error" : "done";
-		const preview = `${previewOf(execution.result)}${routeSuffix(execution)}`;
+		// Routing goes first: it is what distinguishes a coordination loop from
+		// a pipeline, and putting it last meant long agent prose truncated it
+		// away exactly when the run was most interesting.
+		const route = routeSuffix(execution).trim();
+		const body = resultPreview(execution.result);
+		const preview = route ? `${route}  ${body}` : body;
 
 		try {
 			this.manager.markAgentEnd(

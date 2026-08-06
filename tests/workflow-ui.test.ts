@@ -354,3 +354,87 @@ describe("renderNavigatorText", () => {
 		expect(rendered).not.toContain("\u2026");
 	});
 });
+
+describe("phaseless (graph) runs", () => {
+	function managerWithGraphRun(): WorkflowManager {
+		const manager = new WorkflowManager();
+		manager.registerRun("r1", { name: "graph_run", description: "d" });
+		manager.markAgentStart("r1", 0, {
+			id: 1,
+			label: "look (scout)",
+			prompt: "agent node",
+			status: "running",
+		});
+		manager.markAgentEnd("r1", 1, "done", "found files → sum");
+		manager.markAgentStart("r1", 0, {
+			id: 2,
+			label: "sum (researcher)",
+			prompt: "agent node",
+			status: "running",
+		});
+		manager.markAgentEnd("r1", 2, "done", "summary → END");
+		return manager;
+	}
+
+	it("drills from the run list straight to the node list", () => {
+		// A graph has no phases, so the phase level would be a single
+		// "(no phase)" row the user must click through to reach what they
+		// asked for.
+		const manager = managerWithGraphRun();
+		const model = new NavigatorModel(manager);
+		const state = new NavigatorState();
+
+		expect(state.drill(model)).toBe(true);
+		expect(state.kind).toBe("agents");
+	});
+
+	it("returns to the run list on back, not to the skipped phase level", () => {
+		const manager = managerWithGraphRun();
+		const model = new NavigatorModel(manager);
+		const state = new NavigatorState();
+		state.drill(model);
+
+		expect(state.back()).toBe(true);
+		expect(state.kind).toBe("runs");
+	});
+
+	it("still drills through phases when a run has real ones", () => {
+		const manager = new WorkflowManager();
+		manager.registerRun("r2", {
+			name: "phased",
+			description: "d",
+			phases: [{ title: "Research" }, { title: "Build" }],
+		});
+		const model = new NavigatorModel(manager);
+		const state = new NavigatorState();
+
+		expect(state.drill(model)).toBe(true);
+		expect(state.kind).toBe("phases");
+	});
+
+	it("labels the pane by nodes rather than by an empty phase name", () => {
+		const manager = managerWithGraphRun();
+		const model = new NavigatorModel(manager);
+		const state = new NavigatorState();
+		state.drill(model);
+
+		const text = renderNavigatorText(state, model, 100, 24).join("\n");
+
+		expect(text).toContain("nodes");
+		expect(text).not.toContain("(no phase)");
+	});
+
+	it("shows each node with its routing target", () => {
+		const manager = managerWithGraphRun();
+		const model = new NavigatorModel(manager);
+		const state = new NavigatorState();
+		state.drill(model);
+
+		const text = renderNavigatorText(state, model, 100, 24).join("\n");
+
+		// Routing is what distinguishes a coordination loop from a pipeline,
+		// so it has to survive into the display.
+		expect(text).toContain("look (scout)");
+		expect(text).toContain("sum (researcher)");
+	});
+});

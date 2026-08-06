@@ -144,6 +144,22 @@ export class NavigatorState {
 			if (t.cursor < runs.length) {
 				const run = runs[t.cursor];
 				if (!run) return false;
+
+				// Graph runs have no phases, so the phase level would be a single
+				// "(no phase)" row the user must click through to reach the nodes
+				// they asked for. Skip straight to the node list when there is no
+				// real phase structure to navigate.
+				const phases = model.phases(run.runId);
+				if (phases.length === 1 && phases[0].title === NO_PHASE_TITLE) {
+					this.stack.push({
+						kind: "agents",
+						cursor: 0,
+						runId: run.runId,
+						phase: phases[0].title,
+					});
+					return true;
+				}
+
 				this.stack.push({ kind: "phases", cursor: 0, runId: run.runId });
 				return true;
 			}
@@ -244,8 +260,17 @@ function pushTextBlock(body: string[], prefix: string, text: string, continuatio
 	}
 }
 
+/**
+ * Title used when a run has no phase structure at all.
+ *
+ * Graph runs are always in this state: a graph is a walk over nodes, not a
+ * sequence of phases, so synthesising one would misrepresent a cyclic walk
+ * as a pipeline.
+ */
+export const NO_PHASE_TITLE = "(no phase)";
+
 function agentPhaseKey(a: WorkflowAgentSnapshot): string {
-	return a.phase != null && String(a.phase).trim() ? asText(a.phase) : "(no phase)";
+	return a.phase != null && String(a.phase).trim() ? asText(a.phase) : NO_PHASE_TITLE;
 }
 
 export class NavigatorModel {
@@ -294,7 +319,7 @@ export class NavigatorModel {
 
 		// Fallback: if no phases pre-declared and no agents yet, return a default phase row
 		if (order.length === 0) {
-			order.push("(no phase)");
+			order.push(NO_PHASE_TITLE);
 		}
 
 		return order.map((title) => {
@@ -499,7 +524,9 @@ export function renderNavigatorFrame(
 		lines.push(accent(theme.bold(truncateToWidth(runName, width))));
 		const totalDone = phases.reduce((s, p) => s + p.done, 0);
 		const totalAgents = phases.reduce((s, p) => s + p.total, 0);
-		lines.push(dim(`${runRow?.status ?? "running"}  ${totalDone}/${totalAgents} agents`));
+		const headerUnit =
+			phases.length === 1 && phases[0].title === NO_PHASE_TITLE ? "nodes" : "agents";
+		lines.push(dim(`${runRow?.status ?? "running"}  ${totalDone}/${totalAgents} ${headerUnit}`));
 
 		// Two-pane split
 		const leftW = Math.max(16, Math.min(32, Math.floor(width * 0.36)));
@@ -514,13 +541,28 @@ export function renderNavigatorFrame(
 		const rightRows = scrollWindow(agents.length, inAgents ? state.cursor : 0, bodyCap);
 		const bodyRows = Math.max(1, Math.min(bodyCap, Math.max(leftRows.count, rightRows.count)));
 
-		// Top rule with titles
-		const rightTitle = `${selPhase?.title ?? ""} · ${agents.length} ${agents.length === 1 ? "agent" : "agents"}`;
+		// Top rule with titles. A phaseless run is a graph walk, so the pane
+		// is labelled by what it actually contains rather than by a phase name
+		// that carries no information.
+		const phaseless = selPhase?.title === NO_PHASE_TITLE;
+		const unit = phaseless
+			? `${agents.length} ${agents.length === 1 ? "node" : "nodes"}`
+			: `${agents.length} ${agents.length === 1 ? "agent" : "agents"}`;
+		const rightTitle = phaseless ? unit : `${selPhase?.title ?? ""} · ${unit}`;
 		const leftTitlePad = leftInner - 8;
-		const rightTitlePad = Math.max(0, rightInner - visibleWidth(rightTitle) - 2);
+		// A phaseless run gets one full-width pane: the phase column would
+		// hold a single meaningless row and steal a third of the width from
+		// the node list, which is the part worth reading.
+		const fullInner = width - 2;
+		const rightTitlePad = Math.max(
+			0,
+			(phaseless ? fullInner : rightInner) - visibleWidth(rightTitle) - 2,
+		);
 		lines.push(
-			bc(`┌`) + bc(`─`) + bc(` Phases `) + bc(`─`.repeat(Math.max(0, leftTitlePad))) +
-			bc(`┬`) + bc(`─ `) + dim(rightTitle) + bc(` ` + `─`.repeat(rightTitlePad)) + bc(`┐`)
+			phaseless
+				? bc(`┌`) + bc(`─ `) + dim(rightTitle) + bc(` ` + `─`.repeat(rightTitlePad)) + bc(`┐`)
+				: bc(`┌`) + bc(`─`) + bc(` Phases `) + bc(`─`.repeat(Math.max(0, leftTitlePad))) +
+					bc(`┬`) + bc(`─ `) + dim(rightTitle) + bc(` ` + `─`.repeat(rightTitlePad)) + bc(`┐`)
 		);
 
 		for (let k = 0; k < bodyRows; k++) {
@@ -552,15 +594,33 @@ export function renderNavigatorFrame(
 				const dot = theme.fg(dotColor, "●");
 				const tokens = a.outputTokens ? dim(` ${compactTokens(a.outputTokens)}t`) : "";
 				const labelStyled = selected ? theme.fg("accent", theme.bold(asText(a.label))) : theme.fg("accent", asText(a.label));
-				rightCell = padRight(marker + dot + " " + labelStyled + tokens, rightInner);
+				const cellWidth = phaseless ? fullInner : rightInner;
+				// The routing target is the point of a graph view, so show it
+				// when there is room rather than truncating it away.
+				const preview =
+					phaseless && a.resultPreview ? dim(`  ${asText(a.resultPreview)}`) : "";
+				rightCell = padRight(
+					marker + dot + " " + labelStyled + tokens + preview,
+					cellWidth,
+				);
 			} else if (k === 0 && agents.length === 0) {
-				rightCell = padRight(dim("  no agents"), rightInner);
+				rightCell = padRight(dim(phaseless ? "  no nodes" : "  no agents"), phaseless ? fullInner : rightInner);
+			} else if (phaseless) {
+				rightCell = " ".repeat(fullInner);
 			}
 
-			lines.push(bc("│") + leftCell + bc("│") + rightCell + bc("│"));
+			lines.push(
+				phaseless
+					? bc("│") + rightCell + bc("│")
+					: bc("│") + leftCell + bc("│") + rightCell + bc("│"),
+			);
 		}
 
-		lines.push(bc(`└`) + bc(`─`.repeat(leftInner)) + bc(`┴`) + bc(`─`.repeat(rightInner)) + bc(`┘`));
+		lines.push(
+			phaseless
+				? bc(`└`) + bc(`─`.repeat(fullInner)) + bc(`┘`)
+				: bc(`└`) + bc(`─`.repeat(leftInner)) + bc(`┴`) + bc(`─`.repeat(rightInner)) + bc(`┘`),
+		);
 		lines.push("");
 		lines.push(dim(
 			inAgents
