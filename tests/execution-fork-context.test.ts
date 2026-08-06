@@ -10,18 +10,29 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 vi.mock("@earendil-works/pi-coding-agent", async () => {
 	return {
 		generateSummaryWithUsage: vi.fn(),
-		sessionEntryToContextMessages: vi.fn((entry: any) => {
+		sessionEntryToContextMessages: vi.fn((entry: { type: string; message?: unknown }) => {
 			if (entry.type !== "message") return [];
 			return [entry.message];
 		}),
 	};
 });
 
+import type { Model, Api } from "@earendil-works/pi-ai";
 import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import { buildSystemPrompt } from "../extensions/execution.ts";
 import { clearForkSummaryCache } from "../extensions/fork-context.ts";
 import type { AgentConfig } from "../extensions/agents.ts";
-import type { RunSyncOptions } from "../extensions/types.ts";
+import type { ReadonlySessionManager, RunSyncOptions } from "../extensions/types.ts";
+
+/** Minimal fake Model<Api> — only the fields fork-context.ts actually reads. */
+function makeFallbackModel(): Model<Api> {
+	return { provider: "test", id: "test-model" } as unknown as Model<Api>;
+}
+
+/** Minimal fake token usage for generateSummaryWithUsage mock results. */
+function makeUsage() {
+	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+}
 
 function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
 	return {
@@ -55,7 +66,7 @@ function makeSessionManager(entries: unknown[] = [
 		getEntries: () => entries,
 		getTree: () => [],
 		getSessionName: () => undefined,
-	} as any;
+	} as unknown as ReadonlySessionManager;
 }
 
 function makeModelRegistry() {
@@ -78,7 +89,7 @@ describe("execution.ts buildSystemPrompt — context resolution", () => {
 	it("defaults to fork mode when context is unspecified and forkContext is available", async () => {
 		vi.mocked(generateSummaryWithUsage).mockResolvedValue({
 			text: "## Goal\nDefault fork summary.",
-			usage: {} as any,
+			usage: makeUsage(),
 		});
 		const agent = makeAgent();
 		const options: RunSyncOptions = {
@@ -86,7 +97,7 @@ describe("execution.ts buildSystemPrompt — context resolution", () => {
 			forkContext: {
 				sessionManager: makeSessionManager(),
 				modelRegistry: makeModelRegistry(),
-				fallbackModel: { provider: "test", id: "test-model" } as any,
+				fallbackModel: makeFallbackModel(),
 			},
 		};
 		const { prompt, notes } = await buildSystemPrompt(agent, "/tmp", options);
@@ -117,7 +128,7 @@ describe("execution.ts buildSystemPrompt — context resolution", () => {
 	it("fork mode with forkContext injects the structured summary", async () => {
 		vi.mocked(generateSummaryWithUsage).mockResolvedValue({
 			text: "## Goal\nContinue the parent's work.",
-			usage: {} as any,
+			usage: makeUsage(),
 		});
 		const agent = makeAgent();
 		const options: RunSyncOptions = {
@@ -126,7 +137,7 @@ describe("execution.ts buildSystemPrompt — context resolution", () => {
 			forkContext: {
 				sessionManager: makeSessionManager(),
 				modelRegistry: makeModelRegistry(),
-				fallbackModel: { provider: "test", id: "test-model" } as any,
+				fallbackModel: makeFallbackModel(),
 			},
 		};
 		const { prompt, notes, parentSessionFile } = await buildSystemPrompt(agent, "/tmp", options);
@@ -155,7 +166,7 @@ describe("execution.ts buildSystemPrompt — context resolution", () => {
 			forkContext: {
 				sessionManager: makeSessionManager(),
 				modelRegistry: makeModelRegistry(),
-				fallbackModel: { provider: "test", id: "test-model" } as any,
+				fallbackModel: makeFallbackModel(),
 			},
 		};
 		const { prompt, notes } = await buildSystemPrompt(agent, "/tmp", options);
@@ -167,7 +178,7 @@ describe("execution.ts buildSystemPrompt — context resolution", () => {
 	it("uses agent.defaultContext when options.context is unset", async () => {
 		vi.mocked(generateSummaryWithUsage).mockResolvedValue({
 			text: "## Goal\nFrom frontmatter default.",
-			usage: {} as any,
+			usage: makeUsage(),
 		});
 		const agent = makeAgent({ defaultContext: "fork" });
 		const options: RunSyncOptions = {
@@ -175,7 +186,7 @@ describe("execution.ts buildSystemPrompt — context resolution", () => {
 			forkContext: {
 				sessionManager: makeSessionManager(),
 				modelRegistry: makeModelRegistry(),
-				fallbackModel: { provider: "test", id: "test-model" } as any,
+				fallbackModel: makeFallbackModel(),
 			},
 		};
 		const { prompt } = await buildSystemPrompt(agent, "/tmp", options);
@@ -190,7 +201,7 @@ describe("execution.ts buildSystemPrompt — context resolution", () => {
 			forkContext: {
 				sessionManager: makeSessionManager(),
 				modelRegistry: makeModelRegistry(),
-				fallbackModel: { provider: "test", id: "test-model" } as any,
+				fallbackModel: makeFallbackModel(),
 			},
 		};
 		const { prompt, notes } = await buildSystemPrompt(agent, "/tmp", options);
@@ -206,7 +217,7 @@ describe("execution.ts buildSystemPrompt — context resolution", () => {
 			forkContext: {
 				sessionManager: makeSessionManager(),
 				modelRegistry: makeModelRegistry(),
-				fallbackModel: { provider: "test", id: "test-model" } as any,
+				fallbackModel: makeFallbackModel(),
 			},
 		};
 		const { prompt, notes } = await buildSystemPrompt(agent, "/tmp", options);

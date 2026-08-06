@@ -1,3 +1,4 @@
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -138,7 +139,8 @@ describe("WorkflowManager", () => {
 		const agent = run?.snapshot.agents.find((a) => a.id === 1);
 		expect(agent?.history).toBeDefined();
 		expect(agent?.history?.length).toBeGreaterThanOrEqual(2);
-		expect((agent?.history?.[0] as any)?.toolName).toBe("bash");
+		const firstEntry = agent?.history?.[0];
+		expect(firstEntry && "toolName" in firstEntry ? firstEntry.toolName : undefined).toBe("bash");
 		expect(agent?.history?.[1].text).toBe("I ran the command");
 		expect(historyEmitted).toBe(true);
 
@@ -378,7 +380,7 @@ g.run();`;
 		await tool.execute("call-1", { script }, undefined, undefined, {
 			cwd: tempDir,
 			sessionManager: { getSessionId: () => "s1" },
-		} as any);
+		} as unknown as ExtensionContext);
 
 		const runs = manager.listRuns();
 		expect(runs.length).toBe(1);
@@ -429,7 +431,7 @@ g.run();`;
 		await tool.execute("call-2", { script }, undefined, undefined, {
 			cwd: tempDir,
 			sessionManager: { getSessionId: () => "s1" },
-		} as any);
+		} as unknown as ExtensionContext);
 
 		const runs = manager.listRuns();
 		// architect, green, architect, green — collapsing repeats would hide

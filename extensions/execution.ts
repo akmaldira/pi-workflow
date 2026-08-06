@@ -26,6 +26,7 @@ import {
 	INTERCOM_DETACH_REQUEST_EVENT,
 	INTERCOM_DETACH_RESPONSE_EVENT,
 	type AcceptanceLedger,
+	type ControlEvent,
 	type MaxOutputConfig,
 	type ResolvedAcceptanceConfig,
 	type RunSyncOptions,
@@ -304,10 +305,10 @@ async function runSingleAttempt(
 	}
 	const controlConfig = resolveControlConfig(options.controlConfig).config;
 	let interruptedByControl = false;
-	const allControlEvents: any[] = [];
-	let pendingControlEvents: any[] = [];
+	const allControlEvents: ControlEvent[] = [];
+	let pendingControlEvents: ControlEvent[] = [];
 	const emittedControlEventKeys = new Set<string>();
-	const emitControlEvent = (event: any) => {
+	const emitControlEvent = (event: ControlEvent) => {
 		if (!shouldNotifyControlEvent(controlConfig, event)) return;
 		if (!claimControlNotification(controlConfig, event, emittedControlEventKeys)) return;
 		allControlEvents.push(event);

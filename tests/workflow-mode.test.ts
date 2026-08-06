@@ -5,6 +5,7 @@
  * only read-only bash) and injecting a system-prompt directive.
  */
 
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, it, expect, beforeEach } from "vitest";
 import {
 	registerWorkflowMode,
@@ -96,19 +97,34 @@ describe("getRestoredTools", () => {
 
 // --- registerWorkflowMode() integration tests using a mock pi -------------
 
+interface MockCommandHandler {
+	description: string;
+	handler: (args: string, ctx: ReturnType<typeof makeMockCtx>) => Promise<void>;
+}
+
+interface ToolCallBlockResult {
+	block: true;
+	reason: string;
+}
+
+interface SystemPromptResult {
+	systemPrompt: string;
+}
+
 function makeMockPi() {
-	const commands: Record<string, any> = {};
-	const handlers: Record<string, Array<(event: any, ctx?: any) => any>> = {};
+	const commands: Record<string, MockCommandHandler> = {};
+	const toolCallHandlers: Array<(event: { toolName: string; input: Record<string, unknown> }) => Promise<ToolCallBlockResult | undefined>> = [];
+	const beforeAgentStartHandlers: Array<(event: { systemPrompt: string }) => Promise<SystemPromptResult | undefined>> = [];
 	let activeTools = ["read", "bash", "edit", "write", "grep", "find", "ls", "subagent", "workflow", "workflow_status"];
 
-	return {
+	const mock = {
 		commands,
-		handlers,
-		registerCommand(name: string, opts: any) {
+		registerCommand(name: string, opts: MockCommandHandler) {
 			commands[name] = opts;
 		},
-		on(event: string, handler: (event: any, ctx?: any) => any) {
-			(handlers[event] ??= []).push(handler);
+		on(event: string, handler: (...args: unknown[]) => unknown) {
+			if (event === "tool_call") toolCallHandlers.push(handler as typeof toolCallHandlers[number]);
+			if (event === "before_agent_start") beforeAgentStartHandlers.push(handler as typeof beforeAgentStartHandlers[number]);
 		},
 		getActiveTools() {
 			return [...activeTools];
@@ -119,21 +135,29 @@ function makeMockPi() {
 		get activeTools() {
 			return activeTools;
 		},
-		async fireToolCall(event: any) {
-			for (const h of handlers.tool_call ?? []) {
+		async fireToolCall(event: { toolName: string; input: Record<string, unknown> }) {
+			for (const h of toolCallHandlers) {
 				const result = await h(event);
 				if (result) return result;
 			}
 			return undefined;
 		},
-		async fireBeforeAgentStart(event: any) {
-			for (const h of handlers.before_agent_start ?? []) {
+		async fireBeforeAgentStart(event: { systemPrompt: string }) {
+			for (const h of beforeAgentStartHandlers) {
 				const result = await h(event);
 				if (result) return result;
 			}
 			return undefined;
 		},
 	};
+	return mock;
+}
+
+/** Cast the minimal mock harness to ExtensionAPI once at the call boundary
+ * (registerWorkflowMode only calls .on/.registerCommand/.getActiveTools/.setActiveTools
+ * on it — the mock covers exactly that surface). */
+function asExtensionAPI(mock: ReturnType<typeof makeMockPi>): ExtensionAPI {
+	return mock as unknown as ExtensionAPI;
 }
 
 function makeMockCtx() {
@@ -162,12 +186,12 @@ describe("registerWorkflowMode", () => {
 	});
 
 	it("registers a /workflow command", () => {
-		registerWorkflowMode(pi as any);
+		registerWorkflowMode(asExtensionAPI(pi));
 		expect(pi.commands.workflow).toBeDefined();
 	});
 
 	it("/workflow on restricts active tools (removes write/edit/subagent)", async () => {
-		registerWorkflowMode(pi as any);
+		registerWorkflowMode(asExtensionAPI(pi));
 		const ctx = makeMockCtx();
 		await pi.commands.workflow.handler("on", ctx);
 
@@ -181,7 +205,7 @@ describe("registerWorkflowMode", () => {
 	});
 
 	it("/workflow off restores the full tool set", async () => {
-		registerWorkflowMode(pi as any);
+		registerWorkflowMode(asExtensionAPI(pi));
 		const ctx = makeMockCtx();
 		const before = pi.activeTools;
 
@@ -194,7 +218,7 @@ describe("registerWorkflowMode", () => {
 	});
 
 	it("/workflow with no args or 'status' reports current state without changing tools", async () => {
-		registerWorkflowMode(pi as any);
+		registerWorkflowMode(asExtensionAPI(pi));
 		const ctx = makeMockCtx();
 		const before = pi.activeTools;
 
@@ -208,14 +232,14 @@ describe("registerWorkflowMode", () => {
 	});
 
 	it("/workflow with an unknown argument warns and does not change mode", async () => {
-		registerWorkflowMode(pi as any);
+		registerWorkflowMode(asExtensionAPI(pi));
 		const ctx = makeMockCtx();
 		await pi.commands.workflow.handler("banana", ctx);
 		expect(ctx.notifications[0].type).toBe("warning");
 	});
 
 	it("blocks the write tool call while workflow mode is on", async () => {
-		const state = registerWorkflowMode(pi as any);
+		const state = registerWorkflowMode(asExtensionAPI(pi));
 		const ctx = makeMockCtx();
 		await pi.commands.workflow.handler("on", ctx);
 		expect(state.enabled).toBe(true);
@@ -226,7 +250,7 @@ describe("registerWorkflowMode", () => {
 	});
 
 	it("blocks the edit tool call while workflow mode is on", async () => {
-		registerWorkflowMode(pi as any);
+		registerWorkflowMode(asExtensionAPI(pi));
 		const ctx = makeMockCtx();
 		await pi.commands.workflow.handler("on", ctx);
 
@@ -235,7 +259,7 @@ describe("registerWorkflowMode", () => {
 	});
 
 	it("blocks the subagent tool call while workflow mode is on", async () => {
-		registerWorkflowMode(pi as any, { subagentToolName: "subagent" });
+		registerWorkflowMode(asExtensionAPI(pi), { subagentToolName: "subagent" });
 		const ctx = makeMockCtx();
 		await pi.commands.workflow.handler("on", ctx);
 
@@ -244,13 +268,13 @@ describe("registerWorkflowMode", () => {
 	});
 
 	it("does NOT block write/edit/subagent when workflow mode is off", async () => {
-		registerWorkflowMode(pi as any);
+		registerWorkflowMode(asExtensionAPI(pi));
 		const result = await pi.fireToolCall({ toolName: "write", input: { path: "foo.txt", content: "x" } });
 		expect(result).toBeUndefined();
 	});
 
 	it("blocks write-shaped bash commands while workflow mode is on", async () => {
-		registerWorkflowMode(pi as any);
+		registerWorkflowMode(asExtensionAPI(pi));
 		const ctx = makeMockCtx();
 		await pi.commands.workflow.handler("on", ctx);
 
@@ -260,7 +284,7 @@ describe("registerWorkflowMode", () => {
 	});
 
 	it("allows read-only bash commands while workflow mode is on", async () => {
-		registerWorkflowMode(pi as any);
+		registerWorkflowMode(asExtensionAPI(pi));
 		const ctx = makeMockCtx();
 		await pi.commands.workflow.handler("on", ctx);
 
@@ -269,7 +293,7 @@ describe("registerWorkflowMode", () => {
 	});
 
 	it("injects the workflow-mode system-prompt directive when on", async () => {
-		registerWorkflowMode(pi as any);
+		registerWorkflowMode(asExtensionAPI(pi));
 		const ctx = makeMockCtx();
 		await pi.commands.workflow.handler("on", ctx);
 
@@ -279,13 +303,13 @@ describe("registerWorkflowMode", () => {
 	});
 
 	it("does not inject the directive when workflow mode is off", async () => {
-		registerWorkflowMode(pi as any);
+		registerWorkflowMode(asExtensionAPI(pi));
 		const result = await pi.fireBeforeAgentStart({ systemPrompt: "Base system prompt." });
 		expect(result).toBeUndefined();
 	});
 
 	it("toggling on then off then on again restricts tools correctly each time (idempotent snapshotting)", async () => {
-		registerWorkflowMode(pi as any);
+		registerWorkflowMode(asExtensionAPI(pi));
 		const ctx = makeMockCtx();
 		const original = pi.activeTools;
 

@@ -114,7 +114,7 @@ export class RunJournal {
 		}
 
 		const firstRecord = JSON.parse(lines[0]) as JournalRecord;
-		const priorScriptHash = (firstRecord as any).scriptHash;
+		const priorScriptHash = firstRecord.type === "run" ? firstRecord.scriptHash : undefined;
 
 		// Script was edited, invalidate cache and start fresh
 		if (priorScriptHash !== scriptHash) {

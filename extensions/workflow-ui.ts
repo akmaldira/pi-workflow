@@ -12,7 +12,7 @@ import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { parseKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { WorkflowManager, PersistedRun, ManagedRun } from "./workflow-manager.ts";
-import type { WorkflowAgentSnapshot, AgentHistoryEntry } from "./workflow-display-types.ts";
+import type { WorkflowAgentSnapshot, AgentHistoryEntry, WorkflowPhaseSnapshot } from "./workflow-display-types.ts";
 import { saveWorkflowScript } from "./workflow-library.ts";
 
 export type ViewKind = "runs" | "phases" | "agents" | "detail";
@@ -298,13 +298,13 @@ export class NavigatorModel {
 			? live.snapshot
 			: (() => {
 					const p = this.manager.listRuns().find((r) => r.runId === runId);
-					return p ? { phases: (p as any).phases || [], agents: p.agents || [] } : undefined;
+					return p ? { phases: [] as WorkflowPhaseSnapshot[], agents: p.agents || [] } : undefined;
 				})();
 
 		if (!snap) return [];
 
 		const rawPhases = Array.isArray(snap.phases)
-			? snap.phases.map((p: any) => (typeof p === "string" ? p : p.title || ""))
+			? snap.phases.map((p) => p.title || "")
 			: [];
 		const order: string[] = rawPhases.map(asText).filter(Boolean);
 		const byPhase = new Map<string, WorkflowAgentSnapshot[]>();
@@ -438,6 +438,7 @@ const BOX_BORDER_OVERHEAD = BOX_BORDER_LEFT.length + BOX_BORDER_RIGHT.length;
 export type ThemeLike = {
 	fg: (color: string, text: string) => string;
 	bold: (text: string) => string;
+	bg?: (color: string, text: string) => string;
 };
 
 const PLAIN: ThemeLike = { fg: (_c, t) => t, bold: (t) => t };
@@ -822,14 +823,19 @@ export function openWorkflowNavigator(
 				set focused(v: boolean) { _focused = v; },
 
 				render(width: number): string[] {
+					const themeAdapter: ThemeLike = {
+						fg: (color, s) => theme.fg(color as Parameters<Theme["fg"]>[0], s),
+						bold: (s) => theme.bold(s),
+						bg: (color, s) => theme.bg(color as Parameters<Theme["bg"]>[0], s),
+					};
 					const borderColor = (s: string) => _focused ? theme.fg("accent", s) : theme.fg("borderMuted", s);
 					const titleColor = (s: string) => _focused ? theme.fg("dim", theme.bold(s)) : theme.fg("muted", s);
-					const bgColor = (s: string) => (theme as any).bg?.("customMessageBg", s) ?? s;
+					const bgColor = (s: string) => theme.bg("customMessageBg", s) ?? s;
 					const innerWidth = Math.max(10, width - BOX_BORDER_OVERHEAD);
 					const terminalRows = tui.terminal?.rows ?? 24;
 					const overlayRows = Math.max(8, Math.floor(terminalRows * 0.92));
 					const contentRows = Math.max(6, overlayRows - 2);
-					const raw = renderNavigatorFrame(state, model, innerWidth, theme as any, contentRows);
+					const raw = renderNavigatorFrame(state, model, innerWidth, themeAdapter, contentRows);
 					const title = titleColor(" workflows ");
 					const dashes = (n: number) => "\u2500".repeat(Math.max(0, n));
 					const topBorder = borderColor("\u256d\u2500") + title + borderColor(dashes(innerWidth - 10)) + borderColor("\u256e");

@@ -4,6 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { Message } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	captureSingleOutputSnapshot,
@@ -273,7 +274,7 @@ describe("single-output", () => {
 					content: "success",
 				},
 			];
-			const result = extractChildWrittenOutput(messages as any, "/output.txt");
+			const result = extractChildWrittenOutput(messages as unknown as Message[], "/output.txt");
 			expect(result).toBe("file content");
 		});
 
@@ -297,7 +298,7 @@ describe("single-output", () => {
 					content: "error",
 				},
 			];
-			const result = extractChildWrittenOutput(messages as any, "/output.txt");
+			const result = extractChildWrittenOutput(messages as unknown as Message[], "/output.txt");
 			expect(result).toBeUndefined();
 		});
 
@@ -321,7 +322,7 @@ describe("single-output", () => {
 					content: "success",
 				},
 			];
-			const result = extractChildWrittenOutput(messages as any, "/output.txt");
+			const result = extractChildWrittenOutput(messages as unknown as Message[], "/output.txt");
 			expect(result).toBeUndefined();
 		});
 	});

@@ -29,6 +29,7 @@ import {
 	mainAgent,
 } from "./graph-dsl.ts";
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- acorn AST nodes have arbitrary properties
 type AnyNode = Node & { [key: string]: any; start: number; end: number };
 
 export interface GraphMeta {

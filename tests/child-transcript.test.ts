@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { createChildTranscriptWriter } from "../extensions/child-transcript.ts";
+import { createChildTranscriptWriter, type ChildTranscriptMessage } from "../extensions/child-transcript.ts";
 
 describe("child-transcript", () => {
 	let tempDir: string;
@@ -39,7 +39,7 @@ describe("child-transcript", () => {
 			message: {
 				role: "assistant",
 				content: [{ type: "text", text: "I have completed the task successfully." }],
-			} as any,
+			} as ChildTranscriptMessage,
 		});
 
 		const records = readRecords();
@@ -58,7 +58,7 @@ describe("child-transcript", () => {
 				toolCallId: "call-1",
 				toolName: "read",
 				content: [{ type: "text", text: "export function foo() {}\n" }],
-			} as any,
+			} as ChildTranscriptMessage,
 		});
 
 		const records = readRecords();
@@ -78,7 +78,7 @@ describe("child-transcript", () => {
 					{ type: "text", text: "First paragraph." },
 					{ type: "text", text: "Second paragraph." },
 				],
-			} as any,
+			} as ChildTranscriptMessage,
 		});
 
 		const records = readRecords();
@@ -93,7 +93,7 @@ describe("child-transcript", () => {
 			message: {
 				role: "assistant",
 				content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "ls" } }],
-			} as any,
+			} as unknown as ChildTranscriptMessage,
 		});
 
 		const records = readRecords();

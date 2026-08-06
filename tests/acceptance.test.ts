@@ -15,6 +15,12 @@ import {
 	buildSkippedAcceptanceLedger,
 	acceptanceFailureMessage,
 } from "../extensions/acceptance.ts";
+import type { ResolvedAcceptanceConfig } from "../extensions/types.ts";
+
+/** Minimal valid ResolvedAcceptanceConfig for tests that don't inspect it. */
+function makeEffectiveAcceptance(): ResolvedAcceptanceConfig {
+	return { level: "attested", explicit: true, inferredReason: [], criteria: [], evidence: [], verify: [], stopRules: [] };
+}
 
 describe("acceptance", () => {
 	describe("normalizeAcceptanceInput", () => {
@@ -227,17 +233,17 @@ describe("acceptance", () => {
 
 	describe("acceptanceFailureMessage", () => {
 		it("should return undefined for accepted", () => {
-			const ledger = { status: "accepted" as const, evidenceStatus: "claimed" as const, explicit: true, effectiveAcceptance: {} as any, inferredReason: [], criteria: [], runtimeChecks: [], verifyRuns: [] };
+			const ledger = { status: "accepted" as const, evidenceStatus: "claimed" as const, explicit: true, effectiveAcceptance: makeEffectiveAcceptance(), inferredReason: [], criteria: [], runtimeChecks: [], verifyRuns: [] };
 			expect(acceptanceFailureMessage(ledger)).toBeUndefined();
 		});
 
 		it("should return message for rejected", () => {
-			const ledger = { status: "rejected" as const, evidenceStatus: "pending" as const, explicit: true, effectiveAcceptance: {} as any, inferredReason: [], criteria: [], runtimeChecks: [], verifyRuns: [] };
+			const ledger = { status: "rejected" as const, evidenceStatus: "pending" as const, explicit: true, effectiveAcceptance: makeEffectiveAcceptance(), inferredReason: [], criteria: [], runtimeChecks: [], verifyRuns: [] };
 			expect(acceptanceFailureMessage(ledger)).toBe("Acceptance was rejected.");
 		});
 
 		it("should return message for pending", () => {
-			const ledger = { status: "pending" as const, evidenceStatus: "pending" as const, explicit: true, effectiveAcceptance: {} as any, inferredReason: [], criteria: [], runtimeChecks: [], verifyRuns: [] };
+			const ledger = { status: "pending" as const, evidenceStatus: "pending" as const, explicit: true, effectiveAcceptance: makeEffectiveAcceptance(), inferredReason: [], criteria: [], runtimeChecks: [], verifyRuns: [] };
 			expect(acceptanceFailureMessage(ledger)).toContain("not met");
 		});
 	});

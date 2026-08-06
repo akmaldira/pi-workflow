@@ -22,7 +22,7 @@ function fakeUi(): ExtensionUIContext & { notifications: Array<{ message: string
 		notify: (message: string, type?: string) => {
 			notifications.push({ message, type });
 		},
-	} as any;
+	} as unknown as ExtensionUIContext & { notifications: Array<{ message: string; type?: string }> };
 }
 
 describe("workflow-ui: save keybinding", () => {

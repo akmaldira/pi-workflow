@@ -8,9 +8,9 @@ export function attachPostExitStdioGuard(proc: ChildProcess): void {
 	// No-op in this simplified version
 }
 
-export function trySignalChild(proc: ChildProcess, signal: string): boolean {
+export function trySignalChild(proc: ChildProcess, signal: NodeJS.Signals | number): boolean {
 	try {
-		proc.kill(signal as any);
+		proc.kill(signal);
 		return true;
 	} catch {
 		return false;

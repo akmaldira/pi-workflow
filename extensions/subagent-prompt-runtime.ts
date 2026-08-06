@@ -268,13 +268,15 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 		});
 	}
 
-	onRuntimeEvent("context", (event: any) => {
+	onRuntimeEvent("context", (raw: unknown) => {
+		const event = raw as { messages: unknown[] };
 		const messages = stripParentOnlySubagentMessages(event.messages);
 		if (messages === event.messages) return undefined;
 		return { messages };
 	});
 
-	onRuntimeEvent("before_agent_start", async (event: any) => {
+	onRuntimeEvent("before_agent_start", async (raw: unknown) => {
+		const event = raw as { systemPrompt: string };
 		const intercomSessionName = process.env[SUBAGENT_INTERCOM_SESSION_NAME_ENV]?.trim();
 		if (intercomSessionName && typeof (pi as { setSessionName?: (name: string) => void }).setSessionName === "function") {
 			(pi as { setSessionName: (name: string) => void }).setSessionName(intercomSessionName);

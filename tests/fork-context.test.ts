@@ -8,15 +8,35 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 vi.mock("@earendil-works/pi-coding-agent", async () => {
 	return {
 		generateSummaryWithUsage: vi.fn(),
-		sessionEntryToContextMessages: vi.fn((entry: any) => {
+		sessionEntryToContextMessages: vi.fn((entry: { type: string; message?: unknown }) => {
 			if (entry.type !== "message") return [];
 			return [entry.message];
 		}),
 	};
 });
 
+import type { Model, Api } from "@earendil-works/pi-ai";
 import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import { generateForkSummary, formatForkContextBlock, clearForkSummaryCache } from "../extensions/fork-context.ts";
+import type { ReadonlySessionManager } from "../extensions/types.ts";
+
+/** Minimal fake Model<Api> — only the fields fork-context.ts actually reads. */
+function makeFallbackModel(): Model<Api> {
+	return { provider: "test", id: "test-model" } as unknown as Model<Api>;
+}
+
+/** Minimal fake token usage for generateSummaryWithUsage mock results. */
+function makeUsage(overrides: Partial<Record<string, number>> = {}) {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		...overrides,
+	};
+}
 
 function makeSessionManager(overrides: Partial<{
 	entries: unknown[];
@@ -43,7 +63,7 @@ function makeSessionManager(overrides: Partial<{
 		getEntries: () => entries,
 		getTree: () => [],
 		getSessionName: () => undefined,
-	} as any;
+	} as unknown as ReadonlySessionManager;
 }
 
 function makeModelRegistry(authOk = true) {
@@ -70,7 +90,7 @@ describe("fork-context", () => {
 		const result = await generateForkSummary({
 			sessionManager,
 			modelRegistry: makeModelRegistry(),
-			fallbackModel: { provider: "test", id: "test-model" } as any,
+			fallbackModel: makeFallbackModel(),
 		});
 		expect(result).toBeUndefined();
 		expect(generateSummaryWithUsage).not.toHaveBeenCalled();
@@ -91,7 +111,7 @@ describe("fork-context", () => {
 		const result = await generateForkSummary({
 			sessionManager,
 			modelRegistry: makeModelRegistry(false),
-			fallbackModel: { provider: "test", id: "test-model" } as any,
+			fallbackModel: makeFallbackModel(),
 		});
 		expect(result).toBeUndefined();
 		expect(generateSummaryWithUsage).not.toHaveBeenCalled();
@@ -100,13 +120,13 @@ describe("fork-context", () => {
 	it("generates a structured summary and includes parent session file", async () => {
 		vi.mocked(generateSummaryWithUsage).mockResolvedValue({
 			text: "## Goal\nTest the fork summary.",
-			usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } as any,
+			usage: makeUsage({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15 }),
 		});
 		const sessionManager = makeSessionManager({ sessionFile: "/tmp/sessions/session-1.jsonl" });
 		const result = await generateForkSummary({
 			sessionManager,
 			modelRegistry: makeModelRegistry(),
-			fallbackModel: { provider: "test", id: "test-model" } as any,
+			fallbackModel: makeFallbackModel(),
 		});
 		expect(result).toBeDefined();
 		expect(result?.summary).toContain("## Goal");
@@ -115,12 +135,12 @@ describe("fork-context", () => {
 	});
 
 	it("returns undefined when summary text is empty", async () => {
-		vi.mocked(generateSummaryWithUsage).mockResolvedValue({ text: "   ", usage: {} as any });
+		vi.mocked(generateSummaryWithUsage).mockResolvedValue({ text: "   ", usage: makeUsage() });
 		const sessionManager = makeSessionManager();
 		const result = await generateForkSummary({
 			sessionManager,
 			modelRegistry: makeModelRegistry(),
-			fallbackModel: { provider: "test", id: "test-model" } as any,
+			fallbackModel: makeFallbackModel(),
 		});
 		expect(result).toBeUndefined();
 	});
@@ -131,41 +151,41 @@ describe("fork-context", () => {
 		const result = await generateForkSummary({
 			sessionManager,
 			modelRegistry: makeModelRegistry(),
-			fallbackModel: { provider: "test", id: "test-model" } as any,
+			fallbackModel: makeFallbackModel(),
 		});
 		expect(result).toBeUndefined();
 	});
 
 	it("caches the summary per session leaf id, avoiding duplicate LLM calls", async () => {
-		vi.mocked(generateSummaryWithUsage).mockResolvedValue({ text: "## Goal\nCached.", usage: {} as any });
+		vi.mocked(generateSummaryWithUsage).mockResolvedValue({ text: "## Goal\nCached.", usage: makeUsage() });
 		const sessionManager = makeSessionManager();
 		const first = await generateForkSummary({
 			sessionManager,
 			modelRegistry: makeModelRegistry(),
-			fallbackModel: { provider: "test", id: "test-model" } as any,
+			fallbackModel: makeFallbackModel(),
 		});
 		const second = await generateForkSummary({
 			sessionManager,
 			modelRegistry: makeModelRegistry(),
-			fallbackModel: { provider: "test", id: "test-model" } as any,
+			fallbackModel: makeFallbackModel(),
 		});
 		expect(first).toEqual(second);
 		expect(generateSummaryWithUsage).toHaveBeenCalledTimes(1);
 	});
 
 	it("regenerates the summary when the session leaf changes", async () => {
-		vi.mocked(generateSummaryWithUsage).mockResolvedValue({ text: "## Goal\nFresh.", usage: {} as any });
+		vi.mocked(generateSummaryWithUsage).mockResolvedValue({ text: "## Goal\nFresh.", usage: makeUsage() });
 		const sessionManagerA = makeSessionManager({ leafId: "leaf-1" });
 		const sessionManagerB = makeSessionManager({ leafId: "leaf-2" });
 		await generateForkSummary({
 			sessionManager: sessionManagerA,
 			modelRegistry: makeModelRegistry(),
-			fallbackModel: { provider: "test", id: "test-model" } as any,
+			fallbackModel: makeFallbackModel(),
 		});
 		await generateForkSummary({
 			sessionManager: sessionManagerB,
 			modelRegistry: makeModelRegistry(),
-			fallbackModel: { provider: "test", id: "test-model" } as any,
+			fallbackModel: makeFallbackModel(),
 		});
 		expect(generateSummaryWithUsage).toHaveBeenCalledTimes(2);
 	});

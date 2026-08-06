@@ -18,10 +18,10 @@ import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { buildAgentCatalogGuideline, createListAgentsTool } from "./agent-catalog.ts";
 import { createGraphWorkflowTool } from "./graph-tool.ts";
 import { runSingleAgent } from "./execution.ts";
-import type { SingleResult, ForkContextOptions } from "./types.ts";
+import type { SingleResult, ForkContextOptions, AgentHistoryEntry } from "./types.ts";
 import { listSavedWorkflows, deleteSavedWorkflow } from "./workflow-library.ts";
 import { getFinalOutput } from "./utils.ts";
-import { TechnicalFailureError } from "./failure-classifier.ts";
+import { TechnicalFailureError, type FailureClassification } from "./failure-classifier.ts";
 import { WorkflowManager } from "./workflow-manager.ts";
 import { openWorkflowNavigator } from "./workflow-ui.ts";
 import { registerTaskPanel } from "./task-panel.ts";
@@ -163,7 +163,7 @@ export async function runSubagentForWorkflow(
 			options.label || agent.name,
 			{
 				class: "technical",
-				code: (result.failureCode as any) ?? "provider-error",
+				code: (result.failureCode as FailureClassification["code"]) ?? "provider-error",
 				reason: result.failureReason || result.error || result.errorMessage || "Unknown technical failure",
 			},
 			runId,
@@ -182,17 +182,19 @@ const WorkflowStatusParams = Type.Object({
 	),
 });
 
-export function summarizeHistoryEntry(entry: { role: string; text?: string; toolName?: string; args?: string; isError?: boolean; kind?: string }): string {
+export function summarizeHistoryEntry(entry: AgentHistoryEntry): string {
 	if (entry.role === "assistant" && entry.kind === "toolCall") {
 		return `\u2192 ${entry.toolName}${entry.args ? `(${entry.args})` : ""}`;
 	}
-	if (entry.role === "tool" || entry.role === "toolResult") {
+	if (entry.role === "toolResult") {
 		const tag = entry.isError ? " [error]" : "";
 		return `\u2190 ${entry.toolName}${tag}: ${(entry.text || "").slice(0, 500)}`;
 	}
+	if (entry.role === "tool") {
+		return `\u2190 ${entry.toolName}: ${(entry.text || "").slice(0, 500)}`;
+	}
 	if (entry.role === "assistant") return `[assistant] ${(entry.text || "").slice(0, 1000)}`;
-	if (entry.role === "user") return `[user] ${(entry.text || "").slice(0, 500)}`;
-	return `[${entry.role}] ${(entry.text || "").slice(0, 500)}`;
+	return `[user] ${(entry.text || "").slice(0, 500)}`;
 }
 
 export function registerWorkflowStatusTool(pi: ExtensionAPI, workflowManager: WorkflowManager) {
@@ -253,7 +255,7 @@ export function registerWorkflowStatusTool(pi: ExtensionAPI, workflowManager: Wo
 					resultText,
 					"",
 					`History (${history.length}${(agent.history?.length ?? 0) > history.length ? ` of ${agent.history?.length}` : ""} entries):`,
-					...history.map((e) => "  " + summarizeHistoryEntry(e as any)),
+					...history.map((e) => "  " + summarizeHistoryEntry(e)),
 				].filter((l): l is string => l !== undefined);
 				return {
 					content: [{ type: "text", text: lines.join("\n") + truncatedNote }],
