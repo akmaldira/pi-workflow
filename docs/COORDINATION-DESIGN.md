@@ -283,6 +283,14 @@ hook — this phase changes *inference defaults and wiring*, not the acceptance 
 - `extensions/workflow.ts`: `askHuman` global added to `vm.createContext(...)` alongside the
   others, implemented via the threaded `ui` option with the headless-degrade behavior above.
 
+**Scope note: pi-native only.** `askHuman()` is deliberately scoped to pi's own UI surface
+(`ctx.ui`) and nothing else — no Slack webhook, no external notification channel, no separate
+approval service. This keeps the mechanism dependency-free and consistent with running entirely
+inside a `pi` session (TUI or headless), which is the only environment this project targets. If a
+team later wants remote/async approval (e.g. paging someone not at the terminal), that's a
+separate integration a team can layer on top of `askHuman()`'s existing `ctx.hasUI === false`
+degrade path themselves — not something this design needs to build or maintain.
+
 ### Phase 6 (later, not now) — Standing coordinator / actor model
 
 This is the "wild" tier from our earlier discussion: persistent, addressable agents with an
@@ -364,16 +372,108 @@ Following the project's existing convention (every extension module has a matchi
   frameworks and specifically endorses the orchestrator-workers topology we already have — this
   design keeps that shape and extends it, rather than replacing it.
 
-## 8. Open questions for the team
+## 8. Decisions (resolved)
 
-1. Should `askHuman()`'s Slack/webhook-style non-interactive escalation (mentioned in the
-   research as a common pattern for CI/unattended runs) be in scope for Phase 5, or deferred
-   until we have a concrete headless-usage need? Leaning: defer, ship the `ctx.ui`-based version
-   first since that covers the TUI daily-use case this doc is scoped for.
-2. Should `contract.md` (Phase 3) be one file per workflow run, or should there be a
-   longer-lived, cross-run "project contract" that workflows can read/extend? Leaning: start
-   per-run (simpler, matches existing per-run artifact convention), revisit if teams want
-   contracts to persist and accumulate across multiple related workflow runs.
-3. Phase 2's monitor agent needs example prompts tuned well enough to be useful out of the box —
-   this needs real dogfooding on an actual TDD-style workflow before considering the phase "done",
-   not just unit tests of the plumbing.
+These were open questions in the initial draft; resolved by the team:
+
+1. **No external escalation channels.** `askHuman()` is pi-native only (`ctx.ui`) — no Slack,
+   webhook, or other external notification integration in scope, ever, unless a specific team
+   builds it themselves on top of the degrade path. Keeps the mechanism dependency-free. See the
+   "Scope note: pi-native only" callout in Phase 5.
+2. **`contract.md` is per-run.** One contract file per workflow run
+   (`.pi-workflow/artifacts/runs/<runId>/contract.md`), matching the existing per-run artifact
+   convention (`getArtifactPaths()` in `artifacts.ts`). No cross-run/project-level contract —
+   if a team wants a decision to persist across runs, that's an explicit human action (copy
+   relevant context into the next run's initial prompt or a checked-in doc), not something the
+   engine does automatically.
+3. **Pre-built agent catalog ships with the package.** See §9 below — planner, architect,
+   monitor, red, green, and reviewer example agents are added to the package's shipped
+   `.pi/agents/` examples, not left as a "write your own" exercise per team.
+
+Phase 2's monitor agent (and the other new catalog roles in §9) still need real prompt tuning
+through actual dogfooding on a live TDD-style workflow before being considered production-ready
+— shipping the frontmatter files is necessary but not sufficient; Phase 2 isn't "done" until
+someone has run it against a real feature and the escalation loop actually resolved a genuine
+contract mismatch, not just passed a unit test of the plumbing.
+
+## 9. Pre-built agent catalog
+
+To make Phases 1–5 usable out of the box rather than requiring every team to author their own
+agent `.md` files from scratch, the package ships a small set of common, reusable roles under
+`.pi/agents/` (project scope, following the existing example-agent convention already used for
+`researcher.md`/`reviewer.md`/`scout.md`/`worker.md`). These are starting points, not a fixed
+cast — see §10 for how a workflow script picks a subset of them per run rather than always using
+all of them.
+
+| Agent | Role | Tools | Notes |
+|---|---|---|---|
+| `planner` | Decomposes a task into a plan; read-only, no implementation | read-only (`read`, `grep`, `find`, `ls`) | Existing convention: never given write tools, so it structurally cannot slide into implementation (mirrors coding-agent's finding). |
+| `architect` | Turns a plan into concrete interfaces/contracts | read-only + `contract.revise()` (Phase 3) | Owns the contract artifact; the only role that should call `contract.revise()` in a typical script, by convention not enforcement. |
+| `monitor` | Independent plan-feasibility gate (Phase 2) | read-only, repo search | Never implements, never grades its own output — reviews architect's contract before implementation starts. |
+| `red` | Writes failing tests against a contract | `read`, `write` (tests only, by prompt convention), `bash` (test runner) | Existing `worker`-style agent, scoped by prompt to test files. |
+| `green` | Implements to make tests pass | `read`, `write`, `edit`, `bash` | The role most likely to hit the "blocked" case (Phase 1) — its frontmatter should have `canEscalate: true` (the default). |
+| `reviewer` | Independent code review, no self-grading | read-only | Already exists in the package's examples; documented here as part of the same catalog for discoverability. |
+
+Each ships as a normal frontmatter `.md` file — no new agent-definition mechanism, just more
+examples using the existing `discoverAgents()`/`AgentConfig` machinery (`extensions/agents.ts`).
+Teams can copy, rename, or override any of them the same way they already can with the existing
+example agents; nothing about this catalog is special-cased in the engine.
+
+## 10. Does this design support dynamically assembling a team per problem?
+
+Short answer: **yes, and it already does today, without any new engine mechanism** — but it's
+worth being precise about what "dynamic" means here, because there are two different things that
+could be meant, and this design deliberately supports one and defers the other.
+
+**What's supported now (script-level dynamic composition).** A workflow script is arbitrary JS
+running in the sandbox — which agents get called, in what order, and how many times, is a runtime
+decision the script makes, not something declared upfront in a fixed pipeline. Nothing in
+Phases 1–5 changes this; if anything, Phase 1's `blocked` result and Phase 5's `askHuman()` make
+it *easier* to write scripts that branch into different team shapes based on what happens
+mid-run:
+
+```js
+// Illustrative: team composition decided at runtime, not hardcoded upfront
+const plan = await agent("planner: ...");
+
+// Only bring in a security specialist if the plan actually touches auth
+const needsSecurityReview = /auth|session|token|password/i.test(plan);
+let contract = await agent("architect: design interfaces for: " + plan);
+if (needsSecurityReview) {
+  contract = await agent("security_specialist: review this contract for auth concerns:\n" + contract);
+}
+
+// If green escalates to a role that wasn't in the original team, just call it —
+// agent() resolves by name from the full discovered agent catalog every time,
+// there's no pre-declared roster to update.
+let green = await agent("green: implement:\n" + contract);
+if (green?.status === "blocked") {
+  const target = green.blockedOn || "architect"; // could name ANY discovered agent, not just the ones used so far
+  contract = await agent(`${target}: green is blocked:\n${green.reason}`);
+  green = await agent("green: retry:\n" + contract);
+}
+```
+
+This works today because `agent()`'s agent-resolution (`resolveAgent()` in
+`extensions/workflow-tool.ts`) looks up **any** discovered agent by name on **every call** — there
+is no fixed "team" object instantiated once at the start of a run that would need to be extended.
+The "roster" is really just "whatever agents exist in `.pi/agents/`" plus whatever the script's
+control flow decides to call, when. §9's catalog is exactly this: a bigger pool of pre-built roles
+available for scripts to pull from, and a script for problem A might use `planner → architect →
+green` while a script for problem B pulls in `planner → architect → security_specialist → green →
+reviewer` — same engine, same `agent()` primitive, different composition, decided by whoever
+writes (or an LLM writes) the script for that specific problem.
+
+**What's genuinely not supported, and is the deferred Phase 6 territory.** What the current
+design does *not* do is let the system decide team composition *for you*, autonomously, without a
+human or script author having written the branching logic in advance — i.e., a coordinator that
+looks at an unfamiliar problem and decides on its own "this needs a security specialist" with no
+script author having anticipated that branch, or a coordinator that can synthesize a *new* agent
+definition on the fly for a role that doesn't exist yet in `.pi/agents/`. That's the more radical
+version of dynamic team assembly from our earlier discussion, and it requires something with
+authority to make staffing decisions at runtime and (optionally) author new agent frontmatter —
+which is squarely Phase 6 (standing coordinator), not Phases 1–5. Phases 1–5 give you dynamic
+composition *as code a human (or an LLM asked to write a workflow script) decides in advance*;
+Phase 6 would give you dynamic composition *as a runtime decision an agent makes for you*. The
+former is what's being built now; the latter is deliberately deferred pending evidence the
+former isn't enough.
