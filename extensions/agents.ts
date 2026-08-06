@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { type AgentSettings, applyAgentSettings, loadAgentSettings } from "./agent-settings.ts";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -373,6 +374,14 @@ export interface DiscoverAgentsOptions {
 	includeBuiltins?: boolean;
 	/** Override the bundled agents directory. Primarily for tests. */
 	builtinDir?: string;
+	/**
+	 * Skip loading settings from disk. Defaults to false.
+	 * Set true when the caller has already resolved settings, or in tests
+	 * that must not depend on the developer's own config.
+	 */
+	skipSettings?: boolean;
+	/** Pre-resolved settings to apply instead of reading from disk. */
+	settings?: AgentSettings;
 }
 
 export function discoverAgents(
@@ -380,7 +389,7 @@ export function discoverAgents(
 	scope: AgentScope,
 	options: DiscoverAgentsOptions = {},
 ): AgentDiscoveryResult {
-	const { includeBuiltins = true, builtinDir = BUILTIN_AGENTS_DIR } = options;
+	const { includeBuiltins = true, builtinDir = BUILTIN_AGENTS_DIR, skipSettings = false } = options;
 
 	const userDir = path.join(getAgentDir(), "agents");
 	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
@@ -404,5 +413,9 @@ export function discoverAgents(
 		for (const agent of projectAgents) agentMap.set(agent.name, agent);
 	}
 
-	return { agents: Array.from(agentMap.values()), projectAgentsDir };
+	const settings = options.settings ?? (skipSettings ? undefined : loadAgentSettings(cwd));
+	const discovered = Array.from(agentMap.values());
+	const agents = settings ? applyAgentSettings(discovered, settings) : discovered;
+
+	return { agents, projectAgentsDir };
 }
