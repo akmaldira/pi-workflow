@@ -15,6 +15,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import { buildAgentCatalogGuideline, createListAgentsTool } from "./agent-catalog.ts";
 import { createWorkflowTool } from "./workflow-tool.ts";
 import { runSingleAgent } from "./execution.ts";
 import type { SingleResult, ForkContextOptions } from "./types.ts";
@@ -474,6 +475,36 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(workflowTool);
 	registerWorkflowStatusTool(pi, globalWorkflowManager);
 
+	// --- Agent Catalog ---
+	pi.registerTool(createListAgentsTool());
+
+	/**
+	 * Injects the live agent roster into the delegation tools' guidelines.
+	 *
+	 * Discovery has always worked, but nothing told the model which agents
+	 * exist: /agents renders to the human's screen, and the tool guidelines
+	 * never enumerated the roster. Since resolveAgent() silently falls back to
+	 * a generic agent for an unknown name, a guessed name produced a plausible
+	 * wrong run rather than an error.
+	 *
+	 * Re-registering a tool refreshes it in place, so this runs at session_start
+	 * once the cwd is known, and again whenever the roster may have changed.
+	 */
+	const refreshAgentCatalogGuidelines = (cwd: string): void => {
+		let guideline: string;
+		try {
+			guideline = buildAgentCatalogGuideline(discoverAgents(cwd, "both").agents);
+		} catch {
+			// Never let a malformed agent file take down tool registration.
+			return;
+		}
+
+		pi.registerTool({
+			...workflowTool,
+			promptGuidelines: [...(workflowTool.promptGuidelines ?? []), guideline],
+		});
+	};
+
 	// --- Commands ---
 	pi.registerCommand("workflows", {
 		description: "Open the interactive /workflows navigator overlay",
@@ -568,6 +599,9 @@ export default function (pi: ExtensionAPI) {
 		const active = pi.getActiveTools();
 		if (!active.includes(workflowTool.name)) {
 			pi.setActiveTools([...active, workflowTool.name]);
+		}
+		if (ctx?.cwd) {
+			refreshAgentCatalogGuidelines(ctx.cwd);
 		}
 		if (ctx && ctx.ui) {
 			registerTaskPanel(pi, globalWorkflowManager, ctx.ui);
