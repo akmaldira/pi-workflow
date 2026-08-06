@@ -203,80 +203,117 @@ abstract but unusable in practice on a fresh install. It has zero dependency on 
 primitive (Phase 1) or anything else, so it can and should ship first, independent of every other
 phase's timeline.
 
-### Phase 0.5 — Team composition as a distinct, structured decision
+### Phase 0.5 — Coordinator: dynamic team assembly that stays in the loop
 
-**What this phase is for.** Phase 0 answers "can the main agent see the roster" (visibility) and
-adds a *soft* prompt nudge toward varying team shape per task. Neither of those makes composition
-a distinct, inspectable *decision* — today, and even after Phase 0 alone, "which agents does this
-task need" is implicit inside whatever imperative script the main agent happens to write. There's
-no artifact recording that a decision was made, why, or what it was; you can only infer it after
-the fact by reading the script. This phase adds that missing decision step, explicitly, while
-keeping script-driven execution exactly as it is — this is additive on top of the imperative
-model, not a replacement for it. Per Anthropic's own guidance and this project's "no chains"
-constraint, the *execution* engine staying a plain script (loops, `if`, `await agent(...)`) is
-still correct; what was missing is a *composition* step that can happen before or during that
-script, as its own visible action.
+**This section replaces an earlier version of Phase 0.5** (a `plan_team` tool / `assembleTeam()`
+global) that was cut entirely after review, not kept alongside this design. That version was a
+one-shot classifier: it looked at the task once before any work started, returned a static role
+list, and disappeared — the *script* still drove every decision afterward through hardcoded
+branches, and if a later agent hit a `blocked` result, nothing about the mechanism itself noticed
+or reacted; a script author would have had to remember to re-call it. It was also not a team
+member — a special-cased tool with its own plumbing, not an agent participating in the run the
+way `planner`/`architect`/`green` do. Both problems are the actual gap: real dynamic team
+assembly needs something that stays engaged with a run as it unfolds and is itself a normal,
+discoverable agent, not a one-time lookup called from outside the team.
 
-**What ships.**
+**What ships instead: a coordinator agent, re-consulted every step, driven by a small generic
+loop.** Instead of a script (or a human) pre-deciding the full sequence, a `coordinator` agent is
+spawned fresh on each iteration with the accumulated state of the run so far — what's happened,
+what results came back, any `blocked` reports (Phase 1) — and decides *one* next action:
+dispatch to a specific agent (or several in parallel), ask a human (Phase 5's `askHuman()`), or
+finish with a result. All the judgment lives in the coordinator's own reasoning each turn; the
+driving loop itself is a handful of lines:
 
-1. **`plan_team` tool — composition before scripting.** A new LLM-callable tool, separate from
-   `workflow`, that the main agent can call *before* writing a workflow script. Input: a task
-   description (plus optional constraints, e.g. "must include a security review" or "keep it to
-   3 agents max"). It runs one structured-output LLM call against the Phase 0 catalog (bundled +
-   user + project agents, exactly what `list_agents` would return) and returns a plan:
-   `{ roles: [{ agent: "planner", why: "..." }, { agent: "architect", why: "..." }, ...],
-   reasoning: string, suggestedPhases?: string[] }`. The main agent reads this, then writes the
-   `workflow` script using that roster — the *decision* is now a separate, loggable tool call
-   with its own reasoning, not something buried inside script text. This is intentionally a thin
-   wrapper: it reuses the exact same `agent()`-spawning path as everything else (it's really just
-   one more subagent call, prompted specifically to reason about team composition against the
-   known catalog, with structured output), not a new execution primitive.
-2. **`assembleTeam(taskDescription, constraints)` sandboxed global — composition *during*
-   scripting.** The in-script equivalent of `plan_team`, callable from inside a running workflow.
-   This is what actually closes the loop with Phase 1's escalation primitive: instead of a script
-   author having to guess `blockedOn` up front, or `agent()`'s `blocked` result naming a role that
-   turns out not to exist, a script can call `assembleTeam("resolve this specific blocker: " +
-   green.reason)` mid-run and get back a recommended role (or roles) from the *current* catalog,
-   then call `agent()` with that recommendation. Composition can now be revisited as the workflow
-   learns things, not fixed at the top of the script.
-3. **Both share one implementation.** `assembleTeam()` is `plan_team`'s logic invoked from inside
-   the sandbox rather than as a top-level tool call — same catalog lookup, same structured-output
-   agent call, same shape of result. No duplicated logic, two entry points for the same
-   capability at two different points in a run's lifecycle.
+```js
+export const meta = { name: "coordinated_task", description: "..." };
 
-**What this is not.** This is still Tier 2 territory (see §10) — an *informed choice among
-existing, discovered agents*, made visible and structured rather than implicit. It is explicitly
-not Tier 3: `plan_team`/`assembleTeam()` can only select from agents `discoverAgents()` already
-knows about (bundled, user, or project); neither can invent a new role or write a new agent `.md`
-file. That capability — synthesizing a role that doesn't exist yet — remains Phase 6 territory,
-unchanged. The distinction that matters: Phase 0.5 makes "which of the agents we have does this
-task need" a real, inspectable decision; it does not make "what agent should exist that doesn't
-yet" a decision the system can act on.
+let state = { task: args.task, log: [] };
+while (true) {
+  const decision = await agent("coordinator: " + JSON.stringify(state));
+  // decision: { action: "dispatch" | "dispatch_parallel" | "ask_human" | "finish", ... }
+
+  if (decision.action === "finish") return decision.result;
+
+  if (decision.action === "dispatch") {
+    const result = await agent(`${decision.agent}: ${decision.prompt}`);
+    state.log.push({ agent: decision.agent, prompt: decision.prompt, result });
+  }
+
+  if (decision.action === "dispatch_parallel") {
+    const results = await parallel(decision.tasks.map((t) =>
+      () => agent(`${t.agent}: ${t.prompt}`)
+    ));
+    state.log.push(...decision.tasks.map((t, i) => ({ agent: t.agent, prompt: t.prompt, result: results[i] })));
+  }
+
+  if (decision.action === "ask_human") {
+    const answer = await askHuman(decision.question);
+    state.log.push({ askedHuman: decision.question, answer });
+  }
+}
+```
+
+This is the orchestrator-workers pattern Anthropic's own agent-building guidance names directly
+for this exact situation ("a central LLM dynamically breaks down tasks... subtasks aren't
+pre-defined, but determined by the orchestrator based on the specific input") — and matches the
+"supervisor" pattern found in the LangGraph research (§7), implemented here on our own `agent()`
+primitive rather than adopting that framework.
+
+**Why this fixes both problems with the version it replaces:**
+- **Not one-shot.** The coordinator is re-spawned with fresh, current state every iteration, so a
+  `blocked` result from Phase 1 is just part of what it sees on its next turn — no separate
+  escalation-routing mechanism, no script author having to remember to re-invoke anything. Team
+  composition can change at every step, informed by what actually happened, not guessed upfront.
+- **Is part of the team.** `coordinator` ships as a seventh bundled agent (§9) in Phase 0's
+  catalog — same frontmatter, same discovery, same override/disable mechanism as every other
+  role. It's dispatched via the identical `agent()` spawning path as `planner`/`green`/anything
+  else; nothing about how it runs is special-cased.
+
+**Why this is still not Phase 6 — explicitly checked, not assumed.** The coordinator is
+stateless and re-spawned as a normal CLI subprocess each turn, same as every other agent in this
+design — no persistent process, no mailbox/inbox, no actor lifecycle, no synchronous multi-party
+"war room." It can only select agents that already exist in the discovered catalog passed into
+its prompt; it cannot invent a new role or author a new `.md` file. Those two things — persistent
+addressable actors, and on-the-fly agent synthesis — are specifically what Phase 6 has and this
+does not. If the driving loop above starts feeling insufficient in practice (e.g. the coordinator
+needs to react to *two* agents finishing at slightly different times rather than one dispatch
+completing before the next decision), that pressure is itself the evidence Phase 6 asks for
+before building the heavier actor-model version — this design intentionally stays legible enough
+that "we've outgrown this" will be a concrete, observed failure, not a guess.
+
+**Two entry points, one shared driver — no duplicated logic.**
+1. **`coordinate` tool** — a new top-level tool, alongside `subagent` and `workflow`, for when the
+   main agent doesn't know the task's shape at all and shouldn't have to write a script around
+   it. Takes a task description; the coordinator drives the whole run via the loop above.
+2. **`coordinate()` sandboxed global**, callable from inside a `workflow` script — for the common
+   case where most of a script's structure is fixed and known, but one part genuinely needs
+   dynamic figuring-out (e.g. "run the fixed TDD pipeline, but let a coordinator figure out and
+   run whatever review team this specific diff needs" for just that one phase). Both call the
+   same driver; the tool is the driver invoked as a standalone run, the global is the driver
+   invoked as a sub-step inside a larger script.
+
+**Error handling: a wrong agent name is the coordinator's problem to fix, not a script bug.**
+Unlike a hand-authored script (where a typo'd agent name is a bug, and today falls back to a
+generic default agent — a pre-existing behavior worth separately re-examining, not part of this
+phase), the coordinator is making a live decision every turn and should be able to self-correct.
+If `decision.agent` doesn't resolve, the driver feeds that back as the *result* of that turn
+("agent 'security_expert' doesn't exist; available: planner, architect, monitor, red, green,
+reviewer, coordinator, ...") rather than throwing or silently substituting a default, and lets the
+coordinator's next turn react to it.
 
 **Where in the codebase.**
-- New `extensions/team-composition.ts`: `planTeam(taskDescription, constraints, discovery)` —
-  the shared core (builds a structured-output prompt from the catalog, spawns one agent call via
-  the existing `runSingleAgent`/`resolveAgent` path already used by `subagent`/`workflow`, parses
-  the structured result).
-- `plan_team` tool definition (same file), registered in `extensions/index.ts` alongside the
-  existing `subagent`/`workflow`/`workflow_status` tools — same pattern, same registration point.
-- `extensions/workflow.ts`: add `assembleTeam` to the `vm.createContext(...)` globals list
-  (alongside `agent`, `parallel`, `pipeline`, `contract`, `askHuman`), backed by the same
-  `planTeam()` core, using the `agentRunner`/`cwd`/`signal` already threaded into
-  `WorkflowRunOptions` for every other global.
-- Depends on Phase 0 (needs the catalog to select from) and benefits from being built alongside
-  Phase 1 (its main practical trigger inside a script is resolving an escalation), but has no
-  hard dependency on Phase 1 shipping first — `assembleTeam()` is useful for upfront composition
-  even before any `blocked` result exists to react to.
-
-**Why not fold this into `workflow`'s existing `agentScope`/prompt guidance instead.** The
-guidance addition in Phase 0 (§4, step 4) is cheap and worth keeping regardless, but a soft prompt
-nudge has no guarantee of actually happening, no artifact recording that it happened, and no way
-for a script to *re-run* the decision mid-flight when new information (an escalation) arrives.
-`plan_team`/`assembleTeam()` make composition a first-class, callable, structured operation with
-its own visible reasoning — closer to what you'd want if a team later wants to audit *why* a
-given run pulled in a `security_specialist` or skipped `monitor`, rather than reverse-engineering
-it from the script text after the fact.
+- New `bundled-agents/coordinator.md` (ships alongside the other six from Phase 0), with
+  frontmatter constraining its output to the `{ action, ... }` structured shape above (reusing
+  the existing `structured-output.ts` machinery, same as Phase 1's `AgentBlockedResult`) and a
+  system prompt describing the decision protocol and available actions.
+- New `extensions/coordinate.ts`: `runCoordinatedLoop(task, options)` — the shared driver (the
+  `while (true)` loop above, plus the unknown-agent-name feedback path and a hard iteration cap
+  fed by the existing `maxAgents`/`scriptTimeoutMs` limits already in `WorkflowRunOptions`, so a
+  runaway coordinator can't spin indefinitely); the `coordinate` tool definition wrapping it,
+  registered in `extensions/index.ts` alongside `subagent`/`workflow`.
+- `extensions/workflow.ts`: add `coordinate` to the `vm.createContext(...)` globals, backed by
+  the same `runCoordinatedLoop()`, using the `agentRunner`/`cwd`/`signal` already threaded into
+  `WorkflowRunOptions` for every other global — same wiring pattern as `askHuman`/`contract`.
 
 ### Phase 1 — Escalation primitive (`agent()` third outcome)
 
@@ -475,43 +512,52 @@ team later wants remote/async approval (e.g. paging someone not at the terminal)
 separate integration a team can layer on top of `askHuman()`'s existing `ctx.hasUI === false`
 degrade path themselves — not something this design needs to build or maintain.
 
-### Phase 6 (later, not now) — Standing coordinator / actor model
+### Phase 6 (later, not now) — Persistent actor model
 
 This is the "wild" tier from our earlier discussion: persistent, addressable agents with an
-inbox, a coordinator with authority to re-staff and re-route, dynamic team composition,
-synchronous "war rooms" for high-severity conflicts. We are explicitly **not** building this now.
+inbox, a standing supervisor with authority to re-staff a run and synthesize new roles on the
+fly, synchronous "war rooms" for high-severity conflicts. Naming note to avoid confusion with
+Phase 0.5's `coordinator` agent: that agent is stateless and re-spawned as a fresh CLI subprocess
+every turn, exactly like every other agent in this design; what Phase 6 would add on top is a
+*persistent, addressable* supervisor process with its own actor lifecycle and mailbox — a
+materially different piece of infrastructure, not a bigger version of the same thing. We are
+explicitly **not** building this now.
 
 Reasons to defer:
-- Phases 1–5 directly address the concrete failure mode described (plan/contract not catching up
-  to reality, implementer stuck with no legitimate way out) with much less new surface area, and
-  have direct empirical backing for the *specific* mechanisms (escalation primitive, monitor
-  gate) rather than the *general* approach (standing coordinator).
-- A standing coordinator introduces real new failure modes of its own (ping-pong escalation
-  loops, a coordinator that becomes a bottleneck or gets confused) that are exactly as hard to
-  debug as the problem it's meant to solve, and we have no evidence yet that Phases 1–5 are
-  insufficient.
+- Phases 0–5 (including the coordinator loop in Phase 0.5) directly address the concrete failure
+  mode described (plan/contract not catching up to reality, implementer stuck with no legitimate
+  way out, team composition needing to vary and adapt mid-run) with much less new surface area,
+  and have direct empirical backing for the *specific* mechanisms (escalation primitive, monitor
+  gate, orchestrator-workers-style coordination) rather than the *general* approach (a persistent
+  actor system).
+- A persistent supervisor introduces real new failure modes of its own (ping-pong escalation
+  loops, a supervisor process that becomes a bottleneck or gets confused, process lifecycle bugs)
+  that are exactly as hard to debug as the problem it's meant to solve, and we have no evidence
+  yet that Phases 0–5 are insufficient.
 - If we do build it later, XState (see §7) is the one piece of external, dependency-light,
   LLM-agnostic infrastructure worth evaluating for the actor/mailbox substrate — but that's a
-  separate future design doc, gated on Phases 1–5 being shipped, used, and found wanting.
+  separate future design doc, gated on Phases 0–5 being shipped, used, and found wanting.
 
 ## 5. What ships in what order
 
 | Phase | New engine surface | New docs/examples | Depends on |
 |---|---|---|---|
 | 0. Agent catalog: bundled discovery + visibility | `bundled-agents/*.md`, `BUNDLED_AGENTS_DIR`/`"builtin"` source in `agents.ts`, `buildAgentCatalogSummary()`, `list_agents` tool in new `agent-catalog.ts` | README/SKILL.md: bundled roster list, override/disable settings note | none |
-| 0.5. Team composition (`plan_team` / `assembleTeam()`) | `planTeam()` core in new `team-composition.ts`, `plan_team` tool, `assembleTeam` sandboxed global in `workflow.ts` | `workflow-api.md`: `assembleTeam()` reference; `SKILL.md`: when to use `plan_team` before scripting | Phase 0 (needs the catalog) |
+| 0.5. Coordinator loop (dynamic team assembly) | `bundled-agents/coordinator.md`, `runCoordinatedLoop()` in new `coordinate.ts`, `coordinate` tool, `coordinate` sandboxed global in `workflow.ts` | `workflow-api.md`: `coordinate()` reference and decision-protocol shape; `SKILL.md`: when to use `coordinate` vs. a hand-written script | Phase 0 (needs the catalog; the coordinator is one of its bundled agents) |
 | 1. Escalation primitive | `AgentBlockedResult` shape in `structured-output.ts`, third `agent()` return branch in `workflow.ts` | `workflow-api.md`: `isBlocked()` helper, escalation-loop example | none |
 | 2. Plan review gate | none (pure script convention) | `SKILL.md` "Plan review gate" section | Phase 1 (+ Phase 0 for the `monitor` agent to exist) |
 | 3. Contract artifacts | `contract` sandboxed global, `writeContractRevision()` in `artifacts.ts` | `workflow-api.md`: `contract.read()/revise()` reference | Phase 1 (revisions are usually escalation responses) |
 | 4. Verification tightening | `taskMayMutate()` wired into `resolveEffectiveAcceptance()` | `SKILL.md`: default acceptance for implementation tasks | none (independent of 0–3) |
 | 5. Human escalation + delegation threshold | `askHuman` sandboxed global, `ui` threaded into `WorkflowRunOptions` | `SKILL.md`: `askHuman()` reference, headless-degrade behavior | Phase 1 (mainly triggered by exhausted `blocked` retries) |
-| 6. Standing coordinator | — deferred — | — deferred — | 0–5 shipped + real usage evidence |
+| 6. Persistent actor model | — deferred — | — deferred — | 0–5 shipped + real usage evidence |
 
 Phase 0 has no dependency on anything and should ship first — every later phase assumes a team
-already has usable, visible agents. Phase 0.5 depends only on Phase 0's catalog and can ship
-independently of Phases 1–5 (it's most useful once Phase 1 exists, since escalation-driven
-re-composition is its main in-script trigger, but upfront `plan_team` calls are useful on their
-own even without Phase 1). Phases 1 and 4 have no interdependency and can be built in parallel
+already has usable, visible agents. Phase 0.5 depends on Phase 0 (the `coordinator` agent is one
+of its bundled roles) and benefits from Phase 5 (`askHuman()` is one of the coordinator's
+possible actions) and Phase 1 (a `blocked` result is exactly the kind of state the coordinator
+loop reacts to on its next turn) — but the driver loop itself works with none of those shipped
+yet; a coordinator whose only actions are `dispatch`/`dispatch_parallel`/`finish` is still useful
+before Phases 1 or 5 land. Phases 1 and 4 have no interdependency and can be built in parallel
 once Phase 0 lands. Phase 2 and 3 both build on Phase 1's shape (Phase 2 additionally needs Phase
 0's `monitor` agent to exist). Phase 5 is mostly independent but its most common trigger
 (exhausted blocked retries) is more useful once Phase 1 exists.
@@ -530,15 +576,22 @@ Following the project's existing convention (every extension module has a matchi
   zero-agents and many-agents cases); unit tests for the `list_agents` tool (returns current
   catalog, reflects agents added after the tool was first registered — this is the main reason it
   exists alongside the baked-in snapshot).
-- **Phase 0.5**: unit tests for `planTeam()`'s core (given a fixed catalog and task description,
-  asserts the structured-output prompt includes every catalog agent's name/description, asserts
-  the parsed result shape matches `{ roles, reasoning, suggestedPhases? }`, asserts an
-  unparsable/malformed structured-output response is surfaced as a clear tool error rather than
-  silently returning an empty roster); unit tests for the `plan_team` tool wiring (mocked
-  `runSingleAgent`, asserts the tool's output matches `planTeam()`'s); unit tests for the
-  `assembleTeam` sandboxed global (mirrors `askHuman`/`contract` global tests — asserts it's
-  reachable from `vm.createContext(...)`, asserts it only ever proposes agents present in the
-  discovery result passed to `runWorkflow()`, never a name outside that set).
+- **Phase 0.5**: unit tests for `runCoordinatedLoop()` (mocked `agentRunner` returning a
+  scripted sequence of coordinator decisions — `dispatch` → `dispatch_parallel` → `finish` —
+  asserts the loop executes each action in order and stops correctly on `finish`; asserts an
+  unresolvable `decision.agent` name is fed back into the *next* coordinator turn as the result,
+  not thrown, and that the loop terminates instead of looping forever if the coordinator keeps
+  naming the same bad agent — covered by the iteration cap); unit tests for `ask_human` actions
+  routing through the already-tested `askHuman()` headless-degrade path; unit tests for the
+  `coordinate` tool wiring (mocked `runSingleAgent`, asserts tool output matches
+  `runCoordinatedLoop()`'s final result); unit tests for the `coordinate` sandboxed global
+  (mirrors `askHuman`/`contract` global tests — reachable from `vm.createContext(...)`, only ever
+  dispatches to agents present in the discovery result passed to `runWorkflow()`). One
+  **end-to-end scenario test**: a fake `agentRunner` where the coordinator's first-turn decision
+  dispatches to `planner`, its second-turn decision (now seeing the planner's result in `state`)
+  dispatches to two agents in parallel, and its third-turn decision is `finish` — asserting the
+  final result reflects genuinely different actions chosen at each turn based on accumulated
+  state, not a fixed pre-determined sequence.
 - **Phase 1**: unit tests for the new `agent()` branch (mock `agentRunner.run()` returning a
   `blocked` shape, assert `agent()` returns it un-thrown, un-swallowed); unit tests for
   `structured-output.ts`'s new decode path.
@@ -616,18 +669,19 @@ hand** — per Phase 0, they are bundled `.md` files that ship inside the pi-wor
 `bundled-agents/` directory and are discovered *live* from the installed package on every
 `discoverAgents()` call (the same pattern nicobailon/pi-subagents already uses for its own
 builtin agents), with no copy step and no filesystem writes into a team's project. A team that
-runs `pi install npm:pi-workflow` gets all six roles below, ready to use, without writing a
+runs `pi install npm:pi-workflow` gets all seven roles below, ready to use, without writing a
 single frontmatter file themselves. A team can override or disable any of them via a small
 settings entry (`{ agents: { <name>: { disabled: true } } }` or a partial field override) without
 forking the file, or fully take one over by placing a same-named agent in their own project/user
 agent directory, which always wins over the builtin per the merge precedence in Phase 0.
 
-These are a **starting roster, not a fixed cast** — see §10 for how the *main agent* selects a
-task-appropriate subset of them (or agents a team has added beyond this set) per run, rather than
-always using all of them or always using the same subset.
+These are a **starting roster, not a fixed cast** — see §10 for how the *coordinator* (Phase 0.5)
+selects a task-appropriate subset of them (or agents a team has added beyond this set) turn by
+turn, dynamically, rather than a script always using all of them or always the same subset.
 
 | Agent | Role | Tools | Notes |
 |---|---|---|---|
+| `coordinator` | Decides one next action per turn given accumulated run state (Phase 0.5) — dispatch, dispatch in parallel, ask a human, or finish | read-only (needs to read the catalog/task context, not implement) | Structured-output constrained to `{ action, ... }`; never implements, only decides who does. |
 | `planner` | Decomposes a task into a plan; read-only, no implementation | read-only (`read`, `grep`, `find`, `ls`) | Never given write tools, so it structurally cannot slide into implementation (mirrors coding-agent's finding). |
 | `architect` | Turns a plan into concrete interfaces/contracts | read-only + `contract.revise()` (Phase 3) | Owns the contract artifact; the only role that should call `contract.revise()` in a typical script, by convention not enforcement. |
 | `monitor` | Independent plan-feasibility gate (Phase 2) | read-only, repo search | Never implements, never grades its own output — reviews architect's contract before implementation starts. |
@@ -637,7 +691,9 @@ always using all of them or always using the same subset.
 
 A team is expected to add their own roles to this roster over time (a `security_specialist`, a
 `migration_specialist`, a domain-specific reviewer) the same way they'd add any project agent —
-the bundled six are a floor to get started productively on day one, not a ceiling.
+the coordinator (Phase 0.5) picks them up automatically since it reads the live catalog on every
+turn, with no engine change needed to make a newly-added agent selectable. The bundled seven are
+a floor to get started productively on day one, not a ceiling.
 
 ## 10. Does this design support dynamically assembling a team per problem?
 
@@ -683,34 +739,43 @@ a human-facing command the LLM never sees automatically — so in practice the m
 either guessing agent names or defaulting to habitually reaching for the same one or two it
 happened to remember, regardless of what the task actually needed.
 
-This tier actually splits into two sub-levels, worth separating because your second question
+This tier actually splits into two sub-levels, worth separating because your follow-up question
 ("how do we dynamically assemble the team, if not imperative script?") is specifically about the
-second one:
+second one — and the first version of this answer only delivered the first:
 
 - **2a. Visibility (Phase 0).** A catalog summary baked into the `workflow` tool's guidelines, a
   `list_agents` tool for on-demand refresh, and a soft prompt instruction to select a
   task-appropriate subset rather than defaulting. This makes the roster *visible* and gives a
   *nudge*, but composition still happens implicitly, buried inside whatever script the main agent
   writes — there's no separate, inspectable moment where "which agents does this task need" is
-  decided and recorded as its own action.
-- **2b. Composition as a distinct, structured decision (Phase 0.5).** The `plan_team` tool (called
-  before scripting) and the `assembleTeam()` sandboxed global (callable during scripting) turn
-  "which agents does this task need" into its own explicit operation — one structured-output
-  agent call against the live catalog, returning `{ roles, reasoning }`, rather than something
-  inferred only by reading the script afterward. `assembleTeam()` also connects directly to
-  Phase 1: when a script hits a `blocked` result, instead of a script author having pre-guessed
-  `blockedOn`, the script can call `assembleTeam()` with the actual blocker description and get a
-  fresh recommendation from the current catalog. This is *still* just calling `agent()` under the
-  hood — no new execution model, imperative script control flow is unchanged — but the
-  *composition decision itself* is now a first-class, callable, structured operation rather than
-  something fused invisibly into the script text.
+  decided, and no mechanism that keeps deciding as the run unfolds. **This alone is not what was
+  discussed and does not answer the question.**
+- **2b. Ongoing composition via a coordinator agent, re-consulted every step (Phase 0.5,
+  redesigned).** An earlier version of this section proposed a one-shot `plan_team` tool: decide
+  a roster once, before any work starts, then hand off to a fixed script. That was rejected
+  correctly — a one-shot decision that then hands off to hardcoded branches isn't dynamic
+  coordination, it's the exact same imperative model with the same decision made slightly
+  earlier, and the "planner" in that design wasn't even a team member, just a utility function
+  the main agent called. The corrected design (see Phase 0.5 above) is a `coordinator` **agent**
+  — a normal, discoverable, bundled catalog member like `planner`/`green`/`reviewer` — that is
+  re-spawned every iteration of a small driving loop, sees the accumulated state of the run so
+  far (including any `blocked` reports from Phase 1), and decides one next action: dispatch to a
+  specific agent, dispatch several in parallel, ask a human, or finish. Composition is now an
+  *ongoing* process, not a single upfront guess — the coordinator can change its mind on the very
+  next turn based on what it just learned, in direct response to reality diverging from
+  expectation, which is exactly the "plan doesn't survive contact with reality, and there's no
+  one to talk to about it" failure mode this whole document started from.
 
-With Phase 0 + 0.5 shipped, "different task, different team" is delivered by an explicit,
-loggable decision rather than emergent script-writing habit — a bug fix might get `plan_team`
-recommending `worker` alone, a multi-component feature might get `planner → architect → monitor →
-red → green → reviewer`, a schema change might additionally pull in a `migration_specialist` a
-team added beyond the bundled six (§9), each recommendation carrying its own `reasoning` a human
-or later run can inspect.
+With Phase 0 + 0.5 shipped, "different task, different team" is delivered by an ongoing,
+loggable decision process rather than emergent script-writing habit or a one-shot guess — a bug
+fix might have the coordinator dispatch to `worker` alone and finish; a multi-component feature
+might have it dispatch `planner`, then react to that result by dispatching `architect`, then
+`monitor`, adapting the sequence turn by turn rather than following a fixed script; a schema
+change might have the coordinator's first turn already pull in a `migration_specialist` a team
+added beyond the bundled seven (§9), or only realize it needs one after `architect`'s result comes
+back and reacts accordingly on its next turn. Every one of the coordinator's turns is a
+structured, inspectable decision (`state.log` accumulates the full sequence), not something
+reverse-engineered from script text afterward.
 
 **Tier 3 — the system decides team composition for you, autonomously, without any human or script
 author having written that branch in advance, and can synthesize entirely new agent roles on the
@@ -725,14 +790,21 @@ fix. Deferred for the same reasons as before: no evidence yet that Tiers 1+2 are
 and it introduces its own new failure modes (an agent inventing unnecessary specialist roles,
 cost/scope creep) that need their own design work, not a quick add-on here.
 
-**Summary of what changed across both rounds of correction.** The initial draft answered "yes"
+**Summary of what changed across three rounds of correction.** The initial draft answered "yes"
 based on Tier 1 alone and didn't check Tier 2 at all — which is the tier that actually matters
 for "when the main agent is given a task, it can compose the team that task needs," since Tier 1
 only governs what a script can do *after* the main agent has already decided what to write. The
 first correction added Tier 2a (Phase 0: visibility) but that alone still left composition
-implicit — buried in script text rather than a distinct decision. This second correction adds
-Tier 2b (Phase 0.5: `plan_team`/`assembleTeam()`) so team assembly is an explicit, structured,
-inspectable action rather than an emergent property of however the main agent happens to write a
-given script — while keeping the underlying execution model exactly the imperative script it was
-before; nothing about Phase 0.5 introduces a graph, DAG, or declarative workflow definition. Tier
-3 remains correctly deferred to Phase 6.
+implicit — buried in script text rather than a distinct decision. The second correction's answer
+to Tier 2b (a `plan_team` tool / `assembleTeam()` global) was itself rejected on review: a
+one-shot classifier called before scripting, handing off to a fixed script afterward, is not
+dynamic coordination — it's the same imperative decision made slightly earlier, and the
+"planner" wasn't even a team member. This third correction replaces it with the coordinator loop
+in Phase 0.5: a real, bundled `coordinator` **agent**, re-consulted every iteration of a small
+driving loop, reacting to accumulated run state (including Phase 1 `blocked` reports) and
+deciding one next action at a time. Team assembly is now genuinely ongoing and reactive, not a
+single upfront guess — while the underlying execution primitive is still just `agent()`,
+`parallel()`, and a plain loop; nothing about Phase 0.5 introduces a graph, DAG, or declarative
+workflow definition, and the coordinator remains a stateless, re-spawned subprocess like every
+other agent — not the persistent actor Tier 3 (Phase 6) would require. Tier 3 remains correctly
+deferred.
