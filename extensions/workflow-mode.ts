@@ -126,9 +126,10 @@ delegation are unavailable in this mode:
 
 For any task that requires changing files or delegating to an agent:
 1. Use \`read\`/\`bash\` (read-only) first if you need to investigate the codebase.
-2. Write a workflow script and call the \`workflow\` tool — it orchestrates one or more subagents
-   (via \`agent()\`/\`parallel()\`/\`pipeline()\`) that DO have full tool access (including write/edit), scoped
-   to their own isolated run.
+2. Write a graph script and call the \`workflow\` tool — its nodes are subagents that DO have full
+   tool access (including write/edit), scoped to their own isolated run. Define nodes with
+   \`g.node(id, agent(name, promptFn))\` and route between them with \`g.edge(from, to)\` or a
+   conditional \`g.edge(from, (state, result) => target)\`.
 3. Use \`workflow_status\` to inspect a run's progress or investigate a failure.
 
 If the user's request is purely conversational or a question that needs no file changes or delegation,
