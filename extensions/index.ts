@@ -260,6 +260,7 @@ export function registerWorkflowStatusTool(pi: ExtensionAPI, workflowManager: Wo
 				const lines = [
 					`Agent #${agent.id} "${agent.label}" (phase: ${agent.phase ?? "(none)"}) \u2014 status: ${agent.status}`,
 					agent.model ? `Model: ${agent.model}` : undefined,
+					agent.sessionId ? `Session file: ${agent.sessionId}` : undefined,
 					agent.error ? `Error: ${agent.error}` : undefined,
 					"",
 					"Prompt:",
