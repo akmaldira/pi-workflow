@@ -11,6 +11,8 @@
  * branch on.
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { AgentConfig } from "./agents.ts";
 import { discoverAgents } from "./agents.ts";
 import { classifySingleResultFailure } from "./failure-classifier.ts";
@@ -430,12 +432,30 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 			// not include it can still report a blocker the edge can route on.
 			// No-op for bundled agents (deduped inside).
 			const agentWithProtocol = withEscalationProtocol(resolved.agent);
+			const sessionFile = path.join(
+				options.cwd,
+				".pi-workflow",
+				"sessions",
+				options.runId,
+				`${node.id}.jsonl`,
+			);
+
+			// First spawn of this node in this run? The fork summary
+			// (a compaction of the orchestrator's parent session) bootstraps the
+			// agent's context exactly as today. A REVISIT, by contrast, resumes an
+			// existing session, so the agent walks in with its own full history
+			// already in the transcript — re-injecting a parent summary would be
+			// noise (and risk a prompt-length runaway).
+			const sessionExists = fs.existsSync(sessionFile);
+			const forkContext = sessionExists ? undefined : options.forkContext;
+
 			single = await options.spawnAgent(options.cwd, agentWithProtocol, prompt, {
 				runId: options.runId,
 				index: spawnIndex,
 				signal,
 				parentSessionId: options.parentSessionId,
-				forkContext: options.forkContext,
+				forkContext,
+				sessionFile,
 				onEvent: options.onEvent,
 				artifactsDir: options.artifactsDir,
 				artifactConfig: options.artifactConfig,
