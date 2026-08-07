@@ -636,6 +636,7 @@ export async function runSuperstepGraph(
 					durationMs: Date.now() - r.nodeStartedAt,
 					tokens: outcome.tokens,
 					error: outcome.error,
+					sessionId: outcome.sessionId,
 				};
 				history.push(execution);
 				options.onNodeComplete?.(execution);
@@ -699,6 +700,7 @@ export async function runSuperstepGraph(
 				durationMs: Date.now() - r.nodeStartedAt,
 				tokens: outcome.tokens,
 				error: outcome.error,
+				sessionId: outcome.sessionId,
 			};
 			history.push(execution);
 			options.onNodeComplete?.(execution);

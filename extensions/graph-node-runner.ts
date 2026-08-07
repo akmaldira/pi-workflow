@@ -426,20 +426,18 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 
 		spawnIndex += 1;
 
+		// `withEscalationProtocol` is applied unconditionally (deduped for bundled
+		// agents), so the spawn path above is the only place sessionFile lives.
+		const agentWithProtocol = withEscalationProtocol(resolved.agent);
+		const sessionFile = path.join(
+			options.cwd,
+			".pi-workflow",
+			"sessions",
+			options.runId,
+			`${node.id}.jsonl`,
+		);
 		let single: SingleResult;
 		try {
-			// Inject the escalation protocol so a custom agent whose author did
-			// not include it can still report a blocker the edge can route on.
-			// No-op for bundled agents (deduped inside).
-			const agentWithProtocol = withEscalationProtocol(resolved.agent);
-			const sessionFile = path.join(
-				options.cwd,
-				".pi-workflow",
-				"sessions",
-				options.runId,
-				`${node.id}.jsonl`,
-			);
-
 			// First spawn of this node in this run? The fork summary
 			// (a compaction of the orchestrator's parent session) bootstraps the
 			// agent's context exactly as today. A REVISIT, by contrast, resumes an
@@ -478,6 +476,7 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 			};
 		}
 
+		const sessionId = sessionFile;
 		const text = getFinalOutput(single.messages ?? []) || single.error || "";
 		const tokens = usageTokens(single);
 
@@ -503,11 +502,12 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 				result: { ...parsed, error: classification.reason, usage: tokens ? { tokens } : undefined },
 				error: classification.reason,
 				tokens,
+				sessionId,
 			};
 		}
 
 		const parsed = parseAgentResult(text, agentName);
 		if (tokens) parsed.usage = { tokens };
-		return { result: parsed, tokens };
+		return { result: parsed, tokens, sessionId };
 	}
 }

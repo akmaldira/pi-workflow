@@ -24,6 +24,8 @@ export interface NodeExecution {
 	/** Superstep index (round) when this node ran. Undefined for linear runs. */
 	round?: number;
 	nodeId: string;
+	/** Pi session file this node ran in (agent nodes only). */
+	sessionId?: string;
 	nodeType: NodeDef["type"];
 	/** Agent name for agent nodes; undefined otherwise. */
 	agentName?: string;
@@ -67,6 +69,12 @@ export interface NodeRunOutcome {
 	 */
 	technicalFailure?: boolean;
 	error?: string;
+	/**
+	 * Path to the pi session file this node ran in, when the node is an agent.
+	 * Absent for human/mainAgent nodes, which share the parent session rather
+	 * than owning one. Recorded in the journal for traceability.
+	 */
+	sessionId?: string;
 }
 
 export type NodeRunner = (

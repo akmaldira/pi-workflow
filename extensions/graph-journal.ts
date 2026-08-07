@@ -57,6 +57,8 @@ export interface GraphJournalNodeRecord {
 	nodeId: string;
 	nodeType: "agent" | "mainAgent" | "human";
 	agentName?: string;
+	/** Pi session file path, for agent nodes only. */
+	sessionId?: string;
 	status: "ok" | "failed" | "skipped";
 	result: unknown;
 	routedTo: string;
@@ -212,6 +214,7 @@ export class GraphJournal {
 			result: execution.result,
 			routedTo: execution.routedTo,
 			tokens: execution.tokens,
+			sessionId: execution.sessionId,
 			error: execution.error,
 			startedAt: execution.startedAt,
 			durationMs: execution.durationMs,

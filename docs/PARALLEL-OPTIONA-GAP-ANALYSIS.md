@@ -572,7 +572,7 @@ the existing `index` param. Defer write-capable parallel branches.
 
 ---
 
-## Race-condition note (to document later in SKILL.md / README)
+## Race-condition note (DOCUMENTED)
 
 **Context:** edge conditions can mutate `state` (the SKILL.md teaches this
 for visit counters: `state.rounds = (state.rounds ?? 0) + 1`). If two

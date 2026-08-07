@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { agent, END } from "../extensions/graph-dsl.ts";
 import { createNodeRunner } from "../extensions/graph-node-runner.ts";
 import { buildGraphFromScript } from "../extensions/graph-validator.ts";
+import { runSuperstepGraph } from "../extensions/graph-executor.ts";
 import type { ForkContextOptions } from "../extensions/types.ts";
 
 /**
@@ -113,5 +114,56 @@ g.run({});`,
 		expect(log[0].forkContext).toBeDefined();
 		// Revisit resumes the existing transcript, no fresh fork injection.
 		expect(log[2].forkContext).toBeUndefined();
+	});
+});
+
+describe("journal records the session file", () => {
+	it("records sessionId on agent node entries; undefined for non-agent nodes", async () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pw-jsid-"));
+		try {
+			const { graph } = buildGraphFromScript(
+				`export const meta = { name: "t", description: "d" };
+const g = graph();
+g.node("arch", agent("architect", () => "design"));
+g.node("grn", agent("green", (s) => "impl " + s.arch));
+g.edge("arch", "grn"); g.edge("grn", END); g.run({});`);
+
+			const records: any[] = [];
+			const fake = (cwd: string) => async (_c: string, a: any, _p: string, args: any) => {
+				const sf = args.sessionFile as string;
+				fs.mkdirSync(path.dirname(sf), { recursive: true });
+				fs.appendFileSync(sf, "{}\n");
+				return { exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: a?.name ?? "x" }] }], durationMs: 1 };
+			};
+
+			const runner = createNodeRunner({
+				cwd, runId: "jsid", spawnAgent: fake(cwd) as any,
+				forkContext: {
+					sessionManager: {
+						getCwd: () => cwd, getSessionDir: () => path.join(cwd,"p"),
+						getSessionId: () => "p-1", getSessionFile: () => path.join(cwd,"p","p-1.jsonl"),
+						getLeafId: () => "l", getLeafEntry: () => undefined,
+					} as any,
+					modelRegistry: {} as any, fallbackModel: {} as any,
+				},
+			});
+
+			const out: any[] = [];
+			const result = await runSuperstepGraph(graph, {
+				runId: "jsid", maxIterations: 25, runNode: runner,
+				onNodeComplete: (e: any) => out.push({ nodeId: e.nodeId, sessionId: e.sessionId }),
+			});
+
+			expect(result.status).toBe("completed");
+			// Each agent node recorded its own session file path.
+			expect(out.map((o) => o.nodeId)).toEqual(["arch", "grn"]);
+			const archSession = out[0].sessionId;
+			const grnSession = out[1].sessionId;
+			expect(archSession).toBe(path.join(cwd, ".pi-workflow", "sessions", "jsid", "arch.jsonl"));
+			expect(grnSession).toBe(path.join(cwd, ".pi-workflow", "sessions", "jsid", "grn.jsonl"));
+			expect(archSession).not.toBe(grnSession);
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
 	});
 });
