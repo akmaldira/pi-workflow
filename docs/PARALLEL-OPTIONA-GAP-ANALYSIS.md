@@ -1,19 +1,22 @@
 # Parallel Fan-Out: Option A — True Multi-Edge Graph (Revised Design + Gap Analysis)
 
-**Status:** ✅ **IMPLEMENTED.** This document is the design of record; the
-behaviour described here now ships. Option B (`docs/PARALLEL-FANOUT-PLAN.md`)
-was not pursued.
+**Status:** ✅ **FULLY IMPLEMENTED.** One unified execution model (no modes)
+with two decisions added post-implementation: superstep readiness uses a
+claims+selected rule backed by AST target extraction, and the linear executor
+was deleted so there is a single graph model. Decision 1 (agent node pi
+Sessions) was shipped after this document.
 
 **Where it lives:**
 
 | Piece | File |
 |---|---|
 | Multi-edge data model + `mode` detection | `extensions/graph-dsl.ts` |
-| Superstep scheduler, AND fan-in, wave reset | `extensions/graph-superstep-executor.ts` |
+| Superstep scheduler, AND fan-in, wave reset | `extensions/graph-executor.ts` |
 | `round` records, `round_complete`, resume | `extensions/graph-journal.ts` |
-| Executor selection, two-counter reporting | `extensions/graph-tool.ts` |
+| Single executor (no mode selection) | `extensions/graph-executor.ts` |
+| Shared vocabulary types | `extensions/graph-execution-types.ts` |
 | Concurrent-node display, barrier logging | `extensions/graph-display-bridge.ts` |
-| Tests | `tests/graph-superstep-executor.test.ts`, `tests/graph-superstep-units.test.ts`, `tests/e2e-superstep.test.ts` |
+| Tests | `tests/graph-executor.test.ts`, `tests/graph-superstep-units.test.ts`, `tests/e2e-superstep.test.ts`, `tests/graph-conditional-routing.test.ts`, `tests/graph-sessions.test.ts` |
 
 **RESOLVED — there is now one execution model.** The audit recorded here found
 that `runSuperstepGraph` was not a generalisation of the linear walk, so the
