@@ -353,3 +353,62 @@ describe("runSuperstepGraph: callbacks", () => {
 		expect(byId.summarizer).toBe(3);
 	});
 });
+
+describe("runSuperstepGraph: readiness edge cases", () => {
+	it("asymmetric depth diamond: fan-in waits across DIFFERENT rounds", async () => {
+		// scout -> a -> sum ;  scout -> b1 -> b2 -> sum
+		// 'a' is ready long before b2. AND fan-in must hold sum until b2 lands.
+		const g = new GraphBuilder();
+		g.node("scout", agent("scout", () => "s"));
+		g.node("a", agent("w", () => "a"));
+		g.node("b1", agent("w", () => "b1"));
+		g.node("b2", agent("w", () => "b2"));
+		g.node("sum", agent("w", (s) => `${s.a}|${s.b2}`));
+		g.edge("scout", "a"); g.edge("scout", "b1");
+		g.edge("a", "sum"); g.edge("b1", "b2"); g.edge("b2", "sum");
+		g.edge("sum", END);
+		g.run();
+		const graph = g.build();
+
+		let sumSaw: GraphState | null = null;
+		const runner: NodeRunner = async (n, st) => {
+			if (n.id === "sum") sumSaw = { ...st };
+			return { result: n.id };
+		};
+		const res = await runSuperstepGraph(graph, { runId: "x", runNode: runner });
+		expect(res.status).toBe("completed");
+		// sum must see BOTH, even though 'a' finished a round earlier than b2.
+		expect(sumSaw!.a).toBe("a");
+		expect(sumSaw!.b2).toBe("b2");
+		expect(res.history.filter(h=>h.nodeId==="sum")).toHaveLength(1);
+	});
+
+	it("three-way fan-out all converging", async () => {
+		const g = new GraphBuilder();
+		g.node("s", agent("scout", () => "s"));
+		for (const id of ["x","y","z"]) g.node(id, agent("w", () => id));
+		g.node("j", agent("w", () => "j"));
+		g.edge("s","x"); g.edge("s","y"); g.edge("s","z");
+		g.edge("x","j"); g.edge("y","j"); g.edge("z","j");
+		g.edge("j", END);
+		g.run();
+		const res = await runSuperstepGraph(g.build(), { runId:"x", runNode: scriptedRunner({}) });
+		expect(res.status).toBe("completed");
+		expect(res.iterations).toBe(3);
+		expect(res.nodeExecutions).toBe(5);
+		expect(res.history.filter(h=>h.nodeId==="j")).toHaveLength(1);
+	});
+
+	it("abort signal stops the run", async () => {
+		const g = new GraphBuilder();
+		g.node("s", agent("scout", () => "s"));
+		g.node("a", agent("w", () => "a")); g.node("b", agent("w", () => "b"));
+		g.edge("s","a"); g.edge("s","b"); g.edge("a",END); g.edge("b",END);
+		g.run();
+		const ac = new AbortController();
+		ac.abort();
+		const res = await runSuperstepGraph(g.build(), { runId:"x", runNode: scriptedRunner({}), signal: ac.signal });
+		expect(res.status).toBe("aborted");
+		expect(res.nodeExecutions).toBe(0);
+	});
+});
