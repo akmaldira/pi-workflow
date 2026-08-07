@@ -116,7 +116,7 @@ describe("documentation examples", () => {
 			const skill = fs.readFileSync(SKILL, "utf-8");
 			expect(skill, "SKILL must teach the STATUS: blocked protocol for custom agents").toMatch(/STATUS: blocked/);
 			expect(skill, "SKILL must teach that escalating is a good outcome").toMatch(/escalating is a successful outcome/i);
-			expect(skill, "SKILL must warn that a missing block means silent swallow").toMatch(/swallow|routed forward/i);
+			expect(skill, "SKILL must teach that the protocol is auto-injected").toMatch(/auto-inject/i);
 		});
 	});
 });

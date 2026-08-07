@@ -207,10 +207,13 @@ Two rules that make an agent safe in a graph:
    stub the thing under implementation, do not weaken or delete tests, do not hardcode to test
    inputs, do not claim done while the suite is red.
 
-A custom agent *without* the escalation block still works when it succeeds, and a technical crash
-(OOM, provider error) still aborts the graph as a safety net — but a *soft* "I gave up" with no
-marker is routed forward silently. So include the block for any agent whose failure should route
-somewhere rather than be swallowed.
+**You do not have to include the block for routing to work.** The protocol is **auto-injected**
+into every workflow agent's system prompt at spawn time — a custom agent whose `.md` omits it
+still receives it and can report a blocker. Including it in the `.md` yourself is still good
+practice (it reinforces the instruction and documents intent), and it is idempotent: if the block
+is already present the injection is skipped, so there is never a duplicate. Only a *technical*
+crash (OOM, provider error) is not covered by this — but those already abort the graph as a
+safety net.
 
 ## Agent Frontmatter Attributes
 

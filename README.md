@@ -156,6 +156,10 @@ EVIDENCE: <file:line, error output>
 PROPOSED_FIX: <what would unblock them>
 ```
 
+The same block is **auto-injected** into every workflow agent's system prompt at spawn time, so a
+custom agent that was not taught the protocol can still report a blocker (see [Creating custom
+agents](#creating-custom-agents)).
+
 `BLOCKED_ON` is a **closed vocabulary** because it is a routing key, not prose — it decides *who
 gets asked*. A `contract` blocker goes to whoever designed the interface; a `tests` blocker goes to
 whoever wrote them.
@@ -249,19 +253,17 @@ PROPOSED_FIX: <what would unblock you>
 Escalating with a clear reason is a good outcome. Faking completion is the only real failure.
 ```
 
-#### The escalation protocol — why your agent needs it
+#### The escalation protocol — auto-injected
 
 The graph routes on a structured signal, not prose. When an agent cannot finish, it emits the
 `STATUS: blocked` block above and the edge condition routes the blocker to whoever owns the
 problem. This is the entire coordination mechanism — **there is no other channel.**
 
-A custom agent *without* the `## Escalation` section still works when it succeeds. But when it
-hits a wall, it has no way to say so that the graph can act on, and it gets routed forward **as
-if it succeeded** — the blocker is silently swallowed. (A technical crash — OOM, provider error —
-is still caught and aborts the graph as a safety net; only a *soft* "I gave up" with no marker is
-swallowed.)
-
-So **any agent whose failure should route somewhere must include the escalation block.**
+**The protocol is auto-injected into every workflow agent's system prompt at spawn time.** A
+custom agent whose `.md` omits the `## Escalation` section still receives it — it can always
+report a blocker the graph can route on. Including the section in your `.md` is still recommended
+(it documents intent and reinforces the instruction), and it is idempotent: if the block is
+already present the injection is skipped, so there is never a duplicate.
 
 `BLOCKED_ON` is a closed vocabulary because it is a routing key, not free text. Reuse the existing
 categories when one fits:

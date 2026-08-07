@@ -81,6 +81,48 @@ export const KNOWN_BLOCKED_ON = new Set([
 ]);
 
 /**
+ * The escalation block injected into every workflow agent's system prompt.
+ *
+ * A custom agent authored without this block has no way to signal a blocker
+ * the graph can route on, and gets forwarded as if it succeeded when it
+ * hits a wall. Injecting here makes the protocol universal — bundled agents
+ * already carry it (and are skipped by the dedup check), so this is the
+ * safety net for user-authored agents that do not.
+ *
+ * The wording is kept identical to the `## Escalation` section documented in
+ * SKILL.md and README.md, so a model that reads the docs and an agent that
+ * receives the injection see the same instruction — no conflicting guidance.
+ */
+export const ESCALATION_PROTOCOL_BLOCK = `## Escalation
+
+If you can't complete the task, say so instead of faking it:
+
+STATUS: blocked
+BLOCKED_ON: requirements | environment | conflict | contract | tests | information
+REASON: <specifically what you hit>
+EVIDENCE: <error output, file:line>
+PROPOSED_FIX: <what would unblock you>
+
+Reporting a blocker with a clear reason is a successful outcome. Faking completion is the only real failure.`;
+
+/**
+ * Returns an agent config with the escalation protocol in its system prompt.
+ *
+ * Idempotent: if the prompt already teaches the protocol (bundled agents,
+ * or a custom agent whose author followed the docs), it is returned
+ * unchanged. Otherwise the block is appended to a *clone* — the discovered
+ * agent object is never mutated, so the injection cannot leak into other
+ * call sites or persist across discovery passes.
+ */
+export function withEscalationProtocol(agent: AgentConfig): AgentConfig {
+	if (agent.systemPrompt?.includes("STATUS: blocked")) return agent;
+	const systemPrompt = agent.systemPrompt
+		? `${agent.systemPrompt}\n\n${ESCALATION_PROTOCOL_BLOCK}`
+		: ESCALATION_PROTOCOL_BLOCK;
+	return { ...agent, systemPrompt };
+}
+
+/**
  * Extracts the escalation protocol from an agent's reply.
  *
  * Deliberately lenient about surrounding prose: agents wrap the block in
@@ -384,7 +426,11 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 
 		let single: SingleResult;
 		try {
-			single = await options.spawnAgent(options.cwd, resolved.agent, prompt, {
+			// Inject the escalation protocol so a custom agent whose author did
+			// not include it can still report a blocker the edge can route on.
+			// No-op for bundled agents (deduped inside).
+			const agentWithProtocol = withEscalationProtocol(resolved.agent);
+			single = await options.spawnAgent(options.cwd, agentWithProtocol, prompt, {
 				runId: options.runId,
 				index: spawnIndex,
 				signal,

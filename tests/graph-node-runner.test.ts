@@ -6,11 +6,14 @@ import { agent, END, GraphBuilder, human, mainAgent } from "../extensions/graph-
 import { runGraph } from "../extensions/graph-executor.ts";
 import {
 	createNodeRunner,
+	ESCALATION_PROTOCOL_BLOCK,
 	KNOWN_BLOCKED_ON,
 	parseAgentResult,
 	rehydrateState,
 	resolveGraphAgent,
+	withEscalationProtocol,
 } from "../extensions/graph-node-runner.ts";
+import type { AgentConfig } from "../extensions/agents.ts";
 import type { SingleResult } from "../extensions/types.ts";
 
 function makeSingleResult(overrides: Partial<SingleResult> = {}): SingleResult {
@@ -226,6 +229,57 @@ describe("resolveGraphAgent", () => {
 	});
 });
 
+	describe("withEscalationProtocol", () => {
+	function makeAgent(systemPrompt: string): AgentConfig {
+		return {
+			name: "custom",
+			description: "a custom agent",
+			source: "project",
+			filePath: "/tmp/custom.md",
+			inheritProjectContext: false,
+			inheritSkills: false,
+			systemPrompt,
+		};
+	}
+
+	it("injects the escalation block into an agent that lacks it", () => {
+		const agent = makeAgent("# Custom\n\nDo the thing.");
+		const result = withEscalationProtocol(agent);
+
+		expect(result.systemPrompt).toContain("STATUS: blocked");
+		expect(result.systemPrompt).toContain("BLOCKED_ON:");
+		expect(result.systemPrompt).toContain("Do the thing.");
+		// The injected text must match what the docs teach, so a model that
+		// reads SKILL.md/README and an agent that gets the injection see the
+		// same instruction — no conflicting guidance.
+		expect(result.systemPrompt).toContain(ESCALATION_PROTOCOL_BLOCK);
+	});
+
+	it("works on an agent with no system prompt at all", () => {
+		const agent = makeAgent("");
+		const result = withEscalationProtocol(agent);
+
+		expect(result.systemPrompt).toBe(ESCALATION_PROTOCOL_BLOCK);
+	});
+
+	it("is idempotent: an agent that already has the block is returned unchanged", () => {
+		// A bundled agent, or a custom agent whose author followed the docs.
+		const agent = makeAgent("# Worker\n\n## Escalation\n\nSTATUS: blocked\nBLOCKED_ON: contract");
+		const result = withEscalationProtocol(agent);
+
+		expect(result).toBe(agent);
+		expect(result.systemPrompt).not.toContain("Faking completion");
+	});
+
+	it("never mutates the original agent object", () => {
+		const agent = makeAgent("# Custom\n\nDo the thing.");
+		const originalPrompt = agent.systemPrompt;
+		withEscalationProtocol(agent);
+
+		expect(agent.systemPrompt).toBe(originalPrompt);
+	});
+});
+
 describe("createNodeRunner: agent nodes", () => {
 	const cwd = "/nonexistent-project";
 
@@ -267,6 +321,45 @@ describe("createNodeRunner: agent nodes", () => {
 		expect(passedAgent.name).toBe("green");
 		// Frontmatter must survive: this is what makes tool restrictions real.
 		expect(passedAgent.tools).toContain("write");
+	});
+
+	it("injects the escalation protocol into a custom agent that lacks it", async () => {
+		// The whole point of auto-injection: a custom agent authored without
+		// the escalation block must still receive it at spawn time, so it can
+		// report a blocker the edge can route on.
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-workflow-inject-"));
+		try {
+			fs.mkdirSync(path.join(tempDir, ".pi", "agents"), { recursive: true });
+			fs.writeFileSync(
+				path.join(tempDir, ".pi", "agents", "naive.md"),
+				"---\nname: naive\ndescription: a custom agent with no escalation block\n---\n\n# Naive\n\nJust do the task.\n",
+			);
+
+			const spawn = vi.fn().mockResolvedValue(withText("ok"));
+			const runner = createNodeRunner({ cwd: tempDir, runId: "r1", spawnAgent: spawn as never });
+			await runner(agentNode("a", "naive"), {}, { step: 1, runId: "r1" });
+
+			const passedAgent = spawn.mock.calls[0][1];
+			expect(passedAgent.systemPrompt).toContain("STATUS: blocked");
+			expect(passedAgent.systemPrompt).toContain("BLOCKED_ON:");
+			// The agent's own body survives alongside the injected block.
+			expect(passedAgent.systemPrompt).toContain("Just do the task.");
+		} finally {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not double-inject into a bundled agent that already has the block", async () => {
+		// green.md already teaches the escalation protocol. The injection must
+		// be a no-op so the prompt is not polluted with a duplicate block.
+		const spawn = vi.fn().mockResolvedValue(withText("ok"));
+		const runner = runnerWith(spawn);
+
+		await runner(agentNode("a", "green"), {}, { step: 1, runId: "r1" });
+
+		const passedPrompt = spawn.mock.calls[0][1].systemPrompt as string;
+		const occurrences = passedPrompt.split("STATUS: blocked").length - 1;
+		expect(occurrences).toBe(1);
 	});
 
 	it("applies the agent's own context mode", async () => {
