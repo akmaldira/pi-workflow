@@ -102,27 +102,27 @@ These decisions emerged from the design discussion and apply regardless of
 which parallel option is chosen. They resolve the largest objections in the
 original gap analysis.
 
-### Decision 1: Agent nodes get persisted pi sessions
+### Decision 1: Agent nodes get persisted pi sessions — IMPLEMENTED ✅
 
-**Today:** every graph node spawn is ephemeral — `pi --no-session`. A
-revisited node (planner running again after worker escalates) is a completely
-fresh spawn that sees only what the graph interpolates into its prompt. It
-has zero memory of its own prior reasoning.
+**Then:** every graph node spawn was ephemeral — `pi --no-session`. A revisited
+node (planner running again after worker escalates) was a completely fresh
+spawn with zero memory of its own prior reasoning.
 
 **The plumbing already exists but is dormant:** `sessionFile` flows through
 `types.ts` → `execution.ts` → `pi-args.ts` → `pi --session <file>`. There's
 even a `findLatestSessionFile()` helper in `utils.ts` — built, never called.
 
-**New model:**
-- **First spawn of a node:** inject the fork-summary (compaction-style
-  structured summary of the parent session) into the system prompt as today,
-  AND spawn with `--session <project-local-path>` so the session is persisted.
-- **Revisit/escalation of the same node:** spawn with `--session <that same
-  file>` — pi **resumes** the conversation. The agent remembers its full
-  working process: files read, tool calls, reasoning, prior conclusions. The
-  new turn (the escalation, the feedback) arrives as a new message in an
-  ongoing conversation.
-- **Session file location:** project-local, keyed by `(runId, nodeId)` —
+**Implemented as:**
+- **First spawn:** injects the fork-summary (compaction of the parent session)
+  into the system prompt, AND spawns with `--session <project-local-path>` so
+  the session is persisted.
+- **Revisit:** the node-runner checks `fs.existsSync(sessionFile)`. The file
+  exists, so it passes NO forkContext — pi resumes the existing transcript and
+  the agent walks in with its full working process (files, tool calls,
+  reasoning, prior conclusions). The new turn arrives as a fresh message in
+  the ongoing conversation.
+- **Session file location** (unchanged): project-local, keyed by `(runId, nodeId)`,
+  e.g. `.pi-workflow/sessions/<runId>/<nodeId>.jsonl`.
   e.g. `.pi-workflow/sessions/<runId>/<nodeId>.jsonl`. Honors the constraint
   that subagent artifacts never touch `~/.pi/agent/sessions/`.
 - **Non-agent nodes** (`human()`, `mainAgent()`): unaffected — they use
@@ -693,9 +693,7 @@ discussion, two are resolved and one remains:
    resume model keep working unchanged.
 
 **Revised recommendation:**
-- The pi session model (Decision 1) should be shipped **independently** — it
-  improves the current architecture's cycle support without any parallel
-  work. This is the highest-value, lowest-risk change.
+- **Decision 1 (pi session persistence) is already shipped**; see above.
 - For static parallel branches, Option B remains simpler (one new node type,
   no executor rewrite). Option A's only static-case advantage is independent
   per-branch routing.
