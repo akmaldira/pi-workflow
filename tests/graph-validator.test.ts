@@ -249,7 +249,7 @@ describe("buildGraphFromScript", () => {
 
 			expect([...graph.nodes.keys()]).toEqual(["a"]);
 			expect(graph.entry).toBe("a");
-			expect(graph.edges.get("a")).toMatchObject({ type: "direct", to: END });
+			expect(graph.edges.get("a")?.[0]).toMatchObject({ type: "direct", to: END });
 		});
 
 		it("passes args into the script", () => {
@@ -281,7 +281,7 @@ g.run({ task: args.task });
 			const { graph } = buildGraphFromScript(script(body), { args: { task: "auth" } });
 
 			expect([...graph.nodes.keys()]).toEqual(["architect", "green", "review"]);
-			expect(graph.edges.get("green")?.type).toBe("conditional");
+			expect(graph.edges.get("green")?.[0]?.type).toBe("conditional");
 		});
 
 		it("produces edge conditions that route on agent results", () => {
@@ -294,7 +294,7 @@ g.edge("architect", "green");
 g.run();
 `;
 			const { graph } = buildGraphFromScript(script(body));
-			const edge = graph.edges.get("green");
+			const edge = graph.edges.get("green")?.[0];
 			if (edge?.type !== "conditional") throw new Error("expected a conditional edge");
 
 			// The condition is real, task-specific logic — this is the reason

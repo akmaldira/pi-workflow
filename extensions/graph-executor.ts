@@ -26,6 +26,8 @@ export type NodeStatus = "ok" | "failed" | "skipped";
 export interface NodeExecution {
 	/** 1-based position in the walk. A node visited twice appears twice. */
 	step: number;
+	/** Superstep index (round) when this node ran. Undefined for linear runs. */
+	round?: number;
 	nodeId: string;
 	nodeType: NodeDef["type"];
 	/** Agent name for agent nodes; undefined otherwise. */
@@ -114,7 +116,7 @@ export interface GraphRunOptions {
 export const DEFAULT_MAX_ITERATIONS = 25;
 
 /** Reserved state keys the executor writes; node ids may not collide. */
-const RESERVED_STATE_KEYS = new Set(["__error", "__lastNode", "__step"]);
+export const RESERVED_STATE_KEYS = new Set(["__error", "__lastNode", "__step"]);
 
 export class GraphExecutionError extends Error {
 	constructor(message: string) {
@@ -123,7 +125,7 @@ export class GraphExecutionError extends Error {
 	}
 }
 
-function describeTarget(target: string | EndSymbol): string {
+export function describeTarget(target: string | EndSymbol): string {
 	return target === END ? "END" : String(target);
 }
 
@@ -190,6 +192,15 @@ export async function runGraph(
 	const maxIterations = options.maxIterations ?? DEFAULT_MAX_ITERATIONS;
 	if (!Number.isInteger(maxIterations) || maxIterations < 1) {
 		throw new GraphExecutionError("maxIterations must be a positive integer");
+	}
+
+	// The linear executor walks one node at a time following a single edge per
+	// node. A graph with fan-out (any node has >1 outgoing edge) must run via
+	// the superstep executor, which handles concurrent rounds and fan-in.
+	if (graph.mode === "superstep") {
+		throw new GraphExecutionError(
+			"This graph uses parallel (fan-out) execution and must run via runSuperstepGraph(), not the linear executor.",
+		);
 	}
 
 	for (const nodeId of graph.nodes.keys()) {
@@ -316,7 +327,7 @@ export async function runGraph(
 			);
 		}
 
-		const routed = resolveEdge(graph.edges.get(nodeId), nodeId, state, outcome.result, graph);
+		const routed = resolveEdge(graph.edges.get(nodeId)?.[0], nodeId, state, outcome.result, graph);
 
 		if ("error" in routed) {
 			const execution: NodeExecution = {

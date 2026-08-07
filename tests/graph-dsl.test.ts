@@ -119,6 +119,8 @@ describe("GraphBuilder", () => {
 
 			expect([...built.nodes.keys()]).toEqual(["a", "b"]);
 			expect(built.entry).toBe("a");
+			// Every node has exactly one outgoing edge → linear execution mode.
+			expect(built.mode).toBe("linear");
 		});
 
 		it("rejects a duplicate node id", () => {
@@ -158,8 +160,8 @@ describe("GraphBuilder", () => {
 		it("records direct edges and END edges", () => {
 			const built = linearGraph().build();
 
-			expect(built.edges.get("a")).toMatchObject({ type: "direct", to: "b" });
-			expect(built.edges.get("b")).toMatchObject({ type: "direct", to: END });
+			expect(built.edges.get("a")?.[0]).toMatchObject({ type: "direct", to: "b" });
+			expect(built.edges.get("b")?.[0]).toMatchObject({ type: "direct", to: END });
 		});
 
 		it("records a conditional edge without calling it", () => {
@@ -172,19 +174,28 @@ describe("GraphBuilder", () => {
 			});
 			g.run();
 
-			const edge = g.build().edges.get("a");
+			const edge = g.build().edges.get("a")?.[0];
 			expect(edge?.type).toBe("conditional");
 			// Conditions belong to the executor; building must not evaluate them.
 			expect(called).toBe(false);
 		});
 
-		it("rejects a second edge from the same node", () => {
+		it("appends a second edge from the same node as fan-out (superstep mode)", () => {
 			const g = new GraphBuilder();
 			g.node("a", agent("planner", () => "a"));
 			g.node("b", agent("green", () => "b"));
+			g.node("c", agent("red", () => "c"));
 			g.edge("a", "b");
+			g.edge("a", "c");
+			g.edge("b", END);
+			g.edge("c", END);
+			g.run();
 
-			expect(() => g.edge("a", END)).toThrow(/already has an outgoing edge/);
+			const built = g.build();
+			expect(built.edges.get("a")).toHaveLength(2);
+			expect(built.edges.get("a")?.[0]).toMatchObject({ type: "direct", to: "b" });
+			expect(built.edges.get("a")?.[1]).toMatchObject({ type: "direct", to: "c" });
+			expect(built.mode).toBe("superstep");
 		});
 	});
 

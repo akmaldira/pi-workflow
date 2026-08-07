@@ -217,7 +217,7 @@ g.run({ task: args.task });
 		expect([...graph.nodes.keys()]).toEqual(["architect", "green", "review", "approve"]);
 		expect(graph.initialState).toEqual({ task: "add auth" });
 
-		const edge = graph.edges.get("green");
+		const edge = graph.edges.get("green")?.[0];
 		if (edge?.type !== "conditional") throw new Error("expected a conditional edge");
 		expect(edge.condition({}, { status: "blocked", blockedOn: "contract" })).toBe("architect");
 		expect(edge.condition({}, { status: "ok" })).toBe("review");

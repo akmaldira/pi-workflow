@@ -73,7 +73,10 @@ export type Edge =
 
 export interface BuiltGraph {
 	nodes: Map<string, GraphNode>;
-	edges: Map<string, Edge>;
+	/** Outgoing edges per source node. An array: a node with >1 edge fans out. */
+	edges: Map<string, Edge[]>;
+	/** "superstep" when any node has >1 outgoing edge (fan-out → parallel rounds). */
+	mode: "linear" | "superstep";
 	entry: string;
 	initialState: GraphState;
 }
@@ -164,7 +167,7 @@ export function human(prompt: string, options: HumanNodeOptions = {}): HumanNode
 
 export class GraphBuilder {
 	private readonly nodes = new Map<string, GraphNode>();
-	private readonly edges = new Map<string, Edge>();
+	private readonly edges = new Map<string, Edge[]>();
 	private entry: string | null = null;
 	private initialState: GraphState = {};
 	private started = false;
@@ -190,24 +193,22 @@ export class GraphBuilder {
 	edge(from: string, target: string | EndSymbol | EdgeConditionFn): this {
 		assertValidNodeId(from);
 
-		if (this.edges.has(from)) {
-			throw new GraphDefinitionError(
-				`Node "${from}" already has an outgoing edge. A node has at most one edge; use a conditional edge to branch.`,
-			);
-		}
-
+		let edge: Edge;
 		if (typeof target === "function") {
-			this.edges.set(from, { type: "conditional", from, condition: target });
-			return this;
+			edge = { type: "conditional", from, condition: target };
+		} else if (target === END) {
+			edge = { type: "direct", from, to: END };
+		} else {
+			assertValidNodeId(target);
+			edge = { type: "direct", from, to: target };
 		}
 
-		if (target === END) {
-			this.edges.set(from, { type: "direct", from, to: END });
-			return this;
-		}
-
-		assertValidNodeId(target);
-		this.edges.set(from, { type: "direct", from, to: target });
+		// Multiple outgoing edges from one node is fan-out, which triggers
+		// superstep (parallel) execution. Append rather than reject: a graph
+		// with any fan-out node runs via the superstep executor.
+		const list = this.edges.get(from);
+		if (list) list.push(edge);
+		else this.edges.set(from, [edge]);
 		return this;
 	}
 
@@ -260,12 +261,14 @@ export class GraphBuilder {
 			errors.push(`Entry node "${this.entry}" is not defined.`);
 		}
 
-		for (const [from, edge] of this.edges) {
+		for (const [from, edgeList] of this.edges) {
 			if (!this.nodes.has(from)) {
 				errors.push(`Edge is defined from unknown node "${from}".`);
 			}
-			if (edge.type === "direct" && edge.to !== END && !this.nodes.has(edge.to)) {
-				errors.push(`Edge "${from}" -> ${describeTarget(edge.to)} points at an undefined node.`);
+			for (const edge of edgeList) {
+				if (edge.type === "direct" && edge.to !== END && !this.nodes.has(edge.to)) {
+					errors.push(`Edge "${from}" -> ${describeTarget(edge.to)} points at an undefined node.`);
+				}
 			}
 		}
 
@@ -282,7 +285,8 @@ export class GraphBuilder {
 		// the condition, and guessing would reject valid graphs. The executor's
 		// iteration cap is the backstop for a graph that never terminates.
 		if (errors.length === 0 && this.entry !== null) {
-			const conditionals = [...this.edges.values()].filter((e) => e.type === "conditional");
+			const allEdges = [...this.edges.values()].flat();
+			const conditionals = allEdges.filter((e) => e.type === "conditional");
 			if (conditionals.length === 0) {
 				if (!this.canReachEnd(this.entry)) {
 					errors.push(
@@ -309,11 +313,13 @@ export class GraphBuilder {
 			if (seen.has(current)) continue;
 			seen.add(current);
 
-			const edge = this.edges.get(current);
-			if (!edge) continue;
-			if (edge.type === "conditional") return true;
-			if (edge.to === END) return true;
-			stack.push(edge.to as string);
+			const edgeList = this.edges.get(current);
+			if (!edgeList) continue;
+			for (const edge of edgeList) {
+				if (edge.type === "conditional") return true;
+				if (edge.to === END) return true;
+				stack.push(edge.to as string);
+			}
 		}
 
 		return false;
@@ -330,11 +336,14 @@ export class GraphBuilder {
 			if (seen.has(current)) continue;
 			seen.add(current);
 
-			const edge = this.edges.get(current);
-			if (!edge || edge.type === "conditional") continue;
-			if (edge.to === END) continue;
-			if (edge.to === target) return true;
-			stack.push(edge.to as string);
+			const edgeList = this.edges.get(current);
+			if (!edgeList) continue;
+			for (const edge of edgeList) {
+				if (edge.type === "conditional") continue;
+				if (edge.to === END) continue;
+				if (edge.to === target) return true;
+				stack.push(edge.to as string);
+			}
 		}
 
 		return false;
@@ -346,12 +355,26 @@ export class GraphBuilder {
 			throw new GraphDefinitionError(`Invalid graph:\n${errors.map((e) => `  - ${e}`).join("\n")}`);
 		}
 
+		// Copy edge arrays so the returned graph cannot be mutated through the
+		// builder afterwards.
+		const edges = new Map<string, Edge[]>();
+		for (const [from, list] of this.edges) edges.set(from, [...list]);
+
 		return {
 			nodes: new Map(this.nodes),
-			edges: new Map(this.edges),
+			edges,
+			mode: this.computeMode(),
 			entry: this.entry!,
 			initialState: { ...this.initialState },
 		};
+	}
+
+	/** Superstep when any node fans out (>1 outgoing edge); linear otherwise. */
+	private computeMode(): "linear" | "superstep" {
+		for (const edgeList of this.edges.values()) {
+			if (edgeList.length > 1) return "superstep";
+		}
+		return "linear";
 	}
 }
 
