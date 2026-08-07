@@ -152,14 +152,30 @@ function computeStaticClaims(graph: BuiltGraph): Map<string, number> {
 	for (const [from, edgeList] of graph.edges) {
 		for (const edge of edgeList) {
 			if (edge.type === "direct") {
-				if (edge.to !== END) add(edge.to as string);
+				// A back-edge does not gate the target's first run: its source
+				// sits downstream, so it can only re-enter the target in a later
+				// wave, which the wave reset handles. Claiming here would
+				// deadlock, since the claim is released only by a node that is
+				// itself waiting on the target.
+				if (edge.to !== END && !isDownstreamOf(graph, from, edge.to as string)) {
+					add(edge.to as string);
+				}
 				continue;
 			}
 
-			// A conditional edge claims every node it could select. Its actual
-			// choice is not known until it runs, and a node must not be treated
-			// as settled while an edge might still route to it.
-			for (const target of conditionalTargetsOf(graph, from)) add(target);
+			// A conditional edge claims every node it could select, because its
+			// actual choice is not known until it runs and a node must not be
+			// treated as settled while an edge might still route to it.
+			//
+			// Except a back-edge: if the edge's source sits downstream of the
+			// target, it cannot fire before the target runs — only re-enter it
+			// in a later wave, which the wave reset handles. Claiming there
+			// would deadlock, since the claim is released only by a node that
+			// is itself waiting on the target.
+			for (const target of conditionalTargetsOf(graph, from)) {
+				if (isDownstreamOf(graph, from, target)) continue;
+				add(target);
+			}
 		}
 	}
 
@@ -175,6 +191,14 @@ function computeStaticClaims(graph: BuiltGraph): Map<string, number> {
  * edge decrements exactly the set it claimed; under-claiming would let a node
  * run without being routed to, which is the failure this exists to prevent.
  */
+/** True when `node` is reachable from `origin`, i.e. `node` runs after it. */
+function isDownstreamOf(graph: BuiltGraph, node: string, origin: string): boolean {
+	return forwardReach.get(graph)?.get(origin)?.has(node) ?? false;
+}
+
+/** Forward reachability, shared by the claim rules. Keyed weakly per graph. */
+const forwardReach = new WeakMap<BuiltGraph, Map<string, Set<string>>>();
+
 function conditionalTargetsOf(graph: BuiltGraph, from: string): string[] {
 	const info = graph.conditionalTargets?.get(from);
 	if (info?.analysable) return info.targets;
@@ -211,6 +235,7 @@ function primeFallbackReach(
 	}
 
 	fallbackReach.set(graph, map);
+	forwardReach.set(graph, forwardReachable);
 }
 
 /**
@@ -233,9 +258,15 @@ function computeForwardReachable(graph: BuiltGraph): Map<string, Set<string>> {
 			if (reachable.has(current)) continue;
 			reachable.add(current);
 			for (const edge of graph.edges.get(current) ?? []) {
-				if (edge.type === "direct" && edge.to !== END) {
-					stack.push(edge.to as string);
+				if (edge.type === "direct") {
+					if (edge.to !== END) stack.push(edge.to as string);
+					continue;
 				}
+				// Conditional targets are recovered from the script's AST, so a
+				// conditional edge contributes to reachability too. Ignoring them
+				// would hide back-edges and let a cycle deadlock the claim rules.
+				const info = graph.conditionalTargets?.get(current);
+				if (info?.analysable) stack.push(...info.targets);
 			}
 		}
 		result.set(start, reachable);
@@ -359,11 +390,10 @@ function computeNextFrontier(
 		executed.delete(target);
 		selected.add(target);
 	}
-	if (resetNodes.has(entry)) {
-		// The entry node is always runnable.
-		remainingClaims.set(entry, 0);
-		selected.add(entry);
-	}
+	// The entry gets no special treatment on reset. Under the old in-degree
+	// rule it needed forcing because it had no claims to clear, but now the
+	// reset target is explicitly selected, and force-selecting the entry as
+	// well would run two nodes where the graph routed to one.
 
 	// 4. Release claims. Skip an edge whose SOURCE is in the reset subgraph:
 	//    that source will re-run, so its edge has not really resolved. Skip
