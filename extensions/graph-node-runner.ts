@@ -16,7 +16,13 @@ import { discoverAgents } from "./agents.ts";
 import { classifySingleResultFailure } from "./failure-classifier.ts";
 import type { GraphNode, GraphState } from "./graph-dsl.ts";
 import type { NodeRunOutcome, NodeRunner } from "./graph-executor.ts";
-import type { ArtifactConfig, ForkContextOptions, SingleResult } from "./types.ts";
+import {
+	type ArtifactConfig,
+	type ForkContextOptions,
+	type SingleResult,
+	resolveChildMaxSubagentDepth,
+	resolveCurrentMaxSubagentDepth,
+} from "./types.ts";
 import { getFinalOutput } from "./utils.ts";
 
 /**
@@ -393,6 +399,10 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 				turnBudget: resolved.agent.turnBudget,
 				toolBudget: resolved.agent.toolBudget,
 				timeoutMs: resolved.agent.timeoutMs,
+				maxSubagentDepth: resolveChildMaxSubagentDepth(
+					resolveCurrentMaxSubagentDepth(),
+					resolved.agent.maxSubagentDepth,
+				),
 			});
 		} catch (error) {
 			return {

@@ -31,7 +31,9 @@ import {
 	type ResolvedAcceptanceConfig,
 	type RunSyncOptions,
 	truncateOutput,
+	checkSubagentDepth,
 	getSubagentDepthEnv,
+	resolveChildMaxSubagentDepth,
 } from "./types.ts";
 import {
 	DEFAULT_CONTROL_CONFIG,
@@ -562,6 +564,30 @@ export async function runSingleAgent(
 	task: string,
 	options: RunSyncOptions,
 ): Promise<SingleResult> {
+	// PI_SUBAGENT_DEPTH tracks how many subagent layers deep the *current*
+	// process already is; checked before spawning another layer so a chain
+	// of subagents delegating to more subagents cannot recurse unbounded.
+	// options.maxSubagentDepth is this call's own ceiling (usually the
+	// parent's, tightened by the calling agent's maxSubagentDepth frontmatter
+	// — see resolveChildMaxSubagentDepth() at each spawn site); depth itself
+	// always comes from the environment the current process was launched
+	// with, not from options, since a process cannot lie about its own depth.
+	const depthCheck = checkSubagentDepth(options.maxSubagentDepth);
+	if (depthCheck.blocked) {
+		return {
+			agent: agent.name,
+			task,
+			exitCode: 1,
+			messages: [],
+			usage: emptyUsage(),
+			stopReason: "error",
+			error:
+				`Nested subagent call blocked (depth=${depthCheck.depth}, max=${depthCheck.maxDepth}). ` +
+				"This process is already at the maximum subagent nesting depth. " +
+				"Complete the current task directly instead of delegating further.",
+		};
+	}
+
 	const modelCandidates = buildModelCandidates(
 		agent.model,
 		agent.fallbackModels,

@@ -18,7 +18,13 @@ import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { buildAgentCatalogGuideline, createListAgentsTool } from "./agent-catalog.ts";
 import { createGraphWorkflowTool } from "./graph-tool.ts";
 import { runSingleAgent } from "./execution.ts";
-import type { SingleResult, ForkContextOptions, AgentHistoryEntry } from "./types.ts";
+import {
+	type SingleResult,
+	type ForkContextOptions,
+	type AgentHistoryEntry,
+	resolveChildMaxSubagentDepth,
+	resolveCurrentMaxSubagentDepth,
+} from "./types.ts";
 import { listSavedWorkflows, deleteSavedWorkflow } from "./workflow-library.ts";
 import { getFinalOutput } from "./utils.ts";
 import { TechnicalFailureError, type FailureClassification } from "./failure-classifier.ts";
@@ -316,6 +322,10 @@ export default function (pi: ExtensionAPI) {
 			const forkContext: ForkContextOptions | undefined = ctx.model
 				? { sessionManager: ctx.sessionManager, modelRegistry: ctx.modelRegistry, fallbackModel: ctx.model }
 				: undefined;
+			// This process's own ceiling, so a delegating agent's maxSubagentDepth
+			// frontmatter can only ever tighten it for its own children, never
+			// loosen it past what this process was itself launched with.
+			const currentMaxSubagentDepth = resolveCurrentMaxSubagentDepth();
 
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
 			const hasSingle = Boolean(params.agent && params.task);
@@ -405,6 +415,7 @@ export default function (pi: ExtensionAPI) {
 								parentSessionId: ctx.sessionManager.getSessionId(),
 								context: t.context,
 								forkContext,
+								maxSubagentDepth: resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agent.maxSubagentDepth),
 							},
 						);
 					},
@@ -451,6 +462,7 @@ export default function (pi: ExtensionAPI) {
 						parentSessionId: ctx.sessionManager.getSessionId(),
 						context: params.context,
 						forkContext,
+						maxSubagentDepth: resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agent.maxSubagentDepth),
 					},
 				);
 				const isError = isFailedResult(result);
