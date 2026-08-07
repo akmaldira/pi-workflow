@@ -168,11 +168,16 @@ synchronization-barrier depth, which is the real signal for a stuck cycle. A
 round running 5 concurrent nodes doesn't burn 5× of the cap for making
 forward progress.
 
-**Open detail (display):** `iterations` today doubles as a "how much work"
-number in the user message ("completed in N steps"). If a round runs 5
-nodes and counts as 1, that meaning is lost. Proposal: keep `iterations`
-(rounds) as the safety cap and add a separate `nodeExecutions` counter for
-work-amount display/budget. Decision pending final confirmation.
+**Two counters (confirmed).** `iterations` today doubles as a "how much
+work" number in the user message ("completed in N steps"). If a round runs
+5 nodes and counts as 1, that meaning is lost. **Decision: two counters.**
+Keep `iterations` (rounds) as the safety cap, and add a separate
+`nodeExecutions` counter for work-amount display and budget tracking. In the
+linear executor the two numbers were always equal (one node per step); the
+superstep model splits them because a round can run N nodes. The cost is one
+extra integer (`nodeExecutions += outcomes.length` per round) and one extra
+field on `graph_result` — trivial, and it keeps the user-facing number
+honest ("completed in 5 node executions across 1 round").
 
 ### Decision 6: AND fan-in readiness rule with wave reset (Model 2)
 
@@ -359,11 +364,13 @@ the wave-reset mechanic:
 may route to multiple targets (fan-out) or one (conditional pick). The return
 type changes from one target to a *set* of fired targets.
 
-**`maxIterations` counts rounds (Decision 5).** Each round increments the
-counter once regardless of concurrency. The cap measures synchronization
-barrier depth — the real signal for a stuck cycle. A separate
-`nodeExecutions` counter tracks total work for display/budget (pending final
-confirmation on the one-vs-two-counter question).
+**`maxIterations` counts rounds (Decision 5); two counters confirmed.** Each
+round increments `iterations` once regardless of concurrency — the cap
+measures synchronization barrier depth, the real signal for a stuck cycle. A
+separate `nodeExecutions` counter tracks total work (nodes run) for
+display/budget: `nodeExecutions += outcomes.length` per round. The
+`graph_result` record carries both: `iterations` (rounds, for the cap) and
+`nodeExecutions` (work amount, for the user message).
 
 **Cycle detection.** A cycle today is "about to run a node we've already
 run." In the superstep model, cycle *detection* is largely subsumed by
@@ -579,7 +586,7 @@ implied.
 | Dynamic fan-out | impossible | impossible | possible (the point) |
 | Journal/resume | atomic step, replay works | flat-with-round + `round_complete` (replay in-degree too) | + dynamic branch journaling |
 | Pi session model | applies (independently shippable) | applies | applies |
-| `maxIterations` | counts nodes (unchanged) | counts rounds (+ `nodeExecutions` for display, pending) | counts rounds |
+| `maxIterations` / counters | one counter: nodes (unchanged) | two counters: `iterations` (rounds, cap) + `nodeExecutions` (work, display) | same |
 | Cycle detection | "revisiting a node" (simple) | subsumed by rounds cap + `graph_result` reports frontiers | same |
 | Sibling re-runs | n/a | wasteful on escalation (mitigated by sessions; deeper fix deferred) | same |
 | Worktree (write-capable) | Phase 2 (deferred) | same | can't sidestep |
