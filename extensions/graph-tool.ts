@@ -21,7 +21,12 @@ import {
 	GraphJournal,
 	graphScriptHash,
 	loadGraphResumeState,
+	loadGraphSuperstepResumeState,
 } from "./graph-journal.ts";
+import {
+	runSuperstepGraph,
+	type SuperstepResumeInput,
+} from "./graph-superstep-executor.ts";
 import { createNodeRunner, type InteractiveHandlers } from "./graph-node-runner.ts";
 import { createInteractiveHandlers } from "./graph-interactive.ts";
 import { GraphRunContext } from "./graph-run-context.ts";
@@ -49,7 +54,7 @@ const GraphToolParams = Type.Object({
 	),
 	maxIterations: Type.Optional(
 		Type.Number({
-			description: `Cap on node executions before the run stops. Default ${DEFAULT_MAX_ITERATIONS}. Raise it for graphs with legitimate long loops.`,
+			description: `Cap before the run stops. Default ${DEFAULT_MAX_ITERATIONS}. Counts node executions in a linear graph, and rounds (parallel waves) in a graph with fan-out. Raise it for graphs with legitimate long loops.`,
 		}),
 	),
 	tokenBudget: Type.Optional(
@@ -172,7 +177,8 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 			"For workflow, write the script as one raw JavaScript string with no Markdown fences or surrounding prose.",
 			"For workflow, the first statement must be `export const meta = { name: 'short_snake_case', description: 'what this graph does' }`.",
 			"For workflow, available globals are graph, agent, mainAgent, human, END, args, and JSON. There is no fs, process, require, import, fetch, Date, or Math.random — a graph describes routing only.",
-			"For workflow, define every node before routing it, give each node exactly one outgoing edge, and make sure some path reaches END.",
+			"For workflow, define every node before routing it and make sure some path reaches END. A node normally has one outgoing edge; give it several to fan out and run those branches in parallel.",
+			"For workflow, parallel branches run concurrently in rounds. A node with several incoming edges waits for ALL of them before running, so it never sees partial work. Each branch's result lands under its own node id, so give branches distinct ids rather than writing shared state keys.",
 			"For workflow, a node's prompt function receives the accumulated state, where each previous node's result is stored under its node id: agent('green', (s) => `Implement:\\n${s.architect}`).",
 			"For workflow, use a conditional edge when the next step depends on what an agent produced: g.edge('green', (state, result) => result.status === 'blocked' ? 'architect' : 'reviewer').",
 			"For workflow, agent results carry { status, text, blockedOn, reason } — status is 'blocked' when the agent escalated. Interpolating a result into a prompt yields its text.",
@@ -220,13 +226,52 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 			}
 
 			const { meta, graph } = built;
+			// A graph with any fan-out node runs in parallel rounds; everything
+			// else keeps the linear walk. The two executors have incompatible
+			// iteration semantics (rounds vs steps), so the choice is made once
+			// here and threaded through resume, journaling, and reporting.
+			const isSuperstep = graph.mode === "superstep";
 			const nodeIds = [...graph.nodes.keys()];
 			const runId = params.resumeRunId ?? `graph-${Date.now()}`;
 			const journalDir = `${cwd}/.pi-workflow/runs`;
 
 			// Resolve resume before doing any work, so a stale resume fails fast.
+			const alreadyComplete = {
+				content: [
+					{
+						type: "text" as const,
+						text: `Run "${params.resumeRunId}" already completed; there is nothing to resume.`,
+					},
+				],
+				details: { resumed: false, alreadyComplete: true },
+			};
+
 			let resume: Parameters<typeof runGraph>[1]["resume"];
-			if (params.resumeRunId) {
+			let superstepResume: SuperstepResumeInput | undefined;
+
+			if (params.resumeRunId && isSuperstep) {
+				// Superstep resume is round-atomic: it continues from the frontier
+				// snapshotted at the last completed barrier.
+				const resumeState = loadGraphSuperstepResumeState({
+					journalDir,
+					runId: params.resumeRunId,
+					scriptHash,
+				});
+
+				if (!resumeState.isValid) {
+					throw new Error(`Cannot resume: ${resumeState.invalidReason}`);
+				}
+				if (resumeState.frontier.length === 0) return alreadyComplete;
+
+				superstepResume = {
+					state: resumeState.state,
+					resumeFromFrontier: resumeState.frontier,
+					remainingInDegree: resumeState.remainingInDegree,
+					completedRounds: resumeState.completedRounds,
+					completedNodeExecutions: resumeState.completedNodeExecutions,
+					executedNodeIds: resumeState.executedNodeIds,
+				};
+			} else if (params.resumeRunId) {
 				const resumeState = loadGraphResumeState({
 					journalDir,
 					runId: params.resumeRunId,
@@ -236,18 +281,7 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 				if (!resumeState.isValid) {
 					throw new Error(`Cannot resume: ${resumeState.invalidReason}`);
 				}
-
-				if (resumeState.resumeFrom === null) {
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: `Run "${params.resumeRunId}" already completed; there is nothing to resume.`,
-							},
-						],
-						details: { resumed: false, alreadyComplete: true },
-					};
-				}
+				if (resumeState.resumeFrom === null) return alreadyComplete;
 
 				resume = {
 					state: resumeState.state,
@@ -302,47 +336,83 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 					}
 				: undefined;
 
+			// Shared by both executors: the node runner and per-node callbacks are
+			// identical, so only the walk itself differs.
+			const runNode = createNodeRunner({
+				cwd: context.cwd,
+				runId,
+				signal,
+				forkContext,
+				artifactsDir: context.artifactsDir,
+				artifactConfig: context.artifactConfig,
+				spawnAgent: spawnAgent as never,
+				// Built from ctx so human() actually asks and mainAgent()
+				// actually checkpoints. Both degrade to their defaults when
+				// the run has no UI.
+				handlers:
+					options.handlers ??
+					createInteractiveHandlers({
+						ctx,
+						onEvent: (message) => display?.log(message),
+					}),
+			});
+
+			const onNodeStart = (info: {
+				step: number;
+				nodeId: string;
+				nodeType: string;
+				round?: number;
+			}): void => {
+				const def = graph.nodes.get(info.nodeId)?.def;
+				display?.nodeStarted({
+					...info,
+					agentName: def?.type === "agent" ? def.agentName : undefined,
+				});
+				options.onNodeStart?.(info);
+			};
+
+			const onNodeComplete = (execution: NodeExecution): void => {
+				journal.recordNode(execution);
+				context.recordNode(execution);
+				display?.nodeCompleted(execution);
+				options.onNodeComplete?.(execution);
+			};
+
 			let result: GraphRunResult;
+			/** Node executions. Diverges from iterations only for superstep runs. */
+			let nodeExecutions: number;
 			try {
-				result = await runGraph(graph, {
-					runId,
-					signal,
-					maxIterations: params.maxIterations,
-					resume,
-					runNode: createNodeRunner({
-						cwd: context.cwd,
+				if (isSuperstep) {
+					const superstepResult = await runSuperstepGraph(graph, {
 						runId,
 						signal,
-						forkContext,
-						artifactsDir: context.artifactsDir,
-						artifactConfig: context.artifactConfig,
-						spawnAgent: spawnAgent as never,
-						// Built from ctx so human() actually asks and mainAgent()
-						// actually checkpoints. Both degrade to their defaults when
-						// the run has no UI.
-						handlers:
-							options.handlers ??
-							createInteractiveHandlers({
-								ctx,
-								onEvent: (message) => display?.log(message),
-							}),
-					}),
-					onNodeStart: (info) => {
-						display?.nodeStarted({
-							...info,
-							agentName: graph.nodes.get(info.nodeId)?.def.type === "agent"
-								? (graph.nodes.get(info.nodeId)?.def as { agentName: string }).agentName
-								: undefined,
-						});
-						options.onNodeStart?.(info);
-					},
-					onNodeComplete: (execution) => {
-						journal.recordNode(execution);
-						context.recordNode(execution);
-						display?.nodeCompleted(execution);
-						options.onNodeComplete?.(execution);
-					},
-				});
+						maxIterations: params.maxIterations,
+						resume: superstepResume,
+						runNode,
+						onNodeStart,
+						onNodeComplete,
+						onRoundComplete: (info) => {
+							// The barrier marker is what makes a crashed parallel run
+							// resumable: it records the frontier and readiness counters.
+							journal.recordRoundComplete(info);
+							display?.roundComplete(info);
+						},
+					});
+					nodeExecutions = superstepResult.nodeExecutions;
+					result = superstepResult;
+				} else {
+					result = await runGraph(graph, {
+						runId,
+						signal,
+						maxIterations: params.maxIterations,
+						resume,
+						runNode,
+						onNodeStart,
+						onNodeComplete,
+					});
+					// In a linear walk one step is one node execution.
+					nodeExecutions = result.iterations;
+				}
 			} finally {
 				context.cleanup();
 			}
@@ -350,6 +420,7 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 			journal.recordResult({
 				status: result.status,
 				iterations: result.iterations,
+				nodeExecutions: isSuperstep ? nodeExecutions : undefined,
 				durationMs: result.durationMs,
 				error: result.error,
 			});
@@ -370,11 +441,17 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 			const summary = context.summary();
 			const lines: string[] = [];
 
+			// A superstep run reports both counters: rounds measure how deep the
+			// coordination went, node executions measure how much work happened.
+			// Collapsing them would make a 5-node round read as a single step.
+			const completedSummary = isSuperstep
+				? `${nodeExecutions} node execution${nodeExecutions === 1 ? "" : "s"} across ${result.iterations} round${result.iterations === 1 ? "" : "s"}`
+				: `${result.iterations} step${result.iterations === 1 ? "" : "s"}`;
 			const heading =
 				result.status === "completed"
-					? `Graph "${meta.name}" completed in ${result.iterations} step${result.iterations === 1 ? "" : "s"}.`
+					? `Graph "${meta.name}" completed in ${completedSummary}.`
 					: result.status === "max_iterations"
-						? `Graph "${meta.name}" stopped at the iteration cap.`
+						? `Graph "${meta.name}" stopped at the ${isSuperstep ? "round" : "iteration"} cap.`
 						: `Graph "${meta.name}" aborted.`;
 			lines.push(heading);
 
@@ -424,7 +501,9 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 					runId,
 					name: meta.name,
 					status: result.status,
+					mode: graph.mode,
 					iterations: result.iterations,
+					nodeExecutions,
 					path: result.path,
 					durationMs: result.durationMs,
 					budget: summary.budget,

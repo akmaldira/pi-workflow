@@ -49,6 +49,11 @@ export interface GraphJournalNodeRecord {
 	type: "node";
 	/** 1-based execution order. A revisited node appears once per visit. */
 	step: number;
+	/**
+	 * Superstep index. Nodes that ran concurrently share a round; this is how
+	 * a parallel run is readable from a flat JSONL file. Absent for linear runs.
+	 */
+	round?: number;
 	nodeId: string;
 	nodeType: "agent" | "mainAgent" | "human";
 	agentName?: string;
@@ -61,10 +66,38 @@ export interface GraphJournalNodeRecord {
 	durationMs: number;
 }
 
+/**
+ * Marks a completed superstep barrier.
+ *
+ * This is the resume atomicity marker: a round whose nodes were written but
+ * whose marker is missing did not finish, so resume re-runs the whole round.
+ * It is the parallel equivalent of the linear journal's "re-run a whole node,
+ * never resume mid-agent" honesty, lifted one level.
+ */
+export interface GraphJournalRoundRecord {
+	type: "round_complete";
+	round: number;
+	/** Nodes that ran in this round (concurrently). */
+	nodeIds: string[];
+	/** Nodes ready to run next. Empty when the run is finishing. */
+	nextFrontier: string[];
+	/**
+	 * Remaining in-degree per node after this round.
+	 *
+	 * Stored rather than re-derived: wave resets make the counters a function
+	 * of the whole routing history, and replaying that is both fiddly and easy
+	 * to get subtly wrong. Snapshotting it makes resume exact.
+	 */
+	remainingInDegree: Record<string, number>;
+}
+
 export interface GraphJournalResultRecord {
 	type: "graph_result";
 	status: "completed" | "aborted" | "max_iterations";
+	/** Rounds for a superstep run; node executions for a linear one. */
 	iterations: number;
+	/** Total node executions. Present for superstep runs. */
+	nodeExecutions?: number;
 	totalTokens: number;
 	durationMs: number;
 	error?: string;
@@ -73,6 +106,7 @@ export interface GraphJournalResultRecord {
 export type GraphJournalRecord =
 	| GraphJournalRunRecord
 	| GraphJournalNodeRecord
+	| GraphJournalRoundRecord
 	| GraphJournalResultRecord;
 
 export interface GraphResumeState {
@@ -170,6 +204,7 @@ export class GraphJournal {
 		this.append({
 			type: "node",
 			step: execution.step,
+			round: execution.round,
 			nodeId: execution.nodeId,
 			nodeType: execution.nodeType,
 			agentName: execution.agentName,
@@ -183,9 +218,26 @@ export class GraphJournal {
 		});
 	}
 
+	/** Records a completed superstep barrier. See GraphJournalRoundRecord. */
+	recordRoundComplete(info: {
+		round: number;
+		nodeIds: string[];
+		nextFrontier: string[];
+		remainingInDegree: Record<string, number>;
+	}): void {
+		this.append({
+			type: "round_complete",
+			round: info.round,
+			nodeIds: info.nodeIds,
+			nextFrontier: info.nextFrontier,
+			remainingInDegree: info.remainingInDegree,
+		});
+	}
+
 	recordResult(result: {
 		status: "completed" | "aborted" | "max_iterations";
 		iterations: number;
+		nodeExecutions?: number;
 		durationMs: number;
 		error?: string;
 	}): void {
@@ -193,6 +245,7 @@ export class GraphJournal {
 			type: "graph_result",
 			status: result.status,
 			iterations: result.iterations,
+			nodeExecutions: result.nodeExecutions,
 			totalTokens: this.totalTokens,
 			durationMs: result.durationMs,
 			error: result.error,
@@ -308,6 +361,113 @@ export function loadGraphResumeState(options: {
 		state,
 		resumeFrom,
 		completedSteps: executions.length,
+		isValid: true,
+	};
+}
+
+export interface GraphSuperstepResumeState {
+	/** Node executions from completed rounds only, in order. */
+	executions: GraphJournalNodeRecord[];
+	/** State rebuilt by replaying those executions over the initial state. */
+	state: GraphState;
+	/** Nodes ready to run next. Empty when the run already finished. */
+	frontier: string[];
+	/** Remaining in-degree snapshot to continue readiness tracking from. */
+	remainingInDegree: Record<string, number>;
+	/** Rounds already completed, so the round cap stays meaningful. */
+	completedRounds: number;
+	/** Node executions already done (work-amount counter). */
+	completedNodeExecutions: number;
+	/** Distinct nodes that ran in completed rounds; restores readiness state. */
+	executedNodeIds: string[];
+	isValid: boolean;
+	invalidReason?: string;
+}
+
+/**
+ * Rebuilds state and the resume frontier for a previous superstep run.
+ *
+ * Resume is round-atomic: only rounds with a `round_complete` marker count.
+ * A round whose nodes were journaled but whose marker is missing did not
+ * finish, so its results are discarded and the whole round re-runs. This is
+ * the same honesty as the linear journal's "never resume mid-node", applied
+ * one level up, and it is why the frontier can be trusted after a crash.
+ */
+export function loadGraphSuperstepResumeState(options: {
+	journalDir: string;
+	runId: string;
+	scriptHash: string;
+}): GraphSuperstepResumeState {
+	const empty: GraphSuperstepResumeState = {
+		executions: [],
+		state: {},
+		frontier: [],
+		remainingInDegree: {},
+		completedRounds: 0,
+		completedNodeExecutions: 0,
+		executedNodeIds: [],
+		isValid: false,
+	};
+
+	const records = readGraphJournal(journalPath(options.journalDir, options.runId));
+	if (records.length === 0) {
+		return { ...empty, invalidReason: `No journal found for run "${options.runId}".` };
+	}
+
+	const meta = records.find((r): r is GraphJournalRunRecord => r.type === "graph_run");
+	if (!meta) {
+		return { ...empty, invalidReason: "Journal is missing its run header." };
+	}
+
+	if (meta.scriptHash !== options.scriptHash) {
+		return {
+			...empty,
+			invalidReason:
+				"The graph script changed since this run was journaled, so previous results cannot be reused. Start a new run.",
+		};
+	}
+
+	const rounds = records.filter((r): r is GraphJournalRoundRecord => r.type === "round_complete");
+	const lastRound = rounds[rounds.length - 1];
+
+	// Only replay nodes from rounds that actually completed. A node from a
+	// half-finished round is dropped so the round re-runs as a unit.
+	const lastCompletedRound = lastRound?.round ?? 0;
+	const executions = records.filter(
+		(r): r is GraphJournalNodeRecord =>
+			r.type === "node" && (r.round ?? 0) <= lastCompletedRound,
+	);
+
+	const state: GraphState = { ...meta.initialState };
+	for (const execution of executions) {
+		state[execution.nodeId] = execution.result;
+	}
+
+	// Results came back through JSON.parse and lost the toString() that makes
+	// `${state.architect}` render the agent's text rather than [object Object].
+	rehydrateState(state);
+
+	const finished = records.find((r): r is GraphJournalResultRecord => r.type === "graph_result");
+
+	// A completed run has nothing to resume. Otherwise continue from the last
+	// barrier's frontier, or from the entry when no round ever completed.
+	let frontier: string[];
+	if (finished?.status === "completed") {
+		frontier = [];
+	} else if (!lastRound) {
+		frontier = [meta.entry];
+	} else {
+		frontier = lastRound.nextFrontier;
+	}
+
+	return {
+		executions,
+		state,
+		frontier,
+		remainingInDegree: lastRound?.remainingInDegree ?? {},
+		completedRounds: lastCompletedRound,
+		completedNodeExecutions: executions.length,
+		executedNodeIds: [...new Set(executions.map((e) => e.nodeId))],
 		isValid: true,
 	};
 }

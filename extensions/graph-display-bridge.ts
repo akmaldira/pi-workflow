@@ -14,9 +14,31 @@
  * inventing one would misrepresent a cyclic walk as a pipeline.
  */
 
+import type { GraphState } from "./graph-dsl.ts";
 import type { NodeExecution } from "./graph-executor.ts";
-import type { GraphRunResult } from "./graph-executor.ts";
 import type { WorkflowManager } from "./workflow-manager.ts";
+
+/**
+ * The subset of a run result the display needs.
+ *
+ * Both the linear (`GraphRunResult`) and superstep (`SuperstepRunResult`)
+ * executors satisfy this, so the bridge works with either without importing
+ * both result types.
+ */
+export interface CompletedRunView {
+	path: string[];
+	finalResult?: unknown;
+	error?: string;
+	// Declared so a full result object from either executor assigns cleanly.
+	// Unused by the display, which only needs path/finalResult/error.
+	status?: string;
+	state?: GraphState;
+	history?: NodeExecution[];
+	iterations?: number;
+	nodeExecutions?: number;
+	startedAt?: number;
+	durationMs?: number;
+}
 
 export interface GraphDisplayOptions {
 	manager: WorkflowManager;
@@ -118,11 +140,23 @@ export class GraphDisplayBridge {
 		}
 	}
 
-	nodeStarted(info: { step: number; nodeId: string; nodeType: string; agentName?: string }): void {
+	nodeStarted(info: {
+		step: number;
+		nodeId: string;
+		nodeType: string;
+		agentName?: string;
+		/** Superstep index. Present only for parallel (superstep) runs. */
+		round?: number;
+	}): void {
 		const id = this.nextAgentId++;
+		// Keyed by step, which stays unique per execution even when several
+		// nodes run concurrently, so parallel nodes never collide here.
 		this.activeIds.set(info.step, id);
 
-		const label = info.agentName ? `${info.nodeId} (${info.agentName})` : info.nodeId;
+		const base = info.agentName ? `${info.nodeId} (${info.agentName})` : info.nodeId;
+		// In a parallel run several agents are active at once, so the round is
+		// the only thing that shows which ones belong to the same wave.
+		const label = info.round === undefined ? base : `${base} [round ${info.round}]`;
 
 		try {
 			this.manager.markAgentStart(this.runId, 0, {
@@ -134,6 +168,19 @@ export class GraphDisplayBridge {
 		} catch {
 			// Ignore display failures.
 		}
+	}
+
+	/**
+	 * Reports a completed superstep barrier.
+	 *
+	 * A parallel run's shape is invisible from node events alone — this is what
+	 * shows which nodes ran together and what the run is waiting on next.
+	 */
+	roundComplete(info: { round: number; nodeIds: string[]; nextFrontier: string[] }): void {
+		const ran = info.nodeIds.join(", ");
+		const next =
+			info.nextFrontier.length > 0 ? info.nextFrontier.join(", ") : "(none — run finishing)";
+		this.log(`Round ${info.round} complete: ran ${ran} → next ${next}`);
 	}
 
 	nodeCompleted(execution: NodeExecution): void {
@@ -163,7 +210,11 @@ export class GraphDisplayBridge {
 		}
 	}
 
-	runCompleted(result: GraphRunResult): void {
+	/**
+	 * Accepts either executor's result: only the fields common to both are
+	 * used, so the bridge does not care which executor produced the run.
+	 */
+	runCompleted(result: CompletedRunView): void {
 		try {
 			// The path is the single most useful line for a human scanning a
 			// finished run: it shows which agents ran and where work looped.

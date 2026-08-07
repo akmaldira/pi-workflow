@@ -80,6 +80,14 @@ export interface SuperstepResumeInput {
 	completedRounds: number;
 	/** Node executions already completed (work-amount counter). */
 	completedNodeExecutions: number;
+	/**
+	 * Nodes that already ran in completed rounds.
+	 *
+	 * Required, not derived from `history`: readiness is "in-degree 0 AND not
+	 * yet executed", so an empty executed set would make every settled node
+	 * look ready again and re-run the whole graph.
+	 */
+	executedNodeIds: string[];
 	/** Prior executions, prepended to history so the run reads as one walk. */
 	history?: NodeExecution[];
 }
@@ -349,7 +357,12 @@ export async function runSuperstepGraph(
 		frontier = new Set(resume.resumeFromFrontier);
 		iterations = resume.completedRounds;
 		nodeExecutions = resume.completedNodeExecutions;
-		for (const execution of history) executed.add(execution.nodeId);
+		// Restore which nodes are already settled. Without this every node whose
+		// in-degree reached 0 would be considered ready again.
+		for (const nodeId of resume.executedNodeIds) executed.add(nodeId);
+		// The frontier is explicitly the nodes to re-run, so they must not count
+		// as settled (a crashed round's nodes are journaled but not complete).
+		for (const nodeId of resume.resumeFromFrontier) executed.delete(nodeId);
 	} else {
 		for (const [k, v] of staticInDegree) remainingInDegree.set(k, v);
 		// The entry bypasses in-degree: it is unconditionally ready first.
