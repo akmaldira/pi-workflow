@@ -39,40 +39,6 @@ export interface ChildWatchdogStatusEvent {
 	reason?: string;
 }
 
-export interface ChildWatchdogStateSnapshot {
-	phase: ChildWatchdogPhase;
-	seq: number;
-	lastUpdate: number;
-	followUpPending: boolean;
-	reason?: string;
-	timedOut?: boolean;
-}
-
-export function resolveChildWatchdogConfig(input: {
-	config: { enabled?: boolean };
-	agent?: string;
-	runId?: string;
-	childIndex?: number;
-}): ChildWatchdogConfig | undefined {
-	if (!input.config.enabled) return undefined;
-	return {
-		enabled: true,
-		...(input.runId ? { runId: input.runId } : {}),
-		...(input.agent ? { agent: input.agent } : {}),
-		...(input.childIndex !== undefined ? { childIndex: input.childIndex } : {}),
-		watchdogTailTimeoutMs: 120_000,
-		agentEndTimeoutMs: 30_000,
-		maxWarnings: null,
-		autoFollowBlockers: false,
-		autoFollowMaxAttempts: null,
-		stalemateRepeats: 3,
-	};
-}
-
-export function encodeChildWatchdogConfig(config: ChildWatchdogConfig | undefined): string | undefined {
-	return config ? JSON.stringify(config) : undefined;
-}
-
 export function decodeChildWatchdogConfig(raw: string | undefined): ChildWatchdogConfig | undefined {
 	if (!raw) return undefined;
 	try {
@@ -82,38 +48,6 @@ export function decodeChildWatchdogConfig(raw: string | undefined): ChildWatchdo
 	} catch {
 		return undefined;
 	}
-}
-
-export function childWatchdogIsActive(snapshot?: ChildWatchdogStateSnapshot): boolean {
-	if (!snapshot) return false;
-	return snapshot.phase === "reviewing" || snapshot.phase === "autofollow" || snapshot.phase === "settling";
-}
-
-export function isChildWatchdogStatusEvent(value: unknown): value is ChildWatchdogStatusEvent {
-	if (!value || typeof value !== "object") return false;
-	const event = value as Partial<ChildWatchdogStatusEvent>;
-	return event.type === CHILD_WATCHDOG_STATUS_EVENT
-		&& typeof event.seq === "number"
-		&& typeof event.phase === "string"
-		&& (CHILD_WATCHDOG_PHASES as readonly string[]).includes(event.phase);
-}
-
-export function acceptChildWatchdogEvent(input: {
-	current?: ChildWatchdogStateSnapshot;
-	event: ChildWatchdogStatusEvent;
-	runId?: string;
-	agent?: string;
-	childIndex?: number;
-}): ChildWatchdogStateSnapshot | undefined {
-	const { event, current } = input;
-	if (current && event.seq <= current.seq) return undefined;
-	return {
-		phase: event.phase,
-		seq: event.seq,
-		lastUpdate: event.ts,
-		followUpPending: event.followUpPending,
-		...(event.reason ? { reason: event.reason } : {}),
-	};
 }
 
 /**

@@ -55,8 +55,6 @@ extensions/pi-args.ts              ← argument building for child pi processes
 extensions/structured-output.ts    ← structured result decoding (graph state updates)
 extensions/failure-classifier.ts   ← technical vs agent-level failure classification
 extensions/artifacts.ts            ← per-run artifact storage (contract.md, transcripts, etc.)
-extensions/journal.ts              ← JSONL journaling (adapted: journal per-node instead of per-agent-call)
-extensions/journal-types.ts        ← journal record types (extended with node records)
 extensions/acceptance.ts           ← acceptance levels (verification gates)
 extensions/task-intent.ts          ← task mutation classification
 extensions/completion-guard.ts     ← completion evaluation
@@ -82,7 +80,10 @@ extensions/graph-dsl.ts             ← graph(), node(), edge(), agent(), human(
 extensions/graph-validator.ts       ← acorn AST validation + structural graph validation
 extensions/graph-executor.ts        ← walks the graph, runs nodes, evaluates edges, manages state
 extensions/graph-tool.ts            ← the workflow tool definition (graph-based)
-extensions/graph-journal.ts         ← journaling adapted for graph node execution
+extensions/graph-journal.ts         ← journaling for graph node execution (the imperative engine's
+                                       journal.ts/journal-types.ts were fully superseded by this and
+                                       later removed; only the djb2-xor hashString() helper survived,
+                                       now defined directly in this file)
 extensions/graph-ui.ts              ← /workflows TUI navigator (rebuilt for graph runs)
 extensions/agent-catalog.ts         ← bundled agent discovery + catalog visibility (list_agents tool)
 bundled-agents/*.md                 ← pre-built agent definitions shipped with the package
@@ -473,7 +474,7 @@ function evaluateEdge(edge: Edge, state: State, result: unknown): string {
 
 ### Reused infrastructure (plugged into the executor)
 
-- **Journaling** (`journal.ts` adapted): each node execution journaled as a JSONL record. On
+- **Journaling** (`graph-journal.ts`): each node execution journaled as a JSONL record. On
   resume, completed nodes are skipped (result loaded from journal).
 - **Budget tracking**: tokens accumulated across all node executions. Warnings at 80%/100%.
 - **Artifacts** (`artifacts.ts`): each agent node's input/output/transcript stored per-run.
@@ -569,7 +570,7 @@ Two mechanisms, both pi-native (no Slack, no webhooks, no external services):
 
 ## 12. Persistence & resume
 
-The graph executor journals every node execution to a JSONL file (adapting `journal.ts`):
+The graph executor journals every node execution to a JSONL file (`graph-journal.ts`):
 
 ```jsonl
 {"type":"graph_run","runId":"...","scriptHash":"...","name":"tdd_feature","startedAt":...}

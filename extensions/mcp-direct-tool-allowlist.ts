@@ -122,7 +122,3 @@ function formatToolName(toolName: string, serverName: string, prefix: string): s
 	const serverPrefix = serverName.replace(/-/g, "_");
 	return serverPrefix ? `${serverPrefix}_${toolName}` : toolName;
 }
-
-export function resolveMcpDirectToolNames(mcpDirectTools: string[] | undefined, cwd = process.cwd()): string[] {
-	return resolveMcpDirectToolSelections(mcpDirectTools, cwd).map((selection) => selection.name);
-}

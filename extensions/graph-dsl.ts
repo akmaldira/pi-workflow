@@ -17,8 +17,6 @@
 export const END: unique symbol = Symbol("END");
 export type EndSymbol = typeof END;
 
-export type NodeType = "agent" | "mainAgent" | "human";
-
 /** State accumulated so far, keyed by node id. */
 export type GraphState = Record<string, unknown>;
 

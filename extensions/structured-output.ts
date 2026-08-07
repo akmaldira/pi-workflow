@@ -5,7 +5,6 @@
 
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
-import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { PI_CODING_AGENT_PACKAGE_ROOT_ENV } from "./pi-spawn.ts";
@@ -129,17 +128,6 @@ export function assertJsonSchemaObject(schema: unknown, label = "outputSchema"):
 	}
 }
 
-export function createStructuredOutputRuntime(schema: JsonSchemaObject, baseDir?: string): StructuredOutputRuntime {
-	assertJsonSchemaObject(schema);
-	const rootDir = baseDir ?? os.tmpdir();
-	fs.mkdirSync(rootDir, { recursive: true });
-	const dir = fs.mkdtempSync(path.join(rootDir, "pi-workflow-structured-"));
-	const schemaPath = path.join(dir, "schema.json");
-	const outputPath = path.join(dir, "output.json");
-	fs.writeFileSync(schemaPath, JSON.stringify(schema), { mode: 0o600 });
-	return { schema, schemaPath, outputPath };
-}
-
 export async function validateStructuredOutputValue(schema: JsonSchemaObject, value: unknown): Promise<{ status: "valid" } | { status: "invalid"; message: string }> {
 	const compile = await loadCompile();
 	let validator: CompiledJsonSchema;
@@ -175,13 +163,4 @@ export async function readStructuredOutput(runtime: StructuredOutputRuntime): Pr
 		return { error: `Failed to validate structured output: ${error instanceof Error ? error.message : String(error)}` };
 	}
 	return { value };
-}
-
-export function cleanupStructuredOutputRuntime(runtime: StructuredOutputRuntime | undefined): void {
-	if (!runtime) return;
-	try {
-		fs.rmSync(path.dirname(runtime.schemaPath), { recursive: true, force: true });
-	} catch {
-		// Best-effort temp cleanup.
-	}
 }

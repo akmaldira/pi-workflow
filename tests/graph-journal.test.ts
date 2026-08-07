@@ -8,6 +8,7 @@ import { runGraph } from "../extensions/graph-executor.ts";
 import {
 	GraphJournal,
 	graphScriptHash,
+	hashString,
 	listGraphRuns,
 	loadGraphResumeState,
 	readGraphJournal,
@@ -35,6 +36,20 @@ describe("graphScriptHash", () => {
 
 	it("differs when the script changes", () => {
 		expect(graphScriptHash("a")).not.toBe(graphScriptHash("b"));
+	});
+});
+
+describe("hashString", () => {
+	it("produces consistent hashes for the same input", () => {
+		expect(hashString("hello world")).toBe(hashString("hello world"));
+	});
+
+	it("produces different hashes for different inputs", () => {
+		expect(hashString("script 1")).not.toBe(hashString("script 2"));
+	});
+
+	it("produces an 8-character hex string", () => {
+		expect(hashString("test")).toMatch(/^[a-f0-9]{8}$/);
 	});
 });
 

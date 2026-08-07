@@ -33,7 +33,6 @@ function boundedPayload(value: unknown, maxBytes = MAX_TOOL_PAYLOAD_BYTES): stri
 }
 
 export const CHILD_TRANSCRIPT_ARTIFACT_VERSION = 1;
-export type ChildTranscriptArtifactVersion = typeof CHILD_TRANSCRIPT_ARTIFACT_VERSION;
 const DEFAULT_MAX_CHILD_TRANSCRIPT_BYTES = 50 * 1024 * 1024;
 
 export type ChildTranscriptSource = "foreground" | "async" | "workflow";

@@ -29,21 +29,3 @@ export function resolveEffectiveThinking(model: string | undefined, configThinki
 	if (!configThinking) return undefined;
 	return configThinking;
 }
-
-export function findModelInfo(model: string | undefined, availableModels: ModelInfo[] | undefined, preferredProvider?: string): ModelInfo | undefined {
-	if (!model || !availableModels?.length) return undefined;
-
-	// Exact match on fullId
-	const exact = availableModels.find((entry) => entry.fullId === model);
-	if (exact) return exact;
-
-	// Exact match on id (with optional provider preference)
-	const exactMatches = availableModels.filter((entry) => entry.id === model);
-	if (preferredProvider) {
-		const preferredMatch = exactMatches.find((entry) => entry.provider === preferredProvider);
-		if (preferredMatch) return preferredMatch;
-	}
-	if (exactMatches.length === 1) return exactMatches[0];
-
-	return undefined;
-}

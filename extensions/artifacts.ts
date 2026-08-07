@@ -15,10 +15,6 @@ export function getProjectArtifactsDir(cwd: string): string {
 	return path.join(getProjectSubagentsDir(cwd), "artifacts");
 }
 
-export function getProjectChainRunsDir(cwd: string): string {
-	return path.join(getProjectSubagentsDir(cwd), "chain-runs");
-}
-
 export function getArtifactsDir(
 	baseDir: string,
 	runId: string,
@@ -92,9 +88,4 @@ export function cleanupOldArtifacts(dir: string, maxAgeDays: number): void {
 			// Best-effort cleanup
 		}
 	}
-}
-
-export function cleanupAllArtifactDirs(maxAgeDays: number): void {
-	// This would clean up all artifact directories across the system
-	// For now, it's a no-op since we don't track all dirs globally
 }

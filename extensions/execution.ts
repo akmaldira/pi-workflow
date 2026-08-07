@@ -355,11 +355,6 @@ async function runSingleAttempt(
 		env: spawnEnv,
 	});
 
-	fs.appendFileSync("/tmp/subagent.log", `CMD: ${spawnSpec.command} ${spawnSpec.args.join(" ")}\n`);
-	proc.stderr?.on("data", (data) => {
-		fs.appendFileSync("/tmp/subagent.log", `STDERR: ${data}\n`);
-	});
-
 	const stdoutReader = createBoundedLineReader({
 		stream: "stdout",
 		onLine: (line) => {

@@ -19,7 +19,18 @@ import * as path from "node:path";
 import type { NodeExecution } from "./graph-executor.ts";
 import type { GraphState } from "./graph-dsl.ts";
 import { rehydrateState } from "./graph-node-runner.ts";
-import { hashString } from "./journal.ts";
+
+/**
+ * Stable, dependency-free string hash (djb2-xor variant).
+ * Used to hash script content for resume cache invalidation.
+ */
+export function hashString(input: string): string {
+	let h = 5381;
+	for (let i = 0; i < input.length; i++) {
+		h = ((h << 5) + h) ^ input.charCodeAt(i);
+	}
+	return (h >>> 0).toString(16).padStart(8, "0");
+}
 
 export interface GraphJournalRunRecord {
 	type: "graph_run";

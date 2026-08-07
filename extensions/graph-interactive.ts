@@ -18,14 +18,6 @@ import type { HumanHandlerResult, InteractiveHandlers } from "./graph-node-runne
 /** How an interactive node was answered. Edges can branch on this. */
 export type InteractiveSource = "human" | "default" | "skipped" | "mainAgent";
 
-export interface HumanAnswer {
-	status: "ok" | "default" | "skipped";
-	answer?: string;
-	source: InteractiveSource;
-	reason?: string;
-	prompt: string;
-}
-
 /** Cap for state included in a checkpoint, so a long run stays readable. */
 const STATE_PREVIEW_LIMIT = 2000;
 

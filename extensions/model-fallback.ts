@@ -165,31 +165,6 @@ export function resolveSubagentModelOverride(
 	return resolved;
 }
 
-export function resolveEffectiveSubagentModel(
-	explicitModel: string | boolean | undefined,
-	agentModel: string | boolean | undefined,
-	parentModel: ParentModel | undefined,
-	availableModels: AvailableModelInfo[] | undefined,
-	preferredProvider?: string,
-	options?: Omit<ResolveSubagentModelOverrideOptions, "source">,
-): string | undefined {
-	const resolved = resolveSubagentModelOverride(
-		explicitModel ?? agentModel,
-		parentModel,
-		availableModels,
-		preferredProvider,
-		{ ...options, source: explicitModel !== undefined ? "explicit" : "inherited" },
-	);
-	if (resolved || explicitModel === undefined) return resolved;
-	return resolveSubagentModelOverride(
-		agentModel,
-		parentModel,
-		availableModels,
-		preferredProvider,
-		{ ...options, source: "inherited" },
-	);
-}
-
 export interface BuildModelCandidatesOptions {
 	scope?: ModelScopeConfig;
 	onWarn?: (violation: ModelScopeViolation) => void;

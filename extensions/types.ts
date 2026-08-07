@@ -58,11 +58,7 @@ export interface MaxOutputConfig {
 
 export type OutputMode = "inline" | "file-only";
 
-export type AcceptanceRole = "read-only" | "writer";
-
 export type JsonSchemaObject = Record<string, unknown>;
-
-export type WorkflowNodeStatus = "pending" | "running" | "completed" | "failed" | "paused" | "stopped" | "detached";
 
 export interface SavedOutputReference {
 	path: string;
@@ -538,26 +534,9 @@ export const DEFAULT_MAX_OUTPUT: Required<MaxOutputConfig> = {
 	lines: 5000,
 };
 
-export const DEFAULT_ARTIFACT_CONFIG: ArtifactConfig = {
-	enabled: true,
-	dir: "project",
-	includeInput: true,
-	includeOutput: true,
-	includeJsonl: false,
-	includeTranscript: true,
-	includeMetadata: true,
-	cleanupDays: 7,
-};
-
 export const DEFAULT_TURN_BUDGET_GRACE_TURNS = 1;
 
 export const DEFAULT_TOOL_BUDGET_BLOCK = ["read", "grep", "find", "ls"] as const;
-
-export const DEFAULT_FORK_PREAMBLE =
-	"You are a delegated subagent running from a fork of the parent session. " +
-	"Treat the inherited conversation as reference-only context, not a live thread to continue. " +
-	"Do not continue or answer prior messages as if they are waiting for a reply. " +
-	"Your sole job is to execute the task below and return a focused result for that task using your tools.";
 
 export const DEFAULT_SUBAGENT_MAX_DEPTH = 2;
 
