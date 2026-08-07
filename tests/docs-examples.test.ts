@@ -105,5 +105,18 @@ describe("documentation examples", () => {
 			expect(skill, "SKILL must explain that revisiting a node overwrites its state").toMatch(/overwrite/i);
 			expect(skill, "SKILL must show a cyclic example that reuses a node id").toMatch(/rounds/);
 		});
+
+		it.skipIf(!fs.existsSync(SKILL))("teaches custom-agent authors the escalation protocol", () => {
+			// Coordination depends on agents emitting STATUS: blocked. A custom
+			// agent without that block is routed forward as if it succeeded when
+			// it hits a wall -- the single most dangerous silent failure. If the
+		// skill stops telling the model to include the escalation block when it
+		// authors a custom agent, coordination breaks for every user-built
+			// agent. This guards that lesson.
+			const skill = fs.readFileSync(SKILL, "utf-8");
+			expect(skill, "SKILL must teach the STATUS: blocked protocol for custom agents").toMatch(/STATUS: blocked/);
+			expect(skill, "SKILL must teach that escalating is a good outcome").toMatch(/escalating is a successful outcome/i);
+			expect(skill, "SKILL must warn that a missing block means silent swallow").toMatch(/swallow|routed forward/i);
+		});
 	});
 });

@@ -209,6 +209,82 @@ Three options, lightest first:
 
 Precedence: `builtin < user < project`.
 
+### Creating custom agents
+
+Author a markdown file in `.pi/agents/<name>.md` (project scope) or `~/.pi/agent/agents/<name>.md`
+(user scope). The `name` and `description` frontmatter fields are required; everything else is
+optional. See the bundled agents in `bundled-agents/` for complete, working examples.
+
+```markdown
+---
+name: migrator
+description: Writes database migrations from a schema diff.
+model: claude-sonnet-4
+tools: read, write, edit, bash, grep
+maxTurns: 15
+acceptance:
+  level: checked
+defaultContext: fork
+---
+
+# Migrator
+
+You write forward-only database migrations from a schema diff.
+
+## Your job
+1. Read the current schema and the target schema.
+2. Write a migration that moves from one to the other.
+3. Run it against a scratch database and verify.
+
+## Escalation
+
+If you can't complete the task, say so instead of faking it:
+
+STATUS: blocked
+BLOCKED_ON: requirements | environment | conflict
+REASON: <specifically what you hit>
+EVIDENCE: <error output, file:line>
+PROPOSED_FIX: <what would unblock you>
+
+Escalating with a clear reason is a good outcome. Faking completion is the only real failure.
+```
+
+#### The escalation protocol — why your agent needs it
+
+The graph routes on a structured signal, not prose. When an agent cannot finish, it emits the
+`STATUS: blocked` block above and the edge condition routes the blocker to whoever owns the
+problem. This is the entire coordination mechanism — **there is no other channel.**
+
+A custom agent *without* the `## Escalation` section still works when it succeeds. But when it
+hits a wall, it has no way to say so that the graph can act on, and it gets routed forward **as
+if it succeeded** — the blocker is silently swallowed. (A technical crash — OOM, provider error —
+is still caught and aborts the graph as a safety net; only a *soft* "I gave up" with no marker is
+swallowed.)
+
+So **any agent whose failure should route somewhere must include the escalation block.**
+
+`BLOCKED_ON` is a closed vocabulary because it is a routing key, not free text. Reuse the existing
+categories when one fits:
+
+| Category | Means | Typically routes to |
+|---|---|---|
+| `contract` | The interface/contract can't express what's needed | the architect |
+| `tests` | The tests themselves are wrong or missing | whoever wrote them |
+| `requirements` | The task is contradictory or too vague | the planner |
+| `information` | Needed context is missing | a researcher/scout |
+| `environment` | A tool, dependency, or env is broken/unavailable | the human |
+| `conflict` | Two requirements or constraints collide | the human |
+
+The parser preserves any unrecognised value verbatim, so a custom category still reaches the
+edge — but an edge author will have written a route for the recognised ones.
+
+Two principles that make a custom agent safe in a graph, borrowed from the bundled implementers:
+1. **Escalating is a successful outcome.** Say so plainly. The shortcut (mocking, weakening tests,
+   hardcoding) must be the *only* thing called a failure.
+2. **Forbid the shortcut failure modes by name** for any agent that writes code: no mocking the
+   thing under implementation, no weakening or deleting tests, no hardcoding to test inputs, no
+   claiming done while the suite is red.
+
 ## Tools
 
 ### `workflow`

@@ -122,20 +122,23 @@ g.run({});
 But note: `s.planner` holds only the *latest* draft. If a reviewer needs every draft, the
 latest-wins behavior is wrong — and that is your signal to use distinct node ids instead.
 
-**Only these globals exist:** `graph`, `agent`, `mainAgent`, `human`, `END`, `args`, `JSON`. No
-`fs`, `process`, `require`, `import`, `fetch`, `Date`, or `Math.random` — a graph describes routing
-only. Scripts are validated before any agent spawns, so a rejected script costs nothing.
+**What's available in a script:** the graph API (`graph`, `agent`, `mainAgent`, `human`, `END`,
+`args`) plus ordinary language intrinsics (`JSON`, `Object`, `Array`, `String`, `Math`, etc. —
+they resolve to the sandbox's own copies, so using them cannot reach the host). No `fs`,
+`process`, `require`, `import`, `fetch`, `Date`, or `Math.random` — a graph describes routing
+only, and non-determinism would mean a rerun could take a different path. Scripts are validated
+before any agent spawns, so a rejected script costs nothing.
 
 ## Saving and Reusing Workflows
 
-Scripts are not persisted automatically — pass `saveWorkflow: "workflow_name"` to save a script for later reuse, and `loadWorkflow` to re-run one without rewriting it:
+Scripts are not persisted automatically — pass `saveWorkflow: true` to save a script for later reuse (it is filed under the graph's `meta.name`), and `loadWorkflow` to re-run one without rewriting it:
 
 ```
-workflow(script="...", saveWorkflow="audit")                      # persists to .pi-workflow/workflows/audit.js
+workflow(script="...", saveWorkflow=true)                      # persists to .pi-workflow/workflows/<meta.name>.js
 workflow(loadWorkflow="audit", args={ repo: "..." })               # re-runs the saved script; `script` not needed
 ```
 
-Before writing a new workflow script from scratch, check whether a matching one was already saved (e.g. via `/saved-workflows` or by trying `loadWorkflow` first) — especially if the user asks to "run that workflow again" or describes a repeatable process. If `loadWorkflow` references an unknown name, the tool error lists the names that do exist. Use `saveWorkflow` when the user explicitly asks to save a workflow, or when the task is clearly a repeatable process worth reusing later; don't save one-off exploratory workflows by default.
+Before writing a new workflow script from scratch, check whether a matching one was already saved (e.g. via `/saved-workflows` or by trying `loadWorkflow` first) — especially if the user asks to "run that workflow again" or describes a repeatable process. If `loadWorkflow` references an unknown name, the tool error lists the names that do exist. Use `saveWorkflow: true` when the user explicitly asks to save a workflow, or when the task is clearly a repeatable process worth reusing later; don't save one-off exploratory workflows by default.
 
 The user can also save a workflow after the fact from the `/workflows` TUI navigator by selecting a run and pressing `s` — no need to have passed `saveWorkflow: true` up front. This only works for runs still live in the current session (the script is kept in memory, not journaled); it won't work for runs restored from a prior session's journal.
 
@@ -168,6 +171,46 @@ acceptance:
 
 Find security issues and code smells. Keep responses concise.
 ```
+
+### Agents that work in a workflow graph
+
+A custom agent does not need to know anything about routing, edges, or which other agents exist —
+it only needs to do its own job. **But if it can hit a wall, it must say so using the escalation
+protocol, or the graph will route it forward as if it succeeded.** This is the single most
+important thing to get right when authoring an agent for a workflow.
+
+When an agent cannot complete its task, teach it to emit this exact block (the parser is
+line-anchored on `STATUS:` and `BLOCKED_ON:`):
+
+```text
+## Escalation
+
+If you can't complete the task, say so instead of faking it:
+
+STATUS: blocked
+BLOCKED_ON: requirements | environment | conflict | contract | tests | information
+REASON: <specifically what you hit>
+EVIDENCE: <error output, file:line>
+PROPOSED_FIX: <what would unblock you>
+```
+
+Copy that `## Escalation` section verbatim into the agent's markdown body. `BLOCKED_ON` is a
+**closed vocabulary** — it is a routing key the edge branches on, not prose.
+Reuse the existing categories (`requirements`, `environment`, `conflict`, `contract`, `tests`,
+`information`) when one fits; the parser preserves any other value verbatim so the edge can still
+see it, but a recognized category is what an edge author will have written a route for.
+
+Two rules that make an agent safe in a graph:
+1. **Escalating is a successful outcome.** State plainly that reporting a blocker is good — it is
+   *cheaper than faking*. "Faking a pass is the only real failure."
+2. **Forbid the shortcut failure modes by name** for any agent that writes code: do not mock or
+   stub the thing under implementation, do not weaken or delete tests, do not hardcode to test
+   inputs, do not claim done while the suite is red.
+
+A custom agent *without* the escalation block still works when it succeeds, and a technical crash
+(OOM, provider error) still aborts the graph as a safety net — but a *soft* "I gave up" with no
+marker is routed forward silently. So include the block for any agent whose failure should route
+somewhere rather than be swallowed.
 
 ## Agent Frontmatter Attributes
 
