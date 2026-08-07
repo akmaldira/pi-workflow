@@ -89,14 +89,14 @@ only. Scripts are validated before any agent spawns, so a rejected script costs 
 
 ## Saving and Reusing Workflows
 
-Scripts are not persisted automatically — pass `saveWorkflow: true` to save a script for later reuse, and `loadWorkflow` to re-run one without rewriting it:
+Scripts are not persisted automatically — pass `saveWorkflow: "workflow_name"` to save a script for later reuse, and `loadWorkflow` to re-run one without rewriting it:
 
 ```
-workflow(script="...", saveWorkflow=true)                         # persists to .pi-workflow/workflows/<meta.name>.js
+workflow(script="...", saveWorkflow="audit")                      # persists to .pi-workflow/workflows/audit.js
 workflow(loadWorkflow="audit", args={ repo: "..." })               # re-runs the saved script; `script` not needed
 ```
 
-Before writing a new workflow script from scratch, check whether a matching one was already saved (e.g. via `/saved-workflows` or by trying `loadWorkflow` first) — especially if the user asks to "run that workflow again" or describes a repeatable process. If `loadWorkflow` references an unknown name, the tool error lists the names that do exist. Use `saveWorkflow: true` when the user explicitly asks to save a workflow, or when the task is clearly a repeatable process worth reusing later; don't save one-off exploratory workflows by default.
+Before writing a new workflow script from scratch, check whether a matching one was already saved (e.g. via `/saved-workflows` or by trying `loadWorkflow` first) — especially if the user asks to "run that workflow again" or describes a repeatable process. If `loadWorkflow` references an unknown name, the tool error lists the names that do exist. Use `saveWorkflow` when the user explicitly asks to save a workflow, or when the task is clearly a repeatable process worth reusing later; don't save one-off exploratory workflows by default.
 
 The user can also save a workflow after the fact from the `/workflows` TUI navigator by selecting a run and pressing `s` — no need to have passed `saveWorkflow: true` up front. This only works for runs still live in the current session (the script is kept in memory, not journaled); it won't work for runs restored from a prior session's journal.
 
@@ -168,15 +168,8 @@ If fork context can't be produced (no active session, or summarization fails), t
 
 Two kinds of subagent failure are handled differently:
 
-- **Agent-level** (the agent ran, but its own work has errors — failing tests, a tool error, rejected acceptance): `agent()` returns `null` and logs the failure. The workflow keeps running — always check for `null` before using a result downstream.
-- **Technical** (LLM provider errors, rate limits, quota exhaustion, process crashes/OOM kills, protocol output limits): the whole workflow run is **automatically aborted**. Any sibling subagents still running are cancelled, and the `workflow` tool call fails with a message naming the failing agent, the failure reason, and the `runId` to investigate further.
-
-```javascript
-const result = await agent('scout: find security issues');
-if (!result) {
-  log('scout failed (agent-level) — continuing without findings');
-}
-```
+- **Agent-level** (the agent ran, but its own work has errors — failing tests, a tool error, rejected acceptance): The graph node still emits a result, but `status === 'error'` or `status === 'blocked'`. The workflow keeps running and follows whatever edge you wrote for that condition.
+- **Technical** (LLM provider errors, rate limits, quota exhaustion, process crashes/OOM kills, protocol output limits): the whole workflow run is **automatically aborted**. The `workflow` tool call fails with a message naming the failing agent, the failure reason, and the `runId` to investigate further.
 
 If you see a workflow tool call fail with "hit a technical failure", **do not** assume the workflow script is broken — it's usually transient infrastructure (rate limit, provider outage, OOM). Use `workflow_status` to inspect before retrying or editing the script.
 
@@ -207,11 +200,12 @@ subagent(tasks=[{"agent": "scout", "task": "Review auth"}, {"agent": "scout", "t
 ### Workflow with conditional logic
 ```javascript
 export const meta = { name: 'fix_issues', description: 'Find and fix issues' };
-const findings = await agent('scout: Find security issues');
-if (findings.critical) {
-  await agent('worker: Fix all critical issues');
-}
-return { status: 'done' };
+const g = graph();
+g.node('scan', agent('scout', () => 'Find security issues'));
+g.node('fix', agent('worker', (s) => 'Fix these: ' + s.scan));
+g.edge('scan', (s, r) => r.text.includes('critical') ? 'fix' : END);
+g.edge('fix', END);
+g.run();
 ```
 
 ### Running Without a TUI (IDE / Headless Mode)
