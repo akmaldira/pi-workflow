@@ -107,16 +107,28 @@ describe("documentation examples", () => {
 		});
 
 		it.skipIf(!fs.existsSync(SKILL))("teaches custom-agent authors the escalation protocol", () => {
-			// Coordination depends on agents emitting STATUS: blocked. A custom
-			// agent without that block is routed forward as if it succeeded when
-			// it hits a wall -- the single most dangerous silent failure. If the
-		// skill stops telling the model to include the escalation block when it
-		// authors a custom agent, coordination breaks for every user-built
-			// agent. This guards that lesson.
+			// Coordination depends on agents emitting STATUS: blocked. The
+			// protocol is now auto-injected at spawn time, so even a custom agent
+			// whose author omitted the block participates in routing. This guards
+			// both halves of that lesson.
 			const skill = fs.readFileSync(SKILL, "utf-8");
 			expect(skill, "SKILL must teach the STATUS: blocked protocol for custom agents").toMatch(/STATUS: blocked/);
 			expect(skill, "SKILL must teach that escalating is a good outcome").toMatch(/escalating is a successful outcome/i);
 			expect(skill, "SKILL must teach that the protocol is auto-injected").toMatch(/auto-inject/i);
+		});
+
+		it.skipIf(!fs.existsSync(SKILL))("documents the BLOCKED_ON vocabulary for edge routing", () => {
+			// The agent writing a graph needs to know every blockedOn value so it
+			// can write correct edge conditions. If a category is missing from
+			// the SKILL, the model will write edges that never match it.
+			const skill = fs.readFileSync(SKILL, "utf-8");
+			for (const category of ["contract", "tests", "requirements", "information", "environment", "conflict"]) {
+				expect(skill, `SKILL must document blockedOn value "${category}"`).toContain(`\`${category}\``);
+			}
+			// The result shape table must be present so the model knows what
+			// fields are available in edge conditions.
+			expect(skill, "SKILL must document result.status").toMatch(/result.*status/i);
+			expect(skill, "SKILL must document result.blockedOn").toMatch(/result.*blockedOn/i);
 		});
 	});
 });

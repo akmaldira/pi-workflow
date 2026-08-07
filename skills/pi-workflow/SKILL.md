@@ -91,6 +91,51 @@ g.edge('green', (state, result) => {
 Cycles are allowed and are how escalation works. A run stops at `maxIterations` (default 25) if a
 loop never resolves.
 
+### Edge result shape and escalation vocabulary
+
+Every edge condition receives `(state, result)`. The `result` object has:
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | `"ok"` \| `"blocked"` | Whether the agent completed or escalated |
+| `blockedOn` | `string` (optional) | The blocker category — only set when `status === "blocked"` |
+| `reason` | `string` (optional) | What the agent hit |
+| `evidence` | `string` (optional) | Error output, file:line |
+| `proposedFix` | `string` (optional) | What would unblock the agent |
+| `text` | `string` | Full text of the agent's reply |
+| `agent` | `string` | Name of the agent that ran |
+
+`blockedOn` is a **closed vocabulary** — use these values to decide where a blocker routes:
+
+| `blockedOn` value | Meaning | Typical routing target |
+|---|---|---|
+| `contract` | The interface/contract can't express what's needed | the architect |
+| `tests` | The tests are wrong, contradictory, or missing | whoever wrote them (red) |
+| `requirements` | The task is contradictory or too vague to act on | the planner |
+| `information` | Needed context is missing from the codebase | a researcher or scout |
+| `environment` | A tool, dependency, or environment is broken/unavailable | the human |
+| `conflict` | Two requirements or constraints collide | the human |
+
+The parser preserves any unrecognised value verbatim, so a custom category still reaches the edge
+condition — but the six values above are what the auto-injected escalation protocol teaches every
+agent to emit, so they are what you should route on.
+
+Example — full routing for an implementation agent:
+
+```js
+g.edge('green', (state, result) => {
+  if (result.status === 'blocked') {
+    if (result.blockedOn === 'contract') return 'architect';
+    if (result.blockedOn === 'tests')    return 'red';
+    if (result.blockedOn === 'environment' || result.blockedOn === 'conflict') {
+      return 'human';  // needs a human decision
+    }
+    return 'planner';  // requirements, information, or anything else
+  }
+  return 'reviewer';   // success — move to review
+});
+```
+
 ### Cycles vs. linear chains — choose deliberately
 
 The single most common mistake is writing a **flat linear chain with unique node names**
