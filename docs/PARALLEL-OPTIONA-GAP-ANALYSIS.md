@@ -15,6 +15,46 @@ was not pursued.
 | Concurrent-node display, barrier logging | `extensions/graph-display-bridge.ts` |
 | Tests | `tests/graph-superstep-executor.test.ts`, `tests/graph-superstep-units.test.ts`, `tests/e2e-superstep.test.ts` |
 
+**CRITICAL — the two executors are not one graph model.** Auditing revealed
+that `runSuperstepGraph` is not a generalisation of the linear walk, so the
+system currently has two different execution semantics rather than one graph
+model, which is not what this plan describes.
+
+Readiness is `remainingInDegree === 0 && !executed`, and a conditional edge is
+not counted in in-degree (its target is an opaque function). A node whose only
+incoming edges are conditional therefore starts at in-degree 0 and is ready in
+round 1 — regardless of whether anything ever routed to it. The frontier means
+"not yet run", not "actually selected".
+
+Consequences, all reproduced:
+
+| Graph shape | Expected | Actual |
+|---|---|---|
+| all-direct diamond | `s, a, b, j` | `s, a, b, j` ✓ |
+| `green → deploy` OR `rollback` | one branch | **both ran** |
+| fan-out + either/or branch | `p, a, b, x` | **`p, a, b, x, y, x`** |
+
+The middle row is a workflow that deploys *and* rolls back. The third is a
+genuine fan-out graph (`mode: "superstep"`), so this is not hypothetical: it is
+reachable through the shipped tool, and it also runs a node twice.
+
+It is masked today only because `mode` is `"superstep"` solely when some node
+has out-degree > 1, and every shipped parallel example uses direct edges for
+routing. Conditional-only graphs are routed to the linear executor, where they
+are correct. So the linear executor is not a legacy path — it is currently
+load-bearing for correctness.
+
+**Fix (feasible, not yet done):** count conditional edges in in-degree by
+extracting their possible targets from the AST at build time. Verified
+extractable for inline arrow/function edges (intersect string literals with
+declared node ids to drop comparison literals like `"blocked"`); non-inline
+edges are detectable and can fall back to a conservative rule. With targets
+known, a conditional edge claims only its real targets, unchosen claims are
+released when it fires, and both executors collapse into one model — which is
+what this document actually specifies. This supersedes the narrower
+"conditional in-edges" note below, which is the same root cause seen from the
+fan-in side.
+
 **Known deviation from this design — conditional in-edges are not counted.**
 Readiness uses a static in-degree count, but a conditional edge carries only an
 opaque function and declares no target, so it cannot be counted. A join whose
