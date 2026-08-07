@@ -57,14 +57,12 @@ describe("e2e: superstep graph through the workflow tool", () => {
     const text = res.content[0].text;
     console.log("\n=== TOOL OUTPUT ===\n" + text + "\n===================\n");
     console.log("details:", JSON.stringify({
-      mode: res.details.mode,
       iterations: res.details.iterations,
       nodeExecutions: res.details.nodeExecutions,
       path: res.details.path,
     }, null, 2));
     console.log("max concurrent spawns:", maxConcurrent);
 
-    expect(res.details.mode).toBe("superstep");
     expect(res.details.status).toBe("completed");
     // Every node should have succeeded, not silently failed.
     expect(text).not.toContain("[failed]");

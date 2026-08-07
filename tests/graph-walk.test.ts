@@ -6,9 +6,9 @@ import {
 	formatPath,
 	GraphExecutionError,
 	type NodeRunner,
-	runGraph,
 	totalTokens,
 } from "../extensions/graph-executor.ts";
+import { runSuperstepGraph } from "../extensions/graph-executor.ts";
 
 /**
  * Builds a runner that returns scripted results per node id.
@@ -48,9 +48,9 @@ function linearGraph(): BuiltGraph {
 	return g.build();
 }
 
-describe("runGraph: basic traversal", () => {
+describe("graph walk: basic traversal", () => {
 	it("walks a linear graph and completes", async () => {
-		const result = await runGraph(linearGraph(), {
+		const result = await runSuperstepGraph(linearGraph(), {
 			runId: "r1",
 			runNode: scriptedRunner({ a: "PLAN", b: "IMPL" }),
 		});
@@ -61,7 +61,7 @@ describe("runGraph: basic traversal", () => {
 	});
 
 	it("accumulates each node's result into state under its node id", async () => {
-		const result = await runGraph(linearGraph(), {
+		const result = await runSuperstepGraph(linearGraph(), {
 			runId: "r1",
 			runNode: scriptedRunner({ a: "PLAN", b: "IMPL" }),
 		});
@@ -70,7 +70,7 @@ describe("runGraph: basic traversal", () => {
 	});
 
 	it("preserves the initial state", async () => {
-		const result = await runGraph(linearGraph(), {
+		const result = await runSuperstepGraph(linearGraph(), {
 			runId: "r1",
 			runNode: scriptedRunner({ a: "x", b: "y" }),
 		});
@@ -85,7 +85,7 @@ describe("runGraph: basic traversal", () => {
 			return { result: `${node.id}-done` };
 		};
 
-		await runGraph(linearGraph(), { runId: "r1", runNode: runner });
+		await runSuperstepGraph(linearGraph(), { runId: "r1", runNode: runner });
 
 		// The second node must see the first node's result, since that is how
 		// one agent builds on another's output.
@@ -100,13 +100,13 @@ describe("runGraph: basic traversal", () => {
 			return { result: `${node.id.toUpperCase()}` };
 		};
 
-		await runGraph(linearGraph(), { runId: "r1", runNode: runner });
+		await runSuperstepGraph(linearGraph(), { runId: "r1", runNode: runner });
 
 		expect(prompts).toEqual(["plan ship", "impl A"]);
 	});
 
 	it("reports the final node's result", async () => {
-		const result = await runGraph(linearGraph(), {
+		const result = await runSuperstepGraph(linearGraph(), {
 			runId: "r1",
 			runNode: scriptedRunner({ a: "PLAN", b: "FINAL" }),
 		});
@@ -120,7 +120,7 @@ describe("runGraph: basic traversal", () => {
 		g.edge("only", END);
 		g.run();
 
-		const result = await runGraph(g.build(), {
+		const result = await runSuperstepGraph(g.build(), {
 			runId: "r1",
 			runNode: scriptedRunner({ only: "done" }),
 		});
@@ -138,7 +138,7 @@ describe("runGraph: basic traversal", () => {
 		g.start("second");
 		g.run();
 
-		const result = await runGraph(g.build(), {
+		const result = await runSuperstepGraph(g.build(), {
 			runId: "r1",
 			runNode: scriptedRunner({ first: "F", second: "S" }),
 		});
@@ -147,7 +147,7 @@ describe("runGraph: basic traversal", () => {
 	});
 });
 
-describe("runGraph: conditional routing", () => {
+describe("graph walk: conditional routing", () => {
 	function branchingGraph(): BuiltGraph {
 		const g = new GraphBuilder();
 		g.node("check", agent("reviewer", () => "review"));
@@ -161,11 +161,11 @@ describe("runGraph: conditional routing", () => {
 	}
 
 	it("takes the branch the condition selects", async () => {
-		const passed = await runGraph(branchingGraph(), {
+		const passed = await runSuperstepGraph(branchingGraph(), {
 			runId: "r1",
 			runNode: scriptedRunner({ check: { ok: true }, pass: "shipped", fix: "fixed" }),
 		});
-		const failed = await runGraph(branchingGraph(), {
+		const failed = await runSuperstepGraph(branchingGraph(), {
 			runId: "r2",
 			runNode: scriptedRunner({ check: { ok: false }, pass: "shipped", fix: "fixed" }),
 		});
@@ -184,7 +184,7 @@ describe("runGraph: conditional routing", () => {
 		});
 		g.run({ task: "t" });
 
-		await runGraph(g.build(), { runId: "r1", runNode: scriptedRunner({ a: "RESULT" }) });
+		await runSuperstepGraph(g.build(), { runId: "r1", runNode: scriptedRunner({ a: "RESULT" }) });
 
 		expect(seen[0].result).toBe("RESULT");
 		// State already contains this node's result when the edge runs, so an
@@ -200,7 +200,7 @@ describe("runGraph: conditional routing", () => {
 		g.edge("b", END);
 		g.run();
 
-		const result = await runGraph(g.build(), {
+		const result = await runSuperstepGraph(g.build(), {
 			runId: "r1",
 			runNode: scriptedRunner({ a: "stop", b: "never" }),
 		});
@@ -210,7 +210,7 @@ describe("runGraph: conditional routing", () => {
 	});
 });
 
-describe("runGraph: escalation loops", () => {
+describe("graph walk: escalation loops", () => {
 	/**
 	 * The scenario this whole design exists for.
 	 *
@@ -237,7 +237,7 @@ describe("runGraph: escalation loops", () => {
 	}
 
 	it("routes a blocked implementer back to the contract owner and recovers", async () => {
-		const result = await runGraph(tddGraph(), {
+		const result = await runSuperstepGraph(tddGraph(), {
 			runId: "r1",
 			runNode: scriptedRunner({
 				architect: (_s, call) => (call === 1 ? "contract v1" : "contract v2 (soft-delete added)"),
@@ -256,7 +256,7 @@ describe("runGraph: escalation loops", () => {
 
 	it("shows the revised contract to the retrying implementer", async () => {
 		const greenSawOnRetry: unknown[] = [];
-		const result = await runGraph(tddGraph(), {
+		const result = await runSuperstepGraph(tddGraph(), {
 			runId: "r1",
 			runNode: async (node, state) => {
 				if (node.id === "green") {
@@ -285,7 +285,7 @@ describe("runGraph: escalation loops", () => {
 	it("routes a test-level blocker somewhere different from a contract blocker", async () => {
 		// BLOCKED_ON is a closed vocabulary precisely so it can be a routing
 		// key rather than prose.
-		const result = await runGraph(tddGraph(), {
+		const result = await runSuperstepGraph(tddGraph(), {
 			runId: "r1",
 			runNode: scriptedRunner({
 				architect: "contract",
@@ -298,7 +298,7 @@ describe("runGraph: escalation loops", () => {
 	});
 
 	it("overwrites a revisited node's state entry with its newest result", async () => {
-		const result = await runGraph(tddGraph(), {
+		const result = await runSuperstepGraph(tddGraph(), {
 			runId: "r1",
 			runNode: scriptedRunner({
 				architect: (_s, call) => `contract v${call}`,
@@ -313,7 +313,7 @@ describe("runGraph: escalation loops", () => {
 	});
 });
 
-describe("runGraph: termination safety", () => {
+describe("graph walk: termination safety", () => {
 	function infiniteGraph(): BuiltGraph {
 		const g = new GraphBuilder();
 		g.node("a", agent("x", () => "a"));
@@ -325,7 +325,7 @@ describe("runGraph: termination safety", () => {
 	}
 
 	it("stops a non-terminating graph at the iteration cap", async () => {
-		const result = await runGraph(infiniteGraph(), {
+		const result = await runSuperstepGraph(infiniteGraph(), {
 			runId: "r1",
 			maxIterations: 6,
 			runNode: scriptedRunner({ a: "a", b: "b" }),
@@ -336,18 +336,18 @@ describe("runGraph: termination safety", () => {
 	});
 
 	it("names the cycling path so the loop is diagnosable", async () => {
-		const result = await runGraph(infiniteGraph(), {
+		const result = await runSuperstepGraph(infiniteGraph(), {
 			runId: "r1",
 			maxIterations: 6,
 			runNode: scriptedRunner({ a: "a", b: "b" }),
 		});
 
 		expect(result.error).toMatch(/Recent path:/);
-		expect(result.error).toMatch(/an edge condition is cycling/);
+		expect(result.error).toMatch(/a cycle never resolves/);
 	});
 
 	it("defaults to a sane cap", async () => {
-		const result = await runGraph(infiniteGraph(), {
+		const result = await runSuperstepGraph(infiniteGraph(), {
 			runId: "r1",
 			runNode: scriptedRunner({ a: "a", b: "b" }),
 		});
@@ -357,7 +357,7 @@ describe("runGraph: termination safety", () => {
 
 	it("rejects a nonsensical cap", async () => {
 		await expect(
-			runGraph(linearGraph(), { runId: "r1", maxIterations: 0, runNode: scriptedRunner({}) }),
+			runSuperstepGraph(linearGraph(), { runId: "r1", maxIterations: 0, runNode: scriptedRunner({}) }),
 		).rejects.toThrow(GraphExecutionError);
 	});
 
@@ -367,7 +367,7 @@ describe("runGraph: termination safety", () => {
 		g.edge("work", (_s, r) => ((r as { attempt: number }).attempt >= 3 ? END : "work"));
 		g.run();
 
-		const result = await runGraph(g.build(), {
+		const result = await runSuperstepGraph(g.build(), {
 			runId: "r1",
 			runNode: scriptedRunner({ work: (_s, call) => ({ attempt: call }) }),
 		});
@@ -377,9 +377,9 @@ describe("runGraph: termination safety", () => {
 	});
 });
 
-describe("runGraph: failure handling", () => {
+describe("graph walk: failure handling", () => {
 	it("aborts when the runner throws", async () => {
-		const result = await runGraph(linearGraph(), {
+		const result = await runSuperstepGraph(linearGraph(), {
 			runId: "r1",
 			runNode: async (node) => {
 				if (node.id === "b") throw new Error("spawn failed");
@@ -394,7 +394,7 @@ describe("runGraph: failure handling", () => {
 	it("aborts on a technical failure without routing", async () => {
 		// A technical failure has no meaningful result to route on, unlike an
 		// agent reporting that it is blocked.
-		const result = await runGraph(linearGraph(), {
+		const result = await runSuperstepGraph(linearGraph(), {
 			runId: "r1",
 			runNode: async (node) =>
 				node.id === "a"
@@ -417,7 +417,7 @@ describe("runGraph: failure handling", () => {
 		g.edge("recover", END);
 		g.run();
 
-		const result = await runGraph(g.build(), {
+		const result = await runSuperstepGraph(g.build(), {
 			runId: "r1",
 			runNode: scriptedRunner({ a: { status: "blocked" }, recover: "revised" }),
 		});
@@ -427,7 +427,7 @@ describe("runGraph: failure handling", () => {
 	});
 
 	it("records a node error while still routing on the result", async () => {
-		const result = await runGraph(linearGraph(), {
+		const result = await runSuperstepGraph(linearGraph(), {
 			runId: "r1",
 			runNode: async (node) => ({ result: `${node.id}-partial`, error: "turn budget exceeded" }),
 		});
@@ -446,7 +446,7 @@ describe("runGraph: failure handling", () => {
 			});
 			g.run();
 
-			const result = await runGraph(g.build(), {
+			const result = await runSuperstepGraph(g.build(), {
 				runId: "r1",
 				runNode: scriptedRunner({ a: "r" }),
 			});
@@ -463,7 +463,7 @@ describe("runGraph: failure handling", () => {
 			g.edge("b", END);
 			g.run();
 
-			const result = await runGraph(g.build(), {
+			const result = await runSuperstepGraph(g.build(), {
 				runId: "r1",
 				runNode: scriptedRunner({ a: "r", b: "s" }),
 			});
@@ -480,7 +480,7 @@ describe("runGraph: failure handling", () => {
 			g.edge("a", (() => 42) as never);
 			g.run();
 
-			const result = await runGraph(g.build(), {
+			const result = await runSuperstepGraph(g.build(), {
 				runId: "r1",
 				runNode: scriptedRunner({ a: "r" }),
 			});
@@ -491,13 +491,13 @@ describe("runGraph: failure handling", () => {
 	});
 });
 
-describe("runGraph: cancellation", () => {
+describe("graph walk: cancellation", () => {
 	it("stops before running any node when already aborted", async () => {
 		const controller = new AbortController();
 		controller.abort();
 		const runNode = vi.fn(scriptedRunner({ a: "x", b: "y" }));
 
-		const result = await runGraph(linearGraph(), {
+		const result = await runSuperstepGraph(linearGraph(), {
 			runId: "r1",
 			signal: controller.signal,
 			runNode,
@@ -510,7 +510,7 @@ describe("runGraph: cancellation", () => {
 	it("stops between nodes once aborted mid-run", async () => {
 		const controller = new AbortController();
 
-		const result = await runGraph(linearGraph(), {
+		const result = await runSuperstepGraph(linearGraph(), {
 			runId: "r1",
 			signal: controller.signal,
 			runNode: async (node) => {
@@ -527,7 +527,7 @@ describe("runGraph: cancellation", () => {
 		const controller = new AbortController();
 		let received: AbortSignal | undefined;
 
-		await runGraph(linearGraph(), {
+		await runSuperstepGraph(linearGraph(), {
 			runId: "r1",
 			signal: controller.signal,
 			runNode: async (_node, _state, ctx) => {
@@ -540,14 +540,14 @@ describe("runGraph: cancellation", () => {
 	});
 });
 
-describe("runGraph: observability", () => {
+describe("graph walk: observability", () => {
 	it("records one history entry per execution, including repeats", async () => {
 		const g = new GraphBuilder();
 		g.node("loop", agent("worker", () => "w"));
 		g.edge("loop", (_s, r) => ((r as { n: number }).n >= 2 ? END : "loop"));
 		g.run();
 
-		const result = await runGraph(g.build(), {
+		const result = await runSuperstepGraph(g.build(), {
 			runId: "r1",
 			runNode: scriptedRunner({ loop: (_s, call) => ({ n: call }) }),
 		});
@@ -566,7 +566,7 @@ describe("runGraph: observability", () => {
 		g.edge("work", END);
 		g.run();
 
-		const result = await runGraph(g.build(), {
+		const result = await runSuperstepGraph(g.build(), {
 			runId: "r1",
 			runNode: scriptedRunner({ ask: "yes", think: "ok", work: "done" }),
 		});
@@ -576,7 +576,7 @@ describe("runGraph: observability", () => {
 	});
 
 	it("records where each node routed", async () => {
-		const result = await runGraph(linearGraph(), {
+		const result = await runSuperstepGraph(linearGraph(), {
 			runId: "r1",
 			runNode: scriptedRunner({ a: "x", b: "y" }),
 		});
@@ -587,7 +587,7 @@ describe("runGraph: observability", () => {
 	it("emits start and complete callbacks in order", async () => {
 		const events: string[] = [];
 
-		await runGraph(linearGraph(), {
+		await runSuperstepGraph(linearGraph(), {
 			runId: "r1",
 			runNode: scriptedRunner({ a: "x", b: "y" }),
 			onNodeStart: (info) => events.push(`start:${info.nodeId}`),
@@ -606,7 +606,7 @@ describe("runGraph: observability", () => {
 		g.run();
 
 		const completed: string[] = [];
-		const result = await runGraph(g.build(), {
+		const result = await runSuperstepGraph(g.build(), {
 			runId: "r1",
 			runNode: scriptedRunner({ a: "r" }),
 			onNodeComplete: (execution) => completed.push(execution.nodeId),
@@ -618,7 +618,7 @@ describe("runGraph: observability", () => {
 	});
 
 	it("sums tokens across executions", async () => {
-		const result = await runGraph(linearGraph(), {
+		const result = await runSuperstepGraph(linearGraph(), {
 			runId: "r1",
 			runNode: scriptedRunner({ a: "x", b: "y" }, { tokens: 150 }),
 		});
@@ -634,7 +634,7 @@ describe("runGraph: observability", () => {
 		g.edge("b", (_s, r) => ((r as { done: boolean }).done ? END : "a"));
 		g.run();
 
-		const result = await runGraph(g.build(), {
+		const result = await runSuperstepGraph(g.build(), {
 			runId: "r1",
 			runNode: scriptedRunner({
 				a: "A",
@@ -646,7 +646,7 @@ describe("runGraph: observability", () => {
 	});
 
 	it("times each node and the run", async () => {
-		const result = await runGraph(linearGraph(), {
+		const result = await runSuperstepGraph(linearGraph(), {
 			runId: "r1",
 			runNode: async () => {
 				await new Promise((resolve) => setTimeout(resolve, 5));
@@ -659,21 +659,21 @@ describe("runGraph: observability", () => {
 	});
 });
 
-describe("runGraph: guards", () => {
+describe("graph walk: guards", () => {
 	it("rejects a node id that collides with a reserved state key", async () => {
 		const g = new GraphBuilder();
 		g.node("__error", agent("x", () => "p"));
 		g.edge("__error", END);
 		g.run();
 
-		await expect(runGraph(g.build(), { runId: "r1", runNode: scriptedRunner({}) })).rejects.toThrow(
+		await expect(runSuperstepGraph(g.build(), { runId: "r1", runNode: scriptedRunner({}) })).rejects.toThrow(
 			/reserved/,
 		);
 	});
 
 	it("does not mutate the graph's initial state object", async () => {
 		const graph = linearGraph();
-		await runGraph(graph, { runId: "r1", runNode: scriptedRunner({ a: "x", b: "y" }) });
+		await runSuperstepGraph(graph, { runId: "r1", runNode: scriptedRunner({ a: "x", b: "y" }) });
 
 		// Re-running must start clean, so the same graph can be reused.
 		expect(graph.initialState).toEqual({ task: "ship" });

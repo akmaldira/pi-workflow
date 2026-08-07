@@ -90,8 +90,6 @@ export interface BuiltGraph {
 	nodes: Map<string, GraphNode>;
 	/** Outgoing edges per source node. An array: a node with >1 edge fans out. */
 	edges: Map<string, Edge[]>;
-	/** "superstep" when any node has >1 outgoing edge (fan-out → parallel rounds). */
-	mode: "linear" | "superstep";
 	entry: string;
 	initialState: GraphState;
 	/**
@@ -386,19 +384,11 @@ export class GraphBuilder {
 		return {
 			nodes: new Map(this.nodes),
 			edges,
-			mode: this.computeMode(),
 			entry: this.entry!,
 			initialState: { ...this.initialState },
 		};
 	}
 
-	/** Superstep when any node fans out (>1 outgoing edge); linear otherwise. */
-	private computeMode(): "linear" | "superstep" {
-		for (const edgeList of this.edges.values()) {
-			if (edgeList.length > 1) return "superstep";
-		}
-		return "linear";
-	}
 }
 
 /**

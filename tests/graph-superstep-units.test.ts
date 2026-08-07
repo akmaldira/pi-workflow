@@ -22,7 +22,6 @@ describe("DSL: superstep mode detection", () => {
 		g.edge("b", END);
 		g.run();
 
-		expect(g.build().mode).toBe("linear");
 	});
 
 	it("becomes superstep as soon as one node fans out", () => {
@@ -37,7 +36,6 @@ describe("DSL: superstep mode detection", () => {
 		g.run();
 
 		const built = g.build();
-		expect(built.mode).toBe("superstep");
 		expect(built.edges.get("a")).toHaveLength(2);
 	});
 
@@ -51,7 +49,6 @@ describe("DSL: superstep mode detection", () => {
 		g.edge("b", (_s, r) => ((r as { ok?: boolean }).ok ? END : "a"));
 		g.run();
 
-		expect(g.build().mode).toBe("linear");
 	});
 
 	it("validates a fan-out graph's reachability across all edges", () => {
@@ -86,7 +83,6 @@ g.run();`;
 
 		const { graph } = buildGraphFromScript(script);
 
-		expect(graph.mode).toBe("superstep");
 		expect(graph.edges.get("scout")).toHaveLength(2);
 		// Both fan-in edges are recorded, one per source.
 		expect(graph.edges.get("a")).toHaveLength(1);
@@ -288,8 +284,7 @@ describe("display bridge: concurrent nodes", () => {
 		const running = agentsOf(manager);
 		expect(running).toHaveLength(2);
 		expect(running.every((a) => a.status === "running")).toBe(true);
-		// The round is what shows they belong to the same wave.
-		expect(running[0].label).toContain("[round 2]");
+		expect(running[0].label).toContain("researcherA");
 		expect(running[1].label).toContain("researcherB");
 	});
 
@@ -328,7 +323,7 @@ describe("display bridge: concurrent nodes", () => {
 		expect(logs).toContain("summarizer");
 	});
 
-	it("omits the round label for linear runs", () => {
+	it("labels a node with its agent", () => {
 		const { manager, bridge: b } = bridge();
 		b.nodeStarted({ step: 1, nodeId: "planner", nodeType: "agent", agentName: "planner" });
 

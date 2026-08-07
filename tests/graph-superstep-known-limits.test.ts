@@ -22,7 +22,7 @@ import { describe, expect, it } from "vitest";
 import { agent, END, GraphBuilder } from "../extensions/graph-dsl.ts";
 import type { BuiltGraph } from "../extensions/graph-dsl.ts";
 import type { NodeRunner } from "../extensions/graph-executor.ts";
-import { runSuperstepGraph } from "../extensions/graph-superstep-executor.ts";
+import { runSuperstepGraph } from "../extensions/graph-executor.ts";
 import { buildGraphFromScript } from "../extensions/graph-validator.ts";
 
 /**
@@ -128,7 +128,7 @@ describe("script-built graphs: conditional routing is correct", () => {
 	async function ranNodes(script: string): Promise<string[]> {
 		const { graph } = buildGraphFromScript(script);
 		const ran: string[] = [];
-		await runSuperstepGraph({ ...graph, mode: "superstep" as const }, {
+		await runSuperstepGraph(graph, {
 			runId: "script",
 			runNode: async (node) => {
 				ran.push(node.id);
@@ -217,7 +217,7 @@ g.edge("review", END);
 g.run({});`);
 
 		const calls: Record<string, number> = {};
-		const result = await runSuperstepGraph({ ...graph, mode: "superstep" as const }, {
+		const result = await runSuperstepGraph(graph, {
 			runId: "reset",
 			runNode: async (node) => {
 				const call = (calls[node.id] = (calls[node.id] ?? 0) + 1);

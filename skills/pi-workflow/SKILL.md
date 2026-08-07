@@ -178,22 +178,15 @@ g.edge('researcherA', 'summarizer');
 g.edge('researcherB', 'summarizer');  // summarizer fans in
 ```
 
-This switches the whole graph to **round-based (parallel) execution**. You do not opt in with a
-flag — a graph runs in parallel as soon as any node fans out. The rules that follow apply only to
-such graphs; a graph where every node has exactly one outgoing edge keeps the simple linear walk.
+There is no flag and no separate mode: every graph runs in rounds. A node whose branches are all
+single edges simply has one node per round, which is an ordinary sequential walk. Fan-out is just
+a property of the graph.
 
 **Three things to know:**
 
 1. **A fan-in node waits for *all* of its incoming edges.** `summarizer` above does not run when
    the first researcher finishes — it runs when both have. It never sees partial work. This holds
    even when the branches are different lengths and finish rounds apart.
-
-   ⚠️ **Route branches into a join with plain `g.edge(from, to)`, not a conditional edge.** The
-   wait is computed from declared edges, and a conditional edge does not declare its target. If a
-   branch reaches the join via `g.edge('mid', (s, r) => 'join')`, the join is not counted as
-   waiting on that branch and may run early on partial data, then run again when the branch
-   lands. Keep conditionals for *choosing* a path (escalation, approval) and use direct edges for
-   the branches that feed a join.
 
 2. **Nodes in the same round cannot see each other's results.** Work is committed to state at the
    end of a round, so `researcherA` cannot read `s.researcherB`. Only a node in a *later* round

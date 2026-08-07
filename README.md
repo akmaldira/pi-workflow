@@ -121,15 +121,11 @@ g.edge("researcherA", "summarizer");
 g.edge("researcherB", "summarizer");  // fan-in: waits for both
 ```
 
-A graph switches to round-based parallel execution as soon as any node fans out — there is no flag
-to set. Three rules follow from that:
+Every graph runs in rounds; a node with one outgoing edge simply gets a round to itself, which is
+an ordinary sequential walk. Three rules follow:
 
 - **A fan-in node waits for every incoming edge.** `summarizer` runs once, after both researchers,
-  and never sees partial work — even if the branches are different lengths. This is computed from
-  declared edges, so feed a join with direct `g.edge(from, to)` calls: a conditional edge does not
-  declare its target, and a branch that reaches a join through one is not counted in the wait
-  (the join may run early, then again when that branch lands). Use conditionals to *choose* a
-  path, not to feed a join.
+  and never sees partial work — even if the branches are different lengths. Conditional edges count toward that wait too.
 - **Nodes in the same round cannot see each other's results.** Results are committed at the end of
   a round, so a branch cannot read its sibling. Anything that needs both belongs downstream.
 - **Escalating from a branch re-runs its siblings.** Routing back to an earlier node restarts

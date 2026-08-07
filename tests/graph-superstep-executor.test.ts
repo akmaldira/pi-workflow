@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { agent, END, GraphBuilder } from "../extensions/graph-dsl.ts";
 import type { BuiltGraph, GraphState } from "../extensions/graph-dsl.ts";
-import { GraphExecutionError, type NodeRunner } from "../extensions/graph-executor.ts";
-import { runSuperstepGraph, type SuperstepRunOptions } from "../extensions/graph-superstep-executor.ts";
+import type { NodeRunner } from "../extensions/graph-executor.ts";
+import { runSuperstepGraph, type SuperstepRunOptions } from "../extensions/graph-executor.ts";
 
 type ScriptedFn = (state: GraphState, call: number) => unknown;
 type ScriptedResponse = ScriptedFn | string | number | boolean | null | object;
@@ -291,19 +291,6 @@ describe("runSuperstepGraph: mixed outcomes and failures", () => {
 		expect(result.error).toContain("researcherA");
 	});
 
-	it("rejects a linear graph passed to the superstep executor", async () => {
-		const g = new GraphBuilder();
-		g.node("a", agent("planner", () => "a"));
-		g.edge("a", END);
-		g.run();
-		const linear = g.build();
-
-		expect(linear.mode).toBe("linear");
-		// runSuperstepGraph is async, so the guard surfaces as a rejection.
-		await expect(
-			runSuperstepGraph(linear, { runId: "r1", runNode: scriptedRunner({ a: "x" }) }),
-		).rejects.toThrow(GraphExecutionError);
-	});
 });
 
 describe("runSuperstepGraph: callbacks", () => {

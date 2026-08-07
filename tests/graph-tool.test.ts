@@ -117,7 +117,7 @@ g.run();
 			const result = await run(LINEAR, { args: { task: "ship" } }, spawn);
 
 			expect(result.failed).toBe(false);
-			expect(result.text).toContain("completed in 2 steps");
+			expect(result.text).toContain("completed in 2 node executions across 2 rounds");
 			expect(result.text).toContain("Path: plan -> build -> END");
 			expect(spawn).toHaveBeenCalledTimes(2);
 		});
@@ -174,7 +174,7 @@ g.run();
 `;
 			const result = await run(script, { maxIterations: 3 }, spawn);
 
-			expect(result.text).toContain("stopped at the iteration cap");
+			expect(result.text).toContain("stopped at the round cap");
 			expect(spawn).toHaveBeenCalledTimes(3);
 		});
 	});

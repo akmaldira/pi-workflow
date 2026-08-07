@@ -6,7 +6,7 @@ import {
 	formatStateForReview,
 } from "../extensions/graph-interactive.ts";
 import { agent, END, GraphBuilder, human, mainAgent } from "../extensions/graph-dsl.ts";
-import { runGraph } from "../extensions/graph-executor.ts";
+import { runSuperstepGraph } from "../extensions/graph-executor.ts";
 import { createNodeRunner } from "../extensions/graph-node-runner.ts";
 
 function uiCtx(overrides: Record<string, unknown> = {}) {
@@ -227,7 +227,7 @@ describe("interactive nodes end to end", () => {
 	it("routes on the human's answer", async () => {
 		const ctx = uiCtx({ select: vi.fn().mockResolvedValue("ship") });
 
-		const result = await runGraph(approvalGraph(), {
+		const result = await runSuperstepGraph(approvalGraph(), {
 			runId: "r1",
 			runNode: createNodeRunner({
 				cwd: "/nonexistent",
@@ -241,7 +241,7 @@ describe("interactive nodes end to end", () => {
 	});
 
 	it("routes down the default branch when headless", async () => {
-		const result = await runGraph(approvalGraph(), {
+		const result = await runSuperstepGraph(approvalGraph(), {
 			runId: "r1",
 			runNode: createNodeRunner({
 				cwd: "/nonexistent",
@@ -259,7 +259,7 @@ describe("interactive nodes end to end", () => {
 	it("marks a defaulted answer so an edge can tell it from a real one", async () => {
 		// An edge that reads "default" as approval would turn absence into
 		// consent, so the two must be distinguishable in the result.
-		const result = await runGraph(approvalGraph(), {
+		const result = await runSuperstepGraph(approvalGraph(), {
 			runId: "r1",
 			runNode: createNodeRunner({
 				cwd: "/nonexistent",
@@ -275,7 +275,7 @@ describe("interactive nodes end to end", () => {
 	it("marks a real answer as ok", async () => {
 		const ctx = uiCtx({ select: vi.fn().mockResolvedValue("ship") });
 
-		const result = await runGraph(approvalGraph(), {
+		const result = await runSuperstepGraph(approvalGraph(), {
 			runId: "r1",
 			runNode: createNodeRunner({
 				cwd: "/nonexistent",
@@ -302,7 +302,7 @@ describe("interactive nodes end to end", () => {
 		g.run();
 
 		const spawn = spawnStub();
-		const result = await runGraph(g.build(), {
+		const result = await runSuperstepGraph(g.build(), {
 			runId: "r1",
 			runNode: createNodeRunner({
 				cwd: "/nonexistent",
@@ -324,7 +324,7 @@ describe("interactive nodes end to end", () => {
 		g.edge("decide", END);
 		g.run();
 
-		const result = await runGraph(g.build(), {
+		const result = await runSuperstepGraph(g.build(), {
 			runId: "r1",
 			runNode: createNodeRunner({
 				cwd: "/nonexistent",
@@ -349,7 +349,7 @@ describe("interactive nodes end to end", () => {
 		g.run();
 
 		const result = await Promise.race([
-			runGraph(g.build(), {
+			runSuperstepGraph(g.build(), {
 				runId: "r1",
 				runNode: createNodeRunner({
 					cwd: "/nonexistent",

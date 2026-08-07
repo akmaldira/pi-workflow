@@ -15,18 +15,16 @@ import {
 	formatPath,
 	type GraphRunResult,
 	type NodeExecution,
-	runGraph,
 } from "./graph-executor.ts";
 import {
 	GraphJournal,
 	graphScriptHash,
-	loadGraphResumeState,
 	loadGraphSuperstepResumeState,
 } from "./graph-journal.ts";
 import {
 	runSuperstepGraph,
 	type SuperstepResumeInput,
-} from "./graph-superstep-executor.ts";
+} from "./graph-executor.ts";
 import { createNodeRunner, type InteractiveHandlers } from "./graph-node-runner.ts";
 import { createInteractiveHandlers } from "./graph-interactive.ts";
 import { GraphRunContext } from "./graph-run-context.ts";
@@ -226,11 +224,6 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 			}
 
 			const { meta, graph } = built;
-			// A graph with any fan-out node runs in parallel rounds; everything
-			// else keeps the linear walk. The two executors have incompatible
-			// iteration semantics (rounds vs steps), so the choice is made once
-			// here and threaded through resume, journaling, and reporting.
-			const isSuperstep = graph.mode === "superstep";
 			const nodeIds = [...graph.nodes.keys()];
 			const runId = params.resumeRunId ?? `graph-${Date.now()}`;
 			const journalDir = `${cwd}/.pi-workflow/runs`;
@@ -246,10 +239,9 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 				details: { resumed: false, alreadyComplete: true },
 			};
 
-			let resume: Parameters<typeof runGraph>[1]["resume"];
 			let superstepResume: SuperstepResumeInput | undefined;
 
-			if (params.resumeRunId && isSuperstep) {
+			if (params.resumeRunId) {
 				// Superstep resume is round-atomic: it continues from the frontier
 				// snapshotted at the last completed barrier.
 				const resumeState = loadGraphSuperstepResumeState({
@@ -270,23 +262,6 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 					completedRounds: resumeState.completedRounds,
 					completedNodeExecutions: resumeState.completedNodeExecutions,
 					executedNodeIds: resumeState.executedNodeIds,
-				};
-			} else if (params.resumeRunId) {
-				const resumeState = loadGraphResumeState({
-					journalDir,
-					runId: params.resumeRunId,
-					scriptHash,
-				});
-
-				if (!resumeState.isValid) {
-					throw new Error(`Cannot resume: ${resumeState.invalidReason}`);
-				}
-				if (resumeState.resumeFrom === null) return alreadyComplete;
-
-				resume = {
-					state: resumeState.state,
-					resumeFrom: resumeState.resumeFrom,
-					completedSteps: resumeState.completedSteps,
 				};
 			}
 
@@ -382,7 +357,7 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 			/** Node executions. Diverges from iterations only for superstep runs. */
 			let nodeExecutions: number;
 			try {
-				if (isSuperstep) {
+				{
 					const superstepResult = await runSuperstepGraph(graph, {
 						runId,
 						signal,
@@ -400,18 +375,6 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 					});
 					nodeExecutions = superstepResult.nodeExecutions;
 					result = superstepResult;
-				} else {
-					result = await runGraph(graph, {
-						runId,
-						signal,
-						maxIterations: params.maxIterations,
-						resume,
-						runNode,
-						onNodeStart,
-						onNodeComplete,
-					});
-					// In a linear walk one step is one node execution.
-					nodeExecutions = result.iterations;
 				}
 			} finally {
 				context.cleanup();
@@ -420,7 +383,7 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 			journal.recordResult({
 				status: result.status,
 				iterations: result.iterations,
-				nodeExecutions: isSuperstep ? nodeExecutions : undefined,
+				nodeExecutions,
 				durationMs: result.durationMs,
 				error: result.error,
 			});
@@ -444,14 +407,12 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 			// A superstep run reports both counters: rounds measure how deep the
 			// coordination went, node executions measure how much work happened.
 			// Collapsing them would make a 5-node round read as a single step.
-			const completedSummary = isSuperstep
-				? `${nodeExecutions} node execution${nodeExecutions === 1 ? "" : "s"} across ${result.iterations} round${result.iterations === 1 ? "" : "s"}`
-				: `${result.iterations} step${result.iterations === 1 ? "" : "s"}`;
+			const completedSummary = `${nodeExecutions} node execution${nodeExecutions === 1 ? "" : "s"} across ${result.iterations} round${result.iterations === 1 ? "" : "s"}`;
 			const heading =
 				result.status === "completed"
 					? `Graph "${meta.name}" completed in ${completedSummary}.`
 					: result.status === "max_iterations"
-						? `Graph "${meta.name}" stopped at the ${isSuperstep ? "round" : "iteration"} cap.`
+						? `Graph "${meta.name}" stopped at the round cap.`
 						: `Graph "${meta.name}" aborted.`;
 			lines.push(heading);
 
@@ -501,7 +462,6 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 					runId,
 					name: meta.name,
 					status: result.status,
-					mode: graph.mode,
 					iterations: result.iterations,
 					nodeExecutions,
 					path: result.path,

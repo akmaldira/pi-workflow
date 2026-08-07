@@ -119,8 +119,6 @@ describe("GraphBuilder", () => {
 
 			expect([...built.nodes.keys()]).toEqual(["a", "b"]);
 			expect(built.entry).toBe("a");
-			// Every node has exactly one outgoing edge → linear execution mode.
-			expect(built.mode).toBe("linear");
 		});
 
 		it("rejects a duplicate node id", () => {
@@ -195,7 +193,6 @@ describe("GraphBuilder", () => {
 			expect(built.edges.get("a")).toHaveLength(2);
 			expect(built.edges.get("a")?.[0]).toMatchObject({ type: "direct", to: "b" });
 			expect(built.edges.get("a")?.[1]).toMatchObject({ type: "direct", to: "c" });
-			expect(built.mode).toBe("superstep");
 		});
 	});
 

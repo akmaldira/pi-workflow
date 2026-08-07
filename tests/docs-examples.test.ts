@@ -150,16 +150,16 @@ describe("documentation examples", () => {
 			expect(skill, "SKILL must explain the two counters").toMatch(/node executions across/i);
 		});
 
-		it.skipIf(!fs.existsSync(SKILL))("ships a parallel example that really is parallel", () => {
-			// A fan-out example that quietly validates as a linear graph would
-			// teach the syntax while demonstrating none of the behaviour.
-			const examples = completeGraphExamples(fs.readFileSync(SKILL, "utf-8"));
-			const modes = examples.map(
-				(example) => buildGraphFromScript(example, { args: { task: "t" } }).graph.mode,
-			);
-			expect(modes, "SKILL must contain at least one superstep (fan-out) example").toContain(
-				"superstep",
-			);
+		it.skipIf(!fs.existsSync(SKILL))("ships a parallel fan-out example", () => {
+			// A fan-out example must exist, or the parallel rules are documented
+			// without anything demonstrating them.
+			const skill = fs.readFileSync(SKILL, "utf-8");
+			const examples = completeGraphExamples(skill);
+			const hasFanOut = examples.some((example) => {
+				const graph = buildGraphFromScript(example, { args: { task: "t" } }).graph;
+				return [...graph.edges.values()].some((edges) => edges.length > 1);
+			});
+			expect(hasFanOut, "SKILL must contain a fan-out example").toBe(true);
 		});
 	});
 });

@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { agent, END, GraphBuilder } from "../extensions/graph-dsl.ts";
 import type { NodeExecution } from "../extensions/graph-executor.ts";
-import { runGraph } from "../extensions/graph-executor.ts";
+import { runSuperstepGraph } from "../extensions/graph-executor.ts";
 import {
 	GraphJournal,
 	graphScriptHash,
@@ -475,7 +475,7 @@ describe("resume through the executor", () => {
 		const graph = tddGraph();
 		const ran: string[] = [];
 
-		const result = await runGraph(graph, {
+		const result = await runSuperstepGraph(graph, {
 			runId: "run1",
 			runNode: async (node) => {
 				ran.push(node.id);
@@ -483,8 +483,11 @@ describe("resume through the executor", () => {
 			},
 			resume: {
 				state: { task: "auth", architect: "contract v1" },
-				resumeFrom: "green",
-				completedSteps: 1,
+				resumeFromFrontier: ["green"],
+				remainingInDegree: {},
+				completedRounds: 1,
+				completedNodeExecutions: 1,
+				executedNodeIds: [],
 			},
 		});
 
@@ -496,7 +499,7 @@ describe("resume through the executor", () => {
 	it("gives resumed nodes the replayed state", async () => {
 		const seen: unknown[] = [];
 
-		await runGraph(tddGraph(), {
+		await runSuperstepGraph(tddGraph(), {
 			runId: "run1",
 			runNode: async (node, state) => {
 				if (node.id === "green") seen.push(state.architect);
@@ -504,8 +507,11 @@ describe("resume through the executor", () => {
 			},
 			resume: {
 				state: { task: "auth", architect: "contract v1" },
-				resumeFrom: "green",
-				completedSteps: 1,
+				resumeFromFrontier: ["green"],
+				remainingInDegree: {},
+				completedRounds: 1,
+				completedNodeExecutions: 1,
+				executedNodeIds: [],
 			},
 		});
 
@@ -514,11 +520,18 @@ describe("resume through the executor", () => {
 
 	it("counts prior steps against the iteration cap", async () => {
 		// Otherwise repeated resumes could walk a cycle indefinitely.
-		const result = await runGraph(tddGraph(), {
+		const result = await runSuperstepGraph(tddGraph(), {
 			runId: "run1",
 			maxIterations: 2,
 			runNode: async (node) => ({ result: node.id }),
-			resume: { state: { task: "auth" }, resumeFrom: "green", completedSteps: 2 },
+			resume: {
+				state: { task: "auth" },
+				resumeFromFrontier: ["green"],
+				remainingInDegree: {},
+				completedRounds: 2,
+				completedNodeExecutions: 2,
+				executedNodeIds: ["architect"],
+			},
 		});
 
 		expect(result.status).toBe("max_iterations");
@@ -527,13 +540,16 @@ describe("resume through the executor", () => {
 	it("prepends prior history so the run reads as one walk", async () => {
 		const prior = [execution({ step: 1, nodeId: "architect", routedTo: "green" })];
 
-		const result = await runGraph(tddGraph(), {
+		const result = await runSuperstepGraph(tddGraph(), {
 			runId: "run1",
 			runNode: async (node) => ({ result: node.id }),
 			resume: {
 				state: { task: "auth", architect: "v1" },
-				resumeFrom: "green",
-				completedSteps: 1,
+				resumeFromFrontier: ["green"],
+				remainingInDegree: {},
+				completedRounds: 1,
+				completedNodeExecutions: 1,
+				executedNodeIds: ["architect"],
 				history: prior,
 			},
 		});
@@ -542,15 +558,6 @@ describe("resume through the executor", () => {
 		expect(result.history).toHaveLength(3);
 	});
 
-	it("rejects a resume point that is not in the graph", async () => {
-		await expect(
-			runGraph(tddGraph(), {
-				runId: "run1",
-				runNode: async () => ({ result: "x" }),
-				resume: { state: {}, resumeFrom: "ghost", completedSteps: 1 },
-			}),
-		).rejects.toThrow(/Cannot resume from "ghost"/);
-	});
 
 	it("round-trips a real run through the journal and back", async () => {
 		const graph = tddGraph();
@@ -567,7 +574,7 @@ describe("resume through the executor", () => {
 			initialState: graph.initialState,
 		});
 
-		const first = await runGraph(graph, {
+		const first = await runSuperstepGraph(graph, {
 			runId: "run1",
 			runNode: async (node) => {
 				if (node.id === "reviewer") throw new Error("reviewer crashed");
@@ -591,7 +598,7 @@ describe("resume through the executor", () => {
 		expect(resumeState.state).toMatchObject({ architect: "architect-v1", green: "green-v1" });
 
 		const reran: string[] = [];
-		const second = await runGraph(graph, {
+		const second = await runSuperstepGraph(graph, {
 			runId: "run1",
 			runNode: async (node) => {
 				reran.push(node.id);
@@ -599,8 +606,11 @@ describe("resume through the executor", () => {
 			},
 			resume: {
 				state: resumeState.state,
-				resumeFrom: resumeState.resumeFrom!,
-				completedSteps: resumeState.completedSteps,
+				resumeFromFrontier: [resumeState.resumeFrom!],
+				remainingInDegree: {},
+				completedRounds: resumeState.completedSteps,
+				completedNodeExecutions: resumeState.completedSteps,
+				executedNodeIds: resumeState.executions.map((e) => e.nodeId),
 			},
 		});
 

@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, END, GraphBuilder, human, mainAgent } from "../extensions/graph-dsl.ts";
-import { runGraph } from "../extensions/graph-executor.ts";
+import { runSuperstepGraph } from "../extensions/graph-executor.ts";
 import {
 	createNodeRunner,
 	ESCALATION_PROTOCOL_BLOCK,
@@ -650,7 +650,7 @@ describe("end to end: escalation through a real runner", () => {
 		g.edge("reviewer", END);
 		g.run({ task: "soft-delete users" });
 
-		const result = await runGraph(g.build(), {
+		const result = await runSuperstepGraph(g.build(), {
 			runId: "r1",
 			runNode: createNodeRunner({
 				cwd: "/nonexistent-project",
@@ -676,7 +676,7 @@ describe("end to end: escalation through a real runner", () => {
 		g.edge("a", END);
 		g.run();
 
-		const result = await runGraph(g.build(), {
+		const result = await runSuperstepGraph(g.build(), {
 			runId: "r1",
 			runNode: createNodeRunner({
 				cwd: "/nonexistent-project",

@@ -153,10 +153,10 @@ export class GraphDisplayBridge {
 		// nodes run concurrently, so parallel nodes never collide here.
 		this.activeIds.set(info.step, id);
 
-		const base = info.agentName ? `${info.nodeId} (${info.agentName})` : info.nodeId;
-		// In a parallel run several agents are active at once, so the round is
-		// the only thing that shows which ones belong to the same wave.
-		const label = info.round === undefined ? base : `${base} [round ${info.round}]`;
+		// Every run is round-based now, so tagging each label with its round
+		// would add noise to the common one-node-per-round case. Which nodes
+		// shared a wave is already reported by roundComplete().
+		const label = info.agentName ? `${info.nodeId} (${info.agentName})` : info.nodeId;
 
 		try {
 			this.manager.markAgentStart(this.runId, 0, {
