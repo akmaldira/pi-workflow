@@ -197,3 +197,69 @@ g.run({});`);
 		expect(ran.filter((n) => n === "join")).toHaveLength(1);
 	});
 });
+
+describe("wave reset under claims + selected", () => {
+	/**
+	 * A reset must clear `selected` as well as `executed`. Without that, a node
+	 * selected in an earlier wave would still count as selected afterwards and
+	 * could fire without anything routing to it in the new wave — the same
+	 * class of bug the readiness rule exists to prevent.
+	 */
+	it("does not leak a selection across a reset", async () => {
+		const { graph } = buildGraphFromScript(`export const meta = { name: "esc", description: "d" };
+const g = graph();
+g.node("architect", agent("architect", () => "d"));
+g.node("green", agent("green", () => "i"));
+g.node("review", agent("reviewer", () => "r"));
+g.edge("architect", "green");
+g.edge("green", (s, r) => r.status === 'blocked' ? "architect" : "review");
+g.edge("review", END);
+g.run({});`);
+
+		const calls: Record<string, number> = {};
+		const result = await runSuperstepGraph({ ...graph, mode: "superstep" as const }, {
+			runId: "reset",
+			runNode: async (node) => {
+				const call = (calls[node.id] = (calls[node.id] ?? 0) + 1);
+				// green escalates once, so `review` is passed over in wave 1.
+				if (node.id === "green" && call === 1) return { result: { status: "blocked" } };
+				return { result: { status: "ok" } };
+			},
+		});
+
+		expect(result.path).toEqual(["architect", "green", "architect", "green", "review"]);
+		expect(result.history.filter((h) => h.nodeId === "review")).toHaveLength(1);
+	});
+
+	it("still reproduces the design doc's escalation example exactly", async () => {
+		const { graph } = buildGraphFromScript(`export const meta = { name: "d6", description: "d" };
+const g = graph();
+g.node("planner", agent("planner", () => "p"));
+g.node("workerA", agent("worker", () => "a"));
+g.node("workerB", agent("worker", () => "b"));
+g.node("reviewer", agent("reviewer", () => "r"));
+g.edge("planner", "workerA");
+g.edge("planner", "workerB");
+g.edge("workerA", "reviewer");
+g.edge("workerB", (s, r) => r.status === 'blocked' ? "planner" : "reviewer");
+g.edge("reviewer", (s, r) => r.status === 'blocked' ? "planner" : END);
+g.run({});`);
+
+		const calls: Record<string, number> = {};
+		const result = await runSuperstepGraph(graph, {
+			runId: "d6",
+			runNode: async (node) => {
+				const call = (calls[node.id] = (calls[node.id] ?? 0) + 1);
+				if (node.id === "workerB" && call === 1) {
+					return { result: { status: "blocked", blockedOn: "requirements" } };
+				}
+				return { result: { status: "ok" } };
+			},
+		});
+
+		// The table in docs/PARALLEL-OPTIONA-GAP-ANALYSIS.md, Decision 6.
+		expect(result.iterations).toBe(5); // rounds
+		expect(result.nodeExecutions).toBe(7);
+		expect(result.history.filter((h) => h.nodeId === "reviewer")).toHaveLength(1);
+	});
+});
