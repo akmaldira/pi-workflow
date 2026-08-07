@@ -1,6 +1,15 @@
 /**
  * Known limitations of the superstep executor.
  *
+ * SCOPE: script-built graphs are FIXED — conditional edge targets are recovered
+ * from the AST, so a conditional fan-in join runs exactly once. What remains is
+ * graphs built programmatically via GraphBuilder (tests and direct API use),
+ * which have no AST to analyse and fall back to a conservative reach estimate
+ * that cannot tell which node a conditional edge will pick.
+ *
+ * The workflow tool always builds from a script, so the user-facing path is
+ * correct. This file pins the remaining gap in the programmatic path.
+ *
  * These tests document behaviour that does NOT match the design in
  * docs/PARALLEL-OPTIONA-GAP-ANALYSIS.md. They are written as assertions of
  * what currently happens, not of what should happen, so the gap stays visible
@@ -14,6 +23,7 @@ import { agent, END, GraphBuilder } from "../extensions/graph-dsl.ts";
 import type { BuiltGraph } from "../extensions/graph-dsl.ts";
 import type { NodeRunner } from "../extensions/graph-executor.ts";
 import { runSuperstepGraph } from "../extensions/graph-superstep-executor.ts";
+import { buildGraphFromScript } from "../extensions/graph-validator.ts";
 
 /**
  * planner ──→ fast ─────────────→ join      (direct edge into join)
@@ -38,7 +48,7 @@ function conditionalJoinGraph(): BuiltGraph {
 	return g.build();
 }
 
-describe("KNOWN LIMITATION: AND fan-in does not cover conditional in-edges", () => {
+describe("KNOWN LIMITATION: conditional fan-in on PROGRAMMATIC graphs only", () => {
 	/**
 	 * Why this happens: readiness is driven by a static in-degree count, and a
 	 * conditional edge carries only an opaque function — it declares no target,
@@ -106,5 +116,84 @@ describe("KNOWN LIMITATION: AND fan-in does not cover conditional in-edges", () 
 
 		expect(result.status).toBe("completed");
 		expect(result.history.filter((h) => h.nodeId === "join")).toHaveLength(1);
+	});
+});
+
+describe("script-built graphs: conditional routing is correct", () => {
+	/**
+	 * The counterpart to the limitation above. These are the cases the audit
+	 * found broken; they go through the real script pipeline, which is the path
+	 * the workflow tool always uses.
+	 */
+	async function ranNodes(script: string): Promise<string[]> {
+		const { graph } = buildGraphFromScript(script);
+		const ran: string[] = [];
+		await runSuperstepGraph({ ...graph, mode: "superstep" as const }, {
+			runId: "script",
+			runNode: async (node) => {
+				ran.push(node.id);
+				return { result: { ok: true, status: "ok" } };
+			},
+		});
+		return ran;
+	}
+
+	const META = `export const meta = { name: "t", description: "d" };\n`;
+
+	it("runs only the branch a conditional edge chose", async () => {
+		// Previously ran BOTH deploy and rollback — a workflow that deploys and
+		// rolls back at the same time.
+		const ran = await ranNodes(`${META}
+const g = graph();
+g.node("green", agent("green", () => "g"));
+g.node("deploy", agent("worker", () => "d"));
+g.node("rollback", agent("worker", () => "r"));
+g.edge("green", (s, r) => r.ok ? "deploy" : "rollback");
+g.edge("deploy", END);
+g.edge("rollback", END);
+g.run({});`);
+
+		expect(ran).toEqual(["green", "deploy"]);
+		expect(ran).not.toContain("rollback");
+	});
+
+	it("does not run a not-taken branch inside a fan-out graph", async () => {
+		// Previously ran p, a, b, x, y, x — a not-taken branch plus a duplicate.
+		const ran = await ranNodes(`${META}
+const g = graph();
+g.node("p", agent("planner", () => "p"));
+g.node("a", agent("worker", () => "a"));
+g.node("b", agent("worker", () => "b"));
+g.node("x", agent("worker", () => "x"));
+g.node("y", agent("worker", () => "y"));
+g.edge("p", "a");
+g.edge("p", "b");
+g.edge("a", (s, r) => r.ok ? "x" : "y");
+g.edge("b", END);
+g.edge("x", END);
+g.edge("y", END);
+g.run({});`);
+
+		expect(ran.filter((n) => n === "x")).toHaveLength(1);
+		expect(ran).not.toContain("y");
+	});
+
+	it("runs a conditional fan-in join exactly once", async () => {
+		const ran = await ranNodes(`${META}
+const g = graph();
+g.node("planner", agent("planner", () => "p"));
+g.node("fast", agent("worker", () => "f"));
+g.node("slow", agent("worker", () => "s"));
+g.node("mid", agent("worker", () => "m"));
+g.node("join", agent("worker", () => "j"));
+g.edge("planner", "fast");
+g.edge("planner", "slow");
+g.edge("fast", "join");
+g.edge("slow", "mid");
+g.edge("mid", (s, r) => "join");
+g.edge("join", END);
+g.run({});`);
+
+		expect(ran.filter((n) => n === "join")).toHaveLength(1);
 	});
 });

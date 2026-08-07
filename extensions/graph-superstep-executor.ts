@@ -108,40 +108,109 @@ export interface SuperstepRunResult {
 	finalResult?: unknown;
 }
 
-/** A fired edge: `from` routed to `to` (a real node, not END). */
+/** An edge whose claim on `to` was released when `from` ran. */
 interface FiredEdge {
 	from: string;
 	to: string;
+	/** True when `from` actually routed here, rather than merely releasing a claim. */
+	selected: boolean;
 }
 
 /** Outcome of resolving one node's outgoing edges. */
 type EdgeResolution =
-	| { targets: string[] }
+	| {
+			/** Targets actually routed to. These become ready. */
+			selected: string[];
+			/**
+			 * Every target whose claim this node's edges released, chosen or not.
+			 *
+			 * A conditional edge claimed each node it might select, so all of
+			 * those claims must be released once it has decided — otherwise the
+			 * ones it passed over would wait forever.
+			 */
+			resolved: string[];
+	  }
 	| { error: string };
 
 /**
- * Static in-degree: how many incoming edges each node has (edges to END do
- * not count). A node is ready when its remaining in-degree reaches 0.
+ * Static claims: how many edges could route to each node.
+ *
+ * A claim is released when the edge that made it resolves, whatever it chose.
+ * Claims answer "is anything still able to route here?" — which, paired with
+ * whether an edge actually selected the node, is what readiness needs. Edges to
+ * END claim nothing.
  */
-function computeStaticInDegree(graph: BuiltGraph): Map<string, number> {
-	const inDegree = new Map<string, number>();
-	for (const id of graph.nodes.keys()) inDegree.set(id, 0);
+function computeStaticClaims(graph: BuiltGraph): Map<string, number> {
+	const claims = new Map<string, number>();
+	for (const id of graph.nodes.keys()) claims.set(id, 0);
 
-	for (const edgeList of graph.edges.values()) {
+	const add = (target: string): void => {
+		if (!claims.has(target)) return;
+		claims.set(target, (claims.get(target) ?? 0) + 1);
+	};
+
+	for (const [from, edgeList] of graph.edges) {
 		for (const edge of edgeList) {
-			if (edge.type === "direct" && edge.to !== END) {
-				const target = edge.to as string;
-				inDegree.set(target, (inDegree.get(target) ?? 0) + 1);
+			if (edge.type === "direct") {
+				if (edge.to !== END) add(edge.to as string);
+				continue;
 			}
-			// A conditional edge may fire at any one node; we cannot know which
-			// statically, so it is not counted here. Readiness is driven by what
-			// actually fires at runtime (see resolveEdges + the decrement loop),
-			// not by this static count. This keeps fan-in correct: a conditional
-			// predecessor only satisfies the target when it actually routes there.
+
+			// A conditional edge claims every node it could select. Its actual
+			// choice is not known until it runs, and a node must not be treated
+			// as settled while an edge might still route to it.
+			for (const target of conditionalTargetsOf(graph, from)) add(target);
 		}
 	}
 
-	return inDegree;
+	return claims;
+}
+
+/**
+ * The nodes a conditional edge leaving `from` may select.
+ *
+ * Falls back to every node reachable from `from` when the targets could not be
+ * read statically (a non-inline function, or a computed target). Over-claiming
+ * only delays a node until the edge resolves, and is self-cancelling because an
+ * edge decrements exactly the set it claimed; under-claiming would let a node
+ * run without being routed to, which is the failure this exists to prevent.
+ */
+function conditionalTargetsOf(graph: BuiltGraph, from: string): string[] {
+	const info = graph.conditionalTargets?.get(from);
+	if (info?.analysable) return info.targets;
+
+	// Unanalysable, or a graph built without script analysis.
+	const reachable = fallbackReach.get(graph)?.get(from);
+	return reachable ? [...reachable] : [];
+}
+
+/**
+ * Conservative reach used when a conditional edge cannot be read statically.
+ *
+ * Every node except strict ancestors of `from`: claiming a node that must run
+ * *before* `from` would deadlock, because a claim is only released when the
+ * claiming node runs.
+ */
+const fallbackReach = new WeakMap<BuiltGraph, Map<string, Set<string>>>();
+
+function primeFallbackReach(
+	graph: BuiltGraph,
+	forwardReachable: Map<string, Set<string>>,
+): void {
+	const map = new Map<string, Set<string>>();
+
+	// Claim only what is reachable from the source, following direct edges and
+	// any conditional targets that *were* readable. Claiming more than this
+	// deadlocks: a claim is released only when the claiming node runs, so
+	// claiming a node that has to run first blocks the very edge that would
+	// release it.
+	for (const from of graph.nodes.keys()) {
+		const reach = new Set(forwardReachable.get(from) ?? []);
+		reach.delete(from);
+		map.set(from, reach);
+	}
+
+	fallbackReach.set(graph, map);
 }
 
 /**
@@ -191,13 +260,22 @@ function resolveEdges(
 	result: unknown,
 	graph: BuiltGraph,
 ): EdgeResolution {
-	const targets = new Set<string>();
+	const selected = new Set<string>();
+	const resolved = new Set<string>();
 
 	for (const edge of edges) {
 		if (edge.type === "direct") {
-			if (edge.to !== END) targets.add(edge.to as string);
+			if (edge.to !== END) {
+				selected.add(edge.to as string);
+				resolved.add(edge.to as string);
+			}
 			continue;
 		}
+
+		// This edge claimed every node it might select, so every one of those
+		// claims is released now that it has decided — including the ones it
+		// passed over, which would otherwise never become ready.
+		for (const candidate of conditionalTargetsOf(graph, edge.from)) resolved.add(candidate);
 
 		let target: string | EndSymbol;
 		try {
@@ -223,10 +301,11 @@ function resolveEdges(
 			};
 		}
 
-		targets.add(target);
+		selected.add(target);
+		resolved.add(target);
 	}
 
-	return { targets: [...targets] };
+	return { selected: [...selected], resolved: [...resolved] };
 }
 
 /**
@@ -238,21 +317,23 @@ function resolveEdges(
 function computeNextFrontier(
 	firedEdges: FiredEdge[],
 	executed: Set<string>,
-	remainingInDegree: Map<string, number>,
-	staticInDegree: Map<string, number>,
+	selected: Set<string>,
+	remainingClaims: Map<string, number>,
+	staticClaims: Map<string, number>,
 	forwardReachable: Map<string, Set<string>>,
 	entry: string,
 ): Set<string> {
-	// 1. Partition fired edges: a target that already ran is a back-edge
-	//    (cycle / escalation) and triggers a wave reset.
+	// 1. Partition: an edge routed at a node that already ran is a back-edge
+	//    (cycle / escalation) and triggers a wave reset. Only a *selected*
+	//    edge counts — merely releasing a claim is not a route.
 	const resetTargets = new Set<string>();
 	const normalFired: FiredEdge[] = [];
 
-	for (const { from, to } of firedEdges) {
-		if (executed.has(to)) {
-			resetTargets.add(to);
+	for (const fired of firedEdges) {
+		if (fired.selected && executed.has(fired.to)) {
+			resetTargets.add(fired.to);
 		} else {
-			normalFired.push({ from, to });
+			normalFired.push(fired);
 		}
 	}
 
@@ -264,38 +345,48 @@ function computeNextFrontier(
 		}
 	}
 
-	// 3. Apply the reset: restore static in-degree and forget prior execution,
-	//    so re-runs in the subgraph are clean and not mistaken for back-edges.
+	// 3. Apply the reset: restore claims, and forget both prior execution and
+	//    prior selection so the next wave starts clean. Leaving `selected` set
+	//    would let a node fire again without being routed to.
 	for (const node of resetNodes) {
-		remainingInDegree.set(node, staticInDegree.get(node) ?? 0);
+		remainingClaims.set(node, staticClaims.get(node) ?? 0);
 		executed.delete(node);
+		selected.delete(node);
 	}
 	for (const target of resetTargets) {
-		// The escalation target re-runs now: it is immediately ready.
-		remainingInDegree.set(target, 0);
+		// The escalation target re-runs now: it is routed to and ready.
+		remainingClaims.set(target, 0);
 		executed.delete(target);
+		selected.add(target);
 	}
 	if (resetNodes.has(entry)) {
 		// The entry node is always runnable.
-		remainingInDegree.set(entry, 0);
+		remainingClaims.set(entry, 0);
+		selected.add(entry);
 	}
 
-	// 4. Apply normal decrements. Skip a fired edge whose SOURCE is in the
-	//    reset subgraph: that source will re-run, so its edge is not yet
-	//    satisfied. Skip reset targets (already at 0). An external source
-	//    firing INTO a reset node does satisfy one incoming edge, so it
-	//    decrements normally.
-	for (const { from, to } of normalFired) {
-		if (resetNodes.has(from)) continue;
-		if (resetTargets.has(to)) continue;
-		const current = remainingInDegree.get(to) ?? 0;
-		remainingInDegree.set(to, Math.max(0, current - 1));
+	// 4. Release claims. Skip an edge whose SOURCE is in the reset subgraph:
+	//    that source will re-run, so its edge has not really resolved. Skip
+	//    reset targets, already forced ready above.
+	for (const fired of normalFired) {
+		if (resetNodes.has(fired.from)) continue;
+		if (resetTargets.has(fired.to)) continue;
+		const current = remainingClaims.get(fired.to) ?? 0;
+		remainingClaims.set(fired.to, Math.max(0, current - 1));
+		// Only an edge that actually routed here marks the node selected.
+		if (fired.selected) selected.add(fired.to);
 	}
 
-	// 5. Ready = in-degree 0 and not already executed this wave.
+	// 5. Ready = nothing can still route here, something did route here, and it
+	//    has not already run this wave.
+	//
+	//    `selected` is what makes this a graph walk rather than a sweep over
+	//    every node: without it, a node whose only incoming edges are
+	//    conditional has no claims to wait on and would run immediately,
+	//    whether or not any edge chose it.
 	const next = new Set<string>();
-	for (const [node, degree] of remainingInDegree) {
-		if (degree === 0 && !executed.has(node)) next.add(node);
+	for (const [node, claims] of remainingClaims) {
+		if (claims === 0 && selected.has(node) && !executed.has(node)) next.add(node);
 	}
 	return next;
 }
@@ -334,8 +425,11 @@ export async function runSuperstepGraph(
 		}
 	}
 
-	const staticInDegree = computeStaticInDegree(graph);
+	// Reachability first: the conservative fallback for unreadable conditional
+	// edges is scoped by it, and claims depend on that fallback.
 	const forwardReachable = computeForwardReachable(graph);
+	primeFallbackReach(graph, forwardReachable);
+	const staticClaims = computeStaticClaims(graph);
 
 	const resume = options.resume;
 	const startedAt = Date.now();
@@ -343,7 +437,9 @@ export async function runSuperstepGraph(
 	const history: NodeExecution[] = resume?.history ? [...resume.history] : [];
 	const path: string[] = history.map((execution) => execution.nodeId);
 
-	const remainingInDegree = new Map<string, number>();
+	const remainingClaims = new Map<string, number>();
+	/** Nodes an edge actually routed to. Ready requires this, not just claims 0. */
+	const selected = new Set<string>();
 	const executed = new Set<string>();
 	let frontier: Set<string>;
 	let iterations: number;
@@ -352,8 +448,11 @@ export async function runSuperstepGraph(
 
 	if (resume) {
 		for (const [k, v] of Object.entries(resume.remainingInDegree)) {
-			remainingInDegree.set(k, v);
+			remainingClaims.set(k, v);
 		}
+		// The frontier was computed before the crash, so those nodes were
+		// selected by definition.
+		for (const nodeId of resume.resumeFromFrontier) selected.add(nodeId);
 		frontier = new Set(resume.resumeFromFrontier);
 		iterations = resume.completedRounds;
 		nodeExecutions = resume.completedNodeExecutions;
@@ -364,9 +463,10 @@ export async function runSuperstepGraph(
 		// as settled (a crashed round's nodes are journaled but not complete).
 		for (const nodeId of resume.resumeFromFrontier) executed.delete(nodeId);
 	} else {
-		for (const [k, v] of staticInDegree) remainingInDegree.set(k, v);
-		// The entry bypasses in-degree: it is unconditionally ready first.
-		remainingInDegree.set(graph.entry, 0);
+		for (const [k, v] of staticClaims) remainingClaims.set(k, v);
+		// The entry is unconditionally ready: nothing routes to it to begin with.
+		remainingClaims.set(graph.entry, 0);
+		selected.add(graph.entry);
 		frontier = new Set([graph.entry]);
 		iterations = 0;
 		nodeExecutions = 0;
@@ -530,12 +630,16 @@ export async function runSuperstepGraph(
 				continue;
 			}
 
-			for (const target of resolved.targets) {
-				firedEdges.push({ from: nodeId, to: target });
+			for (const target of resolved.resolved) {
+				firedEdges.push({
+					from: nodeId,
+					to: target,
+					selected: resolved.selected.includes(target),
+				});
 			}
 
 			const routedTo =
-				resolved.targets.length > 0 ? resolved.targets.map(describeTarget).join(",") : "END";
+				resolved.selected.length > 0 ? resolved.selected.map(describeTarget).join(",") : "END";
 			const execution: NodeExecution = {
 				step: r.step,
 				round,
@@ -559,8 +663,9 @@ export async function runSuperstepGraph(
 		frontier = computeNextFrontier(
 			firedEdges,
 			executed,
-			remainingInDegree,
-			staticInDegree,
+			selected,
+			remainingClaims,
+			staticClaims,
 			forwardReachable,
 			graph.entry,
 		);
@@ -569,7 +674,7 @@ export async function runSuperstepGraph(
 			round,
 			nodeIds: roundNodeIds,
 			nextFrontier: [...frontier],
-			remainingInDegree: toRecord(remainingInDegree),
+			remainingInDegree: toRecord(remainingClaims),
 		});
 	}
 
