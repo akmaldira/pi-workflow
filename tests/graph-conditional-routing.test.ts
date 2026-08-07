@@ -1,5 +1,5 @@
 /**
- * Known limitations of the superstep executor.
+ * Conditional routing: what works, and the one case that does not.
  *
  * SCOPE: script-built graphs are FIXED — conditional edge targets are recovered
  * from the AST, so a conditional fan-in join runs exactly once. What remains is
@@ -48,7 +48,7 @@ function conditionalJoinGraph(): BuiltGraph {
 	return g.build();
 }
 
-describe("KNOWN LIMITATION: conditional fan-in on PROGRAMMATIC graphs only", () => {
+describe("KNOWN LIMITATION: conditional fan-in on programmatic graphs", () => {
 	/**
 	 * Why this happens: readiness is driven by a static in-degree count, and a
 	 * conditional edge carries only an opaque function — it declares no target,

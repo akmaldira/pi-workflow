@@ -15,45 +15,40 @@ was not pursued.
 | Concurrent-node display, barrier logging | `extensions/graph-display-bridge.ts` |
 | Tests | `tests/graph-superstep-executor.test.ts`, `tests/graph-superstep-units.test.ts`, `tests/e2e-superstep.test.ts` |
 
-**CRITICAL — the two executors are not one graph model.** Auditing revealed
-that `runSuperstepGraph` is not a generalisation of the linear walk, so the
-system currently has two different execution semantics rather than one graph
-model, which is not what this plan describes.
+**RESOLVED — there is now one execution model.** The audit recorded here found
+that `runSuperstepGraph` was not a generalisation of the linear walk, so the
+system had two execution semantics rather than the single graph model this
+plan specifies. Readiness was `in-degree 0 && !executed`, and conditional edges
+could not be counted in in-degree because their target is an opaque closure —
+so a node reached only by conditional edges ran in round 1 whether or not
+anything routed to it. A `green -> deploy | rollback` graph ran *both* branches.
 
-Readiness is `remainingInDegree === 0 && !executed`, and a conditional edge is
-not counted in in-degree (its target is an opaque function). A node whose only
-incoming edges are conditional therefore starts at in-degree 0 and is ready in
-round 1 — regardless of whether anything ever routed to it. The frontier means
-"not yet run", not "actually selected".
+The fix, in three parts:
 
-Consequences, all reproduced:
+1. **Conditional targets are recovered from the AST at build time**
+   (`graph-edge-targets.ts`), reading only the expressions that become an
+   edge's return value so comparison literals are not mistaken for targets.
+   What cannot be read statically is flagged rather than guessed at.
+2. **Readiness became two-part**: `claims === 0 && selected && !executed`.
+   Every edge claims each of its possible targets; running a node releases the
+   claims on *all* of them but marks only its actual choice `selected`.
+   `selected` is what makes the frontier "actually routed to" rather than
+   "not yet run".
+3. **Back-edges do not claim.** A claim is released only when the claiming node
+   runs, so an edge whose source is downstream of its target would deadlock;
+   such an edge can only re-enter the target in a later wave, which the wave
+   reset already handles.
 
-| Graph shape | Expected | Actual |
-|---|---|---|
-| all-direct diamond | `s, a, b, j` | `s, a, b, j` ✓ |
-| `green → deploy` OR `rollback` | one branch | **both ran** |
-| fan-out + either/or branch | `p, a, b, x` | **`p, a, b, x, y, x`** |
+The linear executor is deleted. `BuiltGraph` no longer carries a mode, and
+fan-out is a property of a graph rather than a separate execution path. The
+expected walks the linear executor produced are pinned in
+`tests/graph-sequential-contract.test.ts`.
 
-The middle row is a workflow that deploys *and* rolls back. The third is a
-genuine fan-out graph (`mode: "superstep"`), so this is not hypothetical: it is
-reachable through the shipped tool, and it also runs a node twice.
-
-It is masked today only because `mode` is `"superstep"` solely when some node
-has out-degree > 1, and every shipped parallel example uses direct edges for
-routing. Conditional-only graphs are routed to the linear executor, where they
-are correct. So the linear executor is not a legacy path — it is currently
-load-bearing for correctness.
-
-**Fix (feasible, not yet done):** count conditional edges in in-degree by
-extracting their possible targets from the AST at build time. Verified
-extractable for inline arrow/function edges (intersect string literals with
-declared node ids to drop comparison literals like `"blocked"`); non-inline
-edges are detectable and can fall back to a conservative rule. With targets
-known, a conditional edge claims only its real targets, unchosen claims are
-released when it fires, and both executors collapse into one model — which is
-what this document actually specifies. This supersedes the narrower
-"conditional in-edges" note below, which is the same root cause seen from the
-fan-in side.
+**Remaining gap:** graphs built programmatically through `GraphBuilder` have no
+AST, so conditional targets fall back to a conservative reach estimate and a
+conditional fan-in join can still run twice. The workflow tool always builds
+from a script, so the user-facing path is correct. Pinned in
+`tests/graph-conditional-routing.test.ts`.
 
 **Known deviation from this design — conditional in-edges are not counted.**
 Readiness uses a static in-degree count, but a conditional edge carries only an

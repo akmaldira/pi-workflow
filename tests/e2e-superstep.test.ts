@@ -137,3 +137,77 @@ describe("superstep resume", () => {
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 });
+
+describe("e2e: conditional routing through the real tool", () => {
+  it("spawns only the branch the graph chose", async () => {
+    // The headline bug, checked at the level that matters: how many agents
+    // actually got spawned, not what the summary text says.
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pw-cond-"));
+    const spawned: string[] = [];
+
+    const spawnAgent = (async (_cwd: string, agentDef: any) => {
+      spawned.push(agentDef?.name ?? "unknown");
+      return {
+        exitCode: 0,
+        messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }],
+        durationMs: 1,
+      };
+    }) as any;
+
+    const SCRIPT = `export const meta = { name: "cond", description: "either/or" };
+const g = graph();
+g.node("green", agent("green", () => "implement"));
+g.node("deploy", agent("worker", () => "deploy it"));
+g.node("rollback", agent("reviewer", () => "roll back"));
+g.edge("green", (s, r) => r.status === 'blocked' ? "rollback" : "deploy");
+g.edge("deploy", END);
+g.edge("rollback", END);
+g.run({});`;
+
+    const tool = createGraphWorkflowTool({ cwd, spawnAgent });
+    const res: any = await (tool as any).execute("c", { script: SCRIPT }, undefined, undefined, {
+      cwd, model: undefined, sessionManager: undefined, modelRegistry: undefined,
+    });
+
+    console.log("agents actually spawned:", spawned.join(", "));
+    console.log(res.content[0].text.split("\n")[0]);
+
+    // green succeeds, so deploy runs and rollback must never spawn.
+    expect(spawned).toEqual(["green", "worker"]);
+    expect(spawned).not.toContain("reviewer");
+    expect(res.details.status).toBe("completed");
+    fs.rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("still runs a sequential graph one node per round", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pw-seq-"));
+    const spawned: string[] = [];
+    const spawnAgent = (async (_cwd: string, agentDef: any) => {
+      spawned.push(agentDef?.name ?? "unknown");
+      return {
+        exitCode: 0,
+        messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }],
+        durationMs: 1,
+      };
+    }) as any;
+
+    const SCRIPT = `export const meta = { name: "seq", description: "plain chain" };
+const g = graph();
+g.node("architect", agent("architect", () => "design"));
+g.node("green", agent("green", (s) => "implement " + s.architect));
+g.edge("architect", "green");
+g.edge("green", END);
+g.run({});`;
+
+    const tool = createGraphWorkflowTool({ cwd, spawnAgent });
+    const res: any = await (tool as any).execute("s", { script: SCRIPT }, undefined, undefined, {
+      cwd, model: undefined, sessionManager: undefined, modelRegistry: undefined,
+    });
+
+    expect(spawned).toEqual(["architect", "green"]);
+    // One node per round: a sequential graph is just a graph with no fan-out.
+    expect(res.details.iterations).toBe(2);
+    expect(res.details.nodeExecutions).toBe(2);
+    fs.rmSync(cwd, { recursive: true, force: true });
+  });
+});
