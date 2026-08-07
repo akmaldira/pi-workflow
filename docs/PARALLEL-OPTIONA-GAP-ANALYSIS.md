@@ -142,6 +142,103 @@ The reducer problem only genuinely appears with **`Send`** (dynamic fan-out,
 unknown branch count, accumulating N results into one list-key) — which is
 deferred. See the race-condition note below for the one edge case.
 
+### Decision 5: Superstep scheduler with true parallel execution (confirmed)
+
+The executor moves from a linear single-pointer walk to a superstep
+(bulk-synchronous parallel) scheduler:
+
+- `frontier: Set<nodeId>` replaces `current: string`.
+- Each round runs **all** ready nodes concurrently via `Promise.all` (matches
+  the existing `subagent` parallel mode's `MAX_CONCURRENCY = 4` precedent).
+- Nodes within a round are **barrier-isolated**: none sees another's result
+  until the whole round finishes. This is *safer* than sequential-within-round,
+  because it enforces sibling independence automatically — a malformed graph
+  can't become order-dependent.
+
+**Why true parallel over sequential-within-round:** the frontier computation,
+in-degree tracking, and cycle re-enablement logic are identical in both. The
+only difference is the run call — one `runNode` vs
+`Promise.all([...frontier].map(runNode))`. By the stated criterion ("if only
+a tiny difference, choose true parallel"), superstep is the choice. The cost
+is accepted in full.
+
+**`maxIterations` counts rounds.** Each round — regardless of how many nodes
+ran in it — increments the counter once. The cap measures
+synchronization-barrier depth, which is the real signal for a stuck cycle. A
+round running 5 concurrent nodes doesn't burn 5× of the cap for making
+forward progress.
+
+**Open detail (display):** `iterations` today doubles as a "how much work"
+number in the user message ("completed in N steps"). If a round runs 5
+nodes and counts as 1, that meaning is lost. Proposal: keep `iterations`
+(rounds) as the safety cap and add a separate `nodeExecutions` counter for
+work-amount display/budget. Decision pending final confirmation.
+
+### Decision 6: AND fan-in readiness rule with wave reset (Model 2)
+
+A node is ready to run when **all** of its incoming edges' sources ran this
+round **and** routed to it. This is "AND fan-in" — fan-in nodes wait for all
+their predecessors, never run on partial data.
+
+**Contrast with Model 1 (route-to = ready):** Model 1 would run a fan-in
+node as soon as *any* predecessor routed to it, meaning a `reviewer` could
+run on just `workerA`'s result while `workerB` was escalating — reviewing
+incomplete work and acting concurrently with the re-planning. Model 2
+prevents this; the framework guarantees a fan-in node sees all its inputs.
+
+**Readiness rule (general, cumulative in-degree):**
+- Each node has a static in-degree (count of incoming edges).
+- We track a `remainingInDegree: Map<nodeId, number>` counter. A node enters
+  the frontier when its remaining in-degree reaches 0.
+- When a round completes, each fired edge `u → v` decrements
+  `remainingInDegree[v]`. A conditional edge fires only if its condition
+  selected `v`; a direct edge always fires.
+- The **entry node** bypasses this (starts ready — it has no predecessors to
+  wait for).
+- This is the *general* (cumulative across rounds) version, chosen over the
+  simple same-round version because it correctly handles diamonds where a
+  node's predecessors finish in different rounds (e.g.
+  `scout → researcherA → summarizer` and `scout → deepdive → summarizer`
+  where deepdive takes an extra round). Same mechanism, more correct.
+
+**Wave reset on back-edge (the cycle mechanic):** when a back-edge fires (a
+node routes to an upstream node — e.g. `workerB → planner` escalation), the
+subgraph **downstream of the back-edge target** is reset: every node in that
+subgraph has its `remainingInDegree` restored to its static value, and the
+prior wave's edge firings in that subgraph are forgotten. The next wave
+starts clean from the back-edge target. This is what makes each pass through
+a cycle independent and predictable rather than carrying forward stale
+in-degree state.
+
+**Worked example** (the case that motivated this decision):
+
+```
+planner ──→ workerA ──→ reviewer ──→ END
+        └──→ workerB ──↗    └──→ planner (cycle)
+```
+
+| Round | Frontier | Runs | Routes | counter | Notes |
+|---|---|---|---|---|---|
+| 1 | {planner} | planner | workerA, workerB | 1 | entry |
+| 2 | {workerA, workerB} | both concurrently | workerA→reviewer, workerB→planner | 2 | fan-out |
+| 3 | {planner} | planner (re-plan) | workerA, workerB | 3 | reviewer NOT ready (1 of 2 edges fired); back-edge reset wipes workerA→reviewer |
+| 4 | {workerA, workerB} | both concurrently | both→reviewer | 4 | wave restarted from planner |
+| 5 | {reviewer} | reviewer | END | 5 | both edges fired → ready |
+| 6 | {} | — | — | 6 | done |
+
+`reviewer` never runs on partial data. The escalation loops cleanly:
+workerB escalates → planner re-plans → both workers re-run → reviewer sees
+complete work.
+
+**Known limitation — wasteful sibling re-runs (accepted, deferred):** when
+one branch of a fan-out escalates, *all* sibling branches re-run in the next
+wave (`workerA` runs again in round 4 even though its round-2 work was
+fine). This is the cost of Model 2's clean wave reset. The pi session model
+(Decision 1) directly mitigates it: the re-running node **resumes its
+session**, sees its prior work, and cheaply re-confirms rather than starting
+fresh. The deeper optimization is **deferred homework** (see "Deferred
+optimizations" below).
+
 ---
 
 ## The single structural assumption that Option A dismantles
@@ -196,7 +293,7 @@ real work because reachability over a multi-edge graph with conditional edges
 is undecidable in general (the existing code already punts on this for
 conditional edges).
 
-### 2. Executor (`graph-executor.ts`)
+### 2. Executor (`graph-executor.ts`) — CONFIRMED design (superstep, Model 2)
 
 **Today — the whole loop, 12 lines of essence:**
 ```ts
@@ -212,46 +309,77 @@ while (current !== END) {
 }
 ```
 
-**Option A — the loop becomes a superstep scheduler:**
+**Confirmed: the loop becomes a superstep scheduler with true parallel
+execution (Decisions 5 & 6).** The single `current` pointer becomes a
+`frontier` set; each round runs all ready nodes concurrently via `Promise.all`:
+
 ```ts
 let frontier: Set<string> = new Set([entry]);
 let round = 0;
+let nodeExecutions = 0;                       // work-amount counter (display)
 while (frontier.size > 0) {
-  round++;
-  const outcomes = await Promise.all([...frontier].map(id => runNode(...)));
-  // Each node writes under its OWN id — no collision, no reducer needed
-  for (const {id, result} of outcomes) state[id] = result;
-  // Collect all outgoing edges from every node in the round
+  round++;                                    // maxIterations counts rounds
+  const outcomes = await Promise.all(
+    [...frontier].map(id => runNode(graph.nodes.get(id), state, ...))
+  );
+  nodeExecutions += outcomes.length;
+  // Each node writes under its OWN id — no collision, no reducer (Decision 4)
+  for (const { id, result } of outcomes) state[id] = result;
+  // Apply fired edges → decrement remaining in-degree; reset waves on back-edges
   frontier = computeNextFrontier(frontier, graph.edges, outcomes);
 }
 ```
 
-**What breaks:**
-- `current = routed.target` (one next node) becomes `frontier = nextSet` (a
-  set). The walk is restructured from linear traversal to topological rounds.
-- `resolveEdge(graph.edges.get(nodeId), ...)` (one `Edge`) becomes
-  `resolveEdges(graph.edges.get(nodeId) ?? [], ...)` (an array). The return
-  type changes from one target to a *set* of targets.
-- **`maxIterations` semantics change.** Today it counts node executions.
-  Recommend counting **rounds** — "exceeded 25 rounds" is more meaningful
-  than "exceeded 25 node executions" when 3 were concurrent.
-- **Cycle detection changes.** A cycle today is "about to run a node we've
-  already run." In a superstep model, it's "this round's frontier includes a
-  node whose inputs depend on this round's outputs" — a data-dependency
-  cycle, harder to detect and report legibly.
-- **Fan-in semantics.** When two edges point at the same target
-  (`researcherA → planner`, `researcherB → planner`), `planner` runs only
-  after *both* complete. The executor needs an in-degree tracker: a node
-  becomes ready when all its incoming-edge sources have completed in prior
-  rounds.
+**The real work — `computeNextFrontier` (Decision 6):** this is the hardest
+part of the superstep scheduler. It encodes the AND fan-in readiness rule and
+the wave-reset mechanic:
 
-**Effort:** large. This is a rewrite of the executor's core, not an
-extension. The existing loop's virtue (per its own header comment) is that
-it's "deliberately small." A superstep executor is substantially more complex.
+- **In-degree tracking.** Each node has a static in-degree (count of
+  incoming edges). A `remainingInDegree: Map<nodeId, number>` counter tracks
+  how many predecessors still need to fire. A node enters the frontier when
+  its remaining in-degree reaches 0. The entry node bypasses this (starts
+  ready).
+- **Edge firing.** After a round, each node's routing decision determines
+  which outgoing edges "fired." Each fired edge `u → v` decrements
+  `remainingInDegree[v]`. A conditional edge fires only if its condition
+  selected `v`; a direct edge always fires.
+- **Wave reset on back-edge.** When a fired edge targets a node upstream of
+  its source (a cycle / escalation), the subgraph downstream of the target is
+  reset: every reachable node's `remainingInDegree` is restored to its static
+  value, and the prior wave's firings in that subgraph are forgotten. The
+  next wave starts clean from the back-edge target. This is what makes each
+  cycle pass independent (see the worked example in Decision 6).
+- **Fan-in completion.** A fan-in node (`reviewer` with edges from both
+  `workerA` and `workerB`) waits until all its predecessors fire in the same
+  wave — it never runs on partial data.
 
-**What does NOT break (corrected from original analysis):** the
-`state[nodeId] = result` write. Each concurrent node writes under its own id —
-no collision. No reducer needed for the static case. See Decision 4 above.
+**`resolveEdge` → `resolveEdges`:** the single-edge lookup
+(`graph.edges.get(nodeId)`, one `Edge`) becomes an array lookup
+(`graph.edges.get(nodeId) ?? []`). Each edge in the array is evaluated; a node
+may route to multiple targets (fan-out) or one (conditional pick). The return
+type changes from one target to a *set* of fired targets.
+
+**`maxIterations` counts rounds (Decision 5).** Each round increments the
+counter once regardless of concurrency. The cap measures synchronization
+barrier depth — the real signal for a stuck cycle. A separate
+`nodeExecutions` counter tracks total work for display/budget (pending final
+confirmation on the one-vs-two-counter question).
+
+**Cycle detection.** A cycle today is "about to run a node we've already
+run." In the superstep model, cycle *detection* is largely subsumed by
+`maxIterations`-on-rounds — a cycle that never resolves climbs rounds until
+the cap. The `graph_result` error reports recent *rounds* (frontiers), not
+just nodes, so the loop is visible.
+
+**Effort:** large, **accepted in full** (per discussion). This is a rewrite
+of the executor's core. Recommendation remains to implement it as a
+**separate `graph-superstep-executor.ts`** rather than rewriting
+`graph-executor.ts`, so linear-walk graphs (and their resume model) keep
+working unchanged. The DSL opts into the superstep model.
+
+**What does NOT break (Decision 4):** the `state[nodeId] = result` write.
+Each concurrent node writes under its own id — no collision, no reducer
+needed for the static case.
 
 ### 3. Reducers — NOT required for static parallel (corrected)
 
@@ -314,8 +442,13 @@ ids; resume is a replay." The journal's opening thesis.
 - `resumeFrom: string` (one node id) is meaningless when the next unit is a
   *round*. Resume must reconstruct the frontier from completed rounds — a
   topological-dependency computation.
+- Resume must also reconstruct the `remainingInDegree` counters (Decision 6)
+  so it knows which nodes are ready, not just which ran. The `round_complete`
+  marker records the frontier that finished, but the in-degree state must be
+  recomputed by replaying which edges fired in each completed round.
 - The `graph_result` record's `iterations` field: if `maxIterations` counts
-  rounds, this must reflect rounds, not node executions.
+  rounds, this must reflect rounds, not node executions. A separate
+  `nodeExecutions` field mirrors the work-amount counter (Decision 5).
 
 **Effort:** moderate. The recording format change is small (add fields, add
 `round_complete`). The resume-logic change is real (frontier reconstruction)
@@ -389,6 +522,34 @@ the `Send` + reducer mechanism (deferred).
 
 ---
 
+## Deferred optimizations (homework for later)
+
+Accepted limitations of the confirmed design, to revisit after the core
+superstep executor is working.
+
+### 1. Wasteful sibling re-runs on escalation (Model 2 cost)
+
+**The issue:** when one branch of a fan-out escalates (routes via a
+back-edge), the wave reset makes *all* its siblings re-run in the next wave
+— even siblings whose work was fine and whose inputs didn't change. In the
+worked example (Decision 6), `workerA` runs again in round 4 because
+`workerB` escalated in round 2.
+
+**Current mitigation:** the pi session model (Decision 1). A re-running node
+**resumes its session**, sees its prior work, and can cheaply re-confirm
+("the new plan doesn't change my part") rather than redoing it from
+scratch. The re-run is a one-turn resume, not a full re-spawn.
+
+**Defer deeper optimization:** the principled fix is *change-tracking* —
+skip re-running a node when the set of inputs it reads hasn't changed since
+its last execution (differential / incremental computation). This is real
+complexity (dependency analysis on what each node reads from `state`) and is
+**deferred**. For now, the session-resume mitigation is accepted.
+
+### 2. (Reserved for future homework items)
+
+---
+
 ## What Option A buys that Option B cannot
 
 1. **Dynamic fan-out** (`Send`). The only feature that justifies the full
@@ -412,15 +573,17 @@ implied.
 | Concern | Option B | Option A (static) | Option A (+ Send, deferred) |
 |---|---|---|---|
 | Edge data model | `Map<string, Edge>` unchanged | `Map<string, Edge[]>` | same |
-| Executor core | one new `case "parallel"` | superstep scheduler | + dynamic branch spawning |
+| Executor core | one new `case "parallel"` | superstep scheduler + `Promise.all` (CONFIRMED) | + dynamic branch spawning |
+| Readiness rule | n/a (one successor) | AND fan-in + in-degree + wave reset (Decision 6) | same |
 | State semantics | last-write-wins (unchanged) | last-write-wins (unchanged — distinct keys) | **reducers required** |
 | Dynamic fan-out | impossible | impossible | possible (the point) |
-| Journal/resume | atomic step, replay works | flat-with-round + `round_complete` | + dynamic branch journaling |
+| Journal/resume | atomic step, replay works | flat-with-round + `round_complete` (replay in-degree too) | + dynamic branch journaling |
 | Pi session model | applies (independently shippable) | applies | applies |
-| `maxIterations` | counts nodes (unchanged) | counts rounds | counts rounds |
-| Cycle detection | "revisiting a node" (simple) | data-dependency cycle | same |
+| `maxIterations` | counts nodes (unchanged) | counts rounds (+ `nodeExecutions` for display, pending) | counts rounds |
+| Cycle detection | "revisiting a node" (simple) | subsumed by rounds cap + `graph_result` reports frontiers | same |
+| Sibling re-runs | n/a | wasteful on escalation (mitigated by sessions; deeper fix deferred) | same |
 | Worktree (write-capable) | Phase 2 (deferred) | same | can't sidestep |
-| Effort | moderate, additive | large, structural | very large |
+| Effort | moderate, additive | large, structural — ACCEPTED (separate executor file) | very large |
 
 ---
 
@@ -440,11 +603,15 @@ discussion, two are resolved and one remains:
    cleanly to "replay the rounds." The pi session model adds agent memory
    that the journal alone couldn't provide.
 
-3. **The executor's loop must become a superstep scheduler — REMAINS.** This
-   is the genuine, unavoidable cost of Option A. The current 12-line linear
-   walk becomes a topological-rounds scheduler with frontier computation and
-   in-degree tracking. This is real complexity, and it's the part that most
-   conflicts with the project's "deliberately small" executor philosophy.
+3. **The executor's loop must become a superstep scheduler — ACCEPTED
+   (confirmed).** The current 12-line linear walk becomes a
+   topological-rounds scheduler with `Promise.all` concurrency, in-degree
+   tracking, AND fan-in readiness, and wave reset on back-edges (Decisions 5
+   & 6). This is real complexity, accepted in full per discussion. It's the
+   part that most conflicts with the "deliberately small" executor
+   philosophy — mitigated by implementing it as a **separate
+   `graph-superstep-executor.ts`** so the linear-walk graphs and their
+   resume model keep working unchanged.
 
 **Revised recommendation:**
 - The pi session model (Decision 1) should be shipped **independently** — it
