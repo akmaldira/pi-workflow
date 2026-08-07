@@ -322,6 +322,120 @@ Returns one agent's full prompt, complete (untruncated) result, and tool-call/ou
 
 ## Common Patterns
 
+The best way to understand workflows is by example. Here are five core architectural patterns you can reach for.
+
+### 1. Linear Pipeline (Plan → Implement → Review)
+The simplest workflow: a fixed sequence where each step builds on the last.
+
+```js
+export const meta = { name: 'simple_task', description: 'Plan, implement, review' };
+const g = graph();
+g.node('planner',  agent('planner',  (s) => `Plan this: ${args.task}`));
+g.node('worker',   agent('worker',   (s) => `Implement this plan:\n${s.planner}`));
+g.node('reviewer', agent('reviewer', (s) => `Review what worker did:\n${s.worker}`));
+
+g.edge('planner', 'worker');
+g.edge('worker', 'reviewer');
+g.edge('reviewer', END);
+g.run({ task: args.task });
+```
+
+### 2. TDD Cycle with Escalation Routing
+The classic escalation pattern. If `green` hits a wall, the edge reads the `blockedOn` category to decide who owns the problem.
+
+```js
+export const meta = { name: 'tdd_cycle', description: 'TDD red-green with escalation routing' };
+const g = graph();
+g.node('architect', agent('architect', (s) => `Design the contract for: ${args.task}`));
+g.node('red',       agent('red',       (s) => `Write failing tests for this contract:\n${s.architect}`));
+g.node('green',     agent('green',     (s) => `Make these tests pass:\n${s.red}\nContract:\n${s.architect}`));
+g.node('reviewer',  agent('reviewer',  (s) => `Review implementation:\n${s.green}`));
+g.node('ask',       human('Green is blocked. What should we do?', { default: 'retry' }));
+
+g.edge('architect', 'red');
+g.edge('red', 'green');
+g.edge('green', (state, result) => {
+  if (result.status === 'blocked') {
+    if (result.blockedOn === 'contract') return 'architect';
+    if (result.blockedOn === 'tests')    return 'red';
+    return 'ask'; // environment, conflict, etc.
+  }
+  return 'reviewer'; // success
+});
+g.edge('ask', 'green');
+g.edge('reviewer', (state, result) => {
+  if (result.status === 'blocked') return 'green';
+  return END;
+});
+g.run({});
+```
+
+### 3. Iterative Refinement (Cycle with Visit Counter)
+A loop that stops after a fixed number of attempts by storing a counter in the shared `state` object.
+
+```js
+export const meta = { name: 'refine_draft', description: 'Iterative refinement with a cap' };
+const g = graph();
+g.node('writer',   agent('worker',   (s) => s.feedback
+  ? `Revise based on this feedback:\n${s.feedback}\n\nPrevious draft:\n${s.writer}`
+  : `Write a first draft: ${args.task}`));
+g.node('reviewer', agent('reviewer', (s) => `Critique this draft:\n${s.writer}`));
+
+g.edge('writer', 'reviewer');
+g.edge('reviewer', (state, result) => {
+  state.rounds = (state.rounds ?? 0) + 1;
+  // Stop if Reviewer escalates (can't review) or we hit the cap
+  if (result.status === 'blocked' || state.rounds >= 3) return END;
+  state.feedback = result.text; // Store feedback for writer to read
+  return 'writer';
+});
+g.run({});
+```
+
+### 4. Interactive Research (Main Agent mid-workflow)
+Uses `mainAgent` so *you* (the agent running the graph) get to read the research and decide the implementation approach before spawning the worker.
+
+```js
+export const meta = { name: 'investigate_fix', description: 'Research then decide approach' };
+const g = graph();
+g.node('scout',      agent('scout',      (s) => `Find all files related to: ${args.task}`));
+g.node('researcher', agent('researcher', (s) => `Analyze this area of code:\n${s.scout}\nQuestion: ${args.task}`));
+// The #{nodeId} syntax is required for mainAgent and human prompts
+g.node('decide',     mainAgent(`Based on the research, should we refactor or patch?\n\nResearch:\n#{researcher}`));
+g.node('worker',     agent('worker',     (s) => `${s.decide}\n\nContext:\n${s.researcher}`));
+
+g.edge('scout', 'researcher');
+g.edge('researcher', 'decide');
+g.edge('decide', 'worker');
+g.edge('worker', END);
+g.run({});
+```
+
+### 5. Human Approval Gate
+Pauses the workflow to ask the human user for a decision using `human()`.
+
+```js
+export const meta = { name: 'guarded_deploy', description: 'Implement with human approval gate' };
+const g = graph();
+g.node('worker',   agent('worker',   (s) => `Implement: ${args.task}`));
+g.node('reviewer', agent('reviewer', (s) => `Review:\n${s.worker}`));
+g.node('approve',  human('Reviewer says:\n#{reviewer}\n\nApprove for merge?', {
+  options: ['yes', 'no', 'revise'],
+  default: 'yes'
+}));
+g.node('revise',   agent('worker',   (s) => `Address review feedback:\n${s.reviewer}`));
+
+g.edge('worker', 'reviewer');
+g.edge('reviewer', 'approve');
+g.edge('approve', (state, result) => {
+  if (result.text === 'no') return END;
+  if (result.text === 'revise') return 'revise';
+  return END; // default 'yes'
+});
+g.edge('revise', 'reviewer');
+g.run({});
+```
+
 ### Delegate to a specialized agent
 ```
 subagent(tasks=[{"agent": "worker", "task": "Implement user authentication with JWT tokens"}], mode="single")
@@ -330,17 +444,6 @@ subagent(tasks=[{"agent": "worker", "task": "Implement user authentication with 
 ### Run multiple agents in parallel
 ```
 subagent(tasks=[{"agent": "scout", "task": "Review auth"}, {"agent": "scout", "task": "Review API"}, {"agent": "scout", "task": "Review payments"}], mode="parallel")
-```
-
-### Workflow with conditional logic
-```js
-export const meta = { name: 'fix_issues', description: 'Find and fix issues' };
-const g = graph();
-g.node('scan', agent('scout', () => 'Find security issues'));
-g.node('fix', agent('worker', (s) => 'Fix these: ' + s.scan));
-g.edge('scan', (s, r) => r.text.includes('critical') ? 'fix' : END);
-g.edge('fix', END);
-g.run();
 ```
 
 ### Running Without a TUI (IDE / Headless Mode)
