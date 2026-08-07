@@ -28,6 +28,7 @@ import {
 	human,
 	mainAgent,
 } from "./graph-dsl.ts";
+import { extractConditionalTargets } from "./graph-edge-targets.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- acorn AST nodes have arbitrary properties
 type AnyNode = Node & { [key: string]: any; start: number; end: number };
@@ -555,6 +556,12 @@ export function buildGraphFromScript(
 		}
 		throw error;
 	}
+
+	// Recover what each conditional edge can route to. This has to happen here,
+	// from the AST: once the sandbox has run, an edge is a closure with no
+	// readable target. The executor needs it to tell "nothing left to wait for"
+	// apart from "actually routed here".
+	built.conditionalTargets = extractConditionalTargets(ast, new Set(built.nodes.keys()));
 
 	return { meta, graph: built };
 }

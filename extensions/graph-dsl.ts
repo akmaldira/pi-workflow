@@ -71,6 +71,21 @@ export type Edge =
 	| { type: "direct"; from: string; to: string | EndSymbol }
 	| { type: "conditional"; from: string; condition: EdgeConditionFn };
 
+/**
+ * What a source node's conditional edges can route to, recovered from the
+ * script's AST before the sandbox turns those edges into opaque closures.
+ *
+ * The executor needs this to answer "could an edge still route here?", which
+ * is what distinguishes a node that was actually selected from one that merely
+ * has nothing left to wait for.
+ */
+export interface ConditionalTargetInfo {
+	targets: string[];
+	usesEnd: boolean;
+	/** False when a target could not be read statically; claim conservatively. */
+	analysable: boolean;
+}
+
 export interface BuiltGraph {
 	nodes: Map<string, GraphNode>;
 	/** Outgoing edges per source node. An array: a node with >1 edge fans out. */
@@ -79,6 +94,14 @@ export interface BuiltGraph {
 	mode: "linear" | "superstep";
 	entry: string;
 	initialState: GraphState;
+	/**
+	 * Per source node, what its conditional edges may select.
+	 *
+	 * Absent when a graph was built directly rather than from a script (tests,
+	 * programmatic use). Consumers must treat a missing entry as unanalysable
+	 * and claim conservatively rather than assume "no targets".
+	 */
+	conditionalTargets?: Map<string, ConditionalTargetInfo>;
 }
 
 export class GraphDefinitionError extends Error {
