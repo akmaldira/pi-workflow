@@ -167,6 +167,46 @@ g.run({});
 But note: `s.planner` holds only the *latest* draft. If a reviewer needs every draft, the
 latest-wins behavior is wrong — and that is your signal to use distinct node ids instead.
 
+### Parallel branches (fan-out and fan-in)
+
+Give a node **more than one outgoing edge** and those branches run **concurrently**:
+
+```js
+g.edge('scout', 'researcherA');
+g.edge('scout', 'researcherB');   // scout fans out; both researchers run at once
+g.edge('researcherA', 'summarizer');
+g.edge('researcherB', 'summarizer');  // summarizer fans in
+```
+
+This switches the whole graph to **round-based (parallel) execution**. You do not opt in with a
+flag — a graph runs in parallel as soon as any node fans out. The rules that follow apply only to
+such graphs; a graph where every node has exactly one outgoing edge keeps the simple linear walk.
+
+**Three things to know:**
+
+1. **A fan-in node waits for *all* of its incoming edges.** `summarizer` above does not run when
+   the first researcher finishes — it runs when both have. It never sees partial work. This holds
+   even when the branches are different lengths and finish rounds apart.
+
+2. **Nodes in the same round cannot see each other's results.** Work is committed to state at the
+   end of a round, so `researcherA` cannot read `s.researcherB`. Only a node in a *later* round
+   sees both. If a branch needs another branch's output, it belongs downstream, not beside it.
+
+3. **Escalating from a parallel branch re-runs its siblings.** If `researcherB` routes back to an
+   earlier node, everything downstream of that node starts over on the next pass, including
+   `researcherA`. This keeps each pass consistent, and re-runs are cheap because an agent resumes
+   its own session. Prefer escalating from a node *after* the join when you can.
+
+**Give each branch its own node id, and don't write shared state keys from parallel edges.** Every
+node's result is stored under its own id automatically (`s.researcherA`, `s.researcherB`), which is
+always safe. But a custom key written from two parallel branches' edge conditions
+(`s.findings = ...` in both) is last-write-wins and will silently drop one branch's data. Use
+distinct keys and let a downstream node combine them.
+
+**Progress is reported as two numbers** — for example *"6 node executions across 3 rounds"*. Rounds
+measure how deep the coordination went; node executions measure how much work happened. They differ
+because one round can run several nodes. `maxIterations` caps **rounds** in a parallel graph.
+
 **What's available in a script:** the graph API (`graph`, `agent`, `mainAgent`, `human`, `END`,
 `args`) plus ordinary language intrinsics (`JSON`, `Object`, `Array`, `String`, `Math`, etc. —
 they resolve to the sandbox's own copies, so using them cannot reach the host). No `fs`,
@@ -435,6 +475,32 @@ g.edge('approve', (state, result) => {
 g.edge('revise', 'reviewer');
 g.run({});
 ```
+
+### 6. Parallel Fan-Out (independent branches, then a join)
+Use when several pieces of work are genuinely independent and a later step needs all of them.
+The two researchers run concurrently; `summarizer` waits for both.
+
+```js
+export const meta = { name: 'parallel_audit', description: 'Audit two areas at once, then combine' };
+const g = graph();
+g.node('scout',    agent('scout',      (s) => `Map the codebase for: ${args.task}`));
+g.node('security', agent('researcher', (s) => `Audit SECURITY only:\n${s.scout}`));
+g.node('perf',     agent('researcher', (s) => `Audit PERFORMANCE only:\n${s.scout}`));
+// Runs only after BOTH branches finish, and sees both results.
+g.node('summarizer', agent('worker', (s) =>
+  `Combine these two audits into one plan:\n\nSECURITY:\n${s.security}\n\nPERFORMANCE:\n${s.perf}`));
+
+g.edge('scout', 'security');
+g.edge('scout', 'perf');        // fan-out: both run in the same round
+g.edge('security', 'summarizer');
+g.edge('perf', 'summarizer');   // fan-in: waits for both
+g.edge('summarizer', END);
+g.run({});
+```
+
+Each branch keeps its own key (`s.security`, `s.perf`), so nothing is overwritten. Splitting one
+agent's job across branches only pays off when the branches genuinely do not need each other's
+output — if one depends on the other, chain them instead.
 
 ### Delegate to a specialized agent
 ```

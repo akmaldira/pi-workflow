@@ -106,10 +106,38 @@ g.edge("a", END);                                       // terminate
 g.edge("a", (state, result) => result.ok ? "b" : "c");  // conditional
 ```
 
-A node has **exactly one** outgoing edge. Branching is what conditional edges are for.
+A node normally has **one** outgoing edge, and a conditional edge is how you choose between
+targets. Give a node **several** outgoing edges and those branches run **in parallel** instead.
 
 Cycles are legal — the escalation loop *is* a cycle. A run stops at `maxIterations` (default 25)
 if a loop never resolves.
+
+### Parallel branches
+
+```text
+g.edge("scout", "researcherA");
+g.edge("scout", "researcherB");       // fan-out: both run concurrently
+g.edge("researcherA", "summarizer");
+g.edge("researcherB", "summarizer");  // fan-in: waits for both
+```
+
+A graph switches to round-based parallel execution as soon as any node fans out — there is no flag
+to set. Three rules follow from that:
+
+- **A fan-in node waits for every incoming edge.** `summarizer` runs once, after both researchers,
+  and never sees partial work — even if the branches are different lengths.
+- **Nodes in the same round cannot see each other's results.** Results are committed at the end of
+  a round, so a branch cannot read its sibling. Anything that needs both belongs downstream.
+- **Escalating from a branch re-runs its siblings.** Routing back to an earlier node restarts
+  everything downstream of it on the next pass, so each pass stays consistent. Re-runs are cheap
+  because an agent resumes its own session.
+
+Each node's result is keyed by its own id (`s.researcherA`, `s.researcherB`), so branches never
+clobber each other. Writing a *custom* shared key from two parallel edge conditions is
+last-write-wins and will silently drop one — use distinct keys and combine them downstream.
+
+A parallel run reports two numbers, e.g. *"6 node executions across 3 rounds"*: rounds measure how
+deep the coordination went, node executions how much work happened. `maxIterations` caps rounds.
 
 ### State
 

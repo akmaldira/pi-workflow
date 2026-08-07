@@ -1,7 +1,16 @@
 # Parallel Fan-Out: Option B — `parallel()` Composite Node
 
-**Status:** Plan only. No implementation. Return to this after the Option A gap
-analysis (`docs/PARALLEL-OPTIONA-GAP-ANALYSIS.md`) is reviewed.
+**Status:** ❌ **NOT PURSUED — superseded by Option A.**
+
+Option A (true multi-edge graph with a superstep executor) was implemented
+instead; see `docs/PARALLEL-OPTIONA-GAP-ANALYSIS.md`, which is the design of
+record. Fan-out is now expressed by giving a node several outgoing edges
+rather than by a `parallel()` composite node, so the API below does not exist.
+
+This document is kept only as a record of the alternative that was weighed:
+Option B preserved the one-edge-per-node invariant at the cost of making
+parallelism a special node type, and it could not give branches independent
+routing — which is what escalation from inside a branch requires.
 
 ## Goal
 

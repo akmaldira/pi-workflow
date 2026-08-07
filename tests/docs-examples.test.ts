@@ -130,5 +130,36 @@ describe("documentation examples", () => {
 			expect(skill, "SKILL must document result.status").toMatch(/result.*status/i);
 			expect(skill, "SKILL must document result.blockedOn").toMatch(/result.*blockedOn/i);
 		});
+
+		it.skipIf(!fs.existsSync(SKILL))("teaches the parallel fan-out rules", () => {
+			// Parallel execution has three non-obvious rules. Each one, if not
+			// taught, produces a specific bug: a fan-in node read as if it ran
+			// early, a branch written to read its sibling, or two branches
+			// clobbering one shared state key.
+			const skill = fs.readFileSync(SKILL, "utf-8");
+			expect(skill, "SKILL must explain that >1 outgoing edge fans out").toMatch(
+				/more than one outgoing edge/i,
+			);
+			expect(skill, "SKILL must explain AND fan-in (waits for all)").toMatch(/waits for \*?all\*?/i);
+			expect(skill, "SKILL must warn that siblings cannot see each other").toMatch(
+				/cannot see each other/i,
+			);
+			expect(skill, "SKILL must warn about last-write-wins on shared keys").toMatch(
+				/last-write-wins/i,
+			);
+			expect(skill, "SKILL must explain the two counters").toMatch(/node executions across/i);
+		});
+
+		it.skipIf(!fs.existsSync(SKILL))("ships a parallel example that really is parallel", () => {
+			// A fan-out example that quietly validates as a linear graph would
+			// teach the syntax while demonstrating none of the behaviour.
+			const examples = completeGraphExamples(fs.readFileSync(SKILL, "utf-8"));
+			const modes = examples.map(
+				(example) => buildGraphFromScript(example, { args: { task: "t" } }).graph.mode,
+			);
+			expect(modes, "SKILL must contain at least one superstep (fan-out) example").toContain(
+				"superstep",
+			);
+		});
 	});
 });

@@ -1,7 +1,26 @@
 # Parallel Fan-Out: Option A — True Multi-Edge Graph (Revised Design + Gap Analysis)
 
-**Status:** Revised after design discussion. No implementation. Read alongside
-`docs/PARALLEL-FANOUT-PLAN.md` (Option B).
+**Status:** ✅ **IMPLEMENTED.** This document is the design of record; the
+behaviour described here now ships. Option B (`docs/PARALLEL-FANOUT-PLAN.md`)
+was not pursued.
+
+**Where it lives:**
+
+| Piece | File |
+|---|---|
+| Multi-edge data model + `mode` detection | `extensions/graph-dsl.ts` |
+| Superstep scheduler, AND fan-in, wave reset | `extensions/graph-superstep-executor.ts` |
+| `round` records, `round_complete`, resume | `extensions/graph-journal.ts` |
+| Executor selection, two-counter reporting | `extensions/graph-tool.ts` |
+| Concurrent-node display, barrier logging | `extensions/graph-display-bridge.ts` |
+| Tests | `tests/graph-superstep-executor.test.ts`, `tests/graph-superstep-units.test.ts`, `tests/e2e-superstep.test.ts` |
+
+**Deviations from the plan as written:** none material. One correction was
+found during end-to-end testing: readiness state (which nodes already ran) has
+to be carried explicitly through resume as `executedNodeIds`, because
+"ready" is *in-degree 0 AND not yet executed* — reconstructing it from an
+optional history left every settled node looking ready and re-ran the whole
+graph. See the resume section below.
 
 ## What Option A is
 
