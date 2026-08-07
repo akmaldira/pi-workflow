@@ -8,6 +8,7 @@
  *       On runs: p pause · x stop · r resume · s save workflow script · q quit
  */
 
+import * as path from "node:path";
 import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { parseKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
@@ -639,6 +640,7 @@ export function renderNavigatorFrame(
 				body.push(dim("Status: ") + asText(agent.status ?? ""));
 				if (agent.model) body.push(dim("Model:  ") + asText(agent.model));
 				if (agent.outputTokens) body.push(dim("Tokens: ") + String(agent.outputTokens));
+				if (agent.sessionId) body.push(dim("Session: ") + asText(path.basename(agent.sessionId)));
 				if (agent.error) body.push(dim("Error:  ") + theme.fg("error", asText(agent.error)));
 				body.push("");
 				body.push(accent(theme.bold("Prompt:")));
@@ -660,6 +662,8 @@ export function renderNavigatorFrame(
 						if (entry.role === "assistant" && entry.kind === "toolCall") {
 							const argsText = entry.args ? ` ${entry.args}` : "";
 							pushTextBlock(body, dim(`  → ${entry.toolName}:`), argsText, "      ", 10);
+						} else if (entry.role === "assistant" && entry.kind === "thinking") {
+							pushTextBlock(body, dim("  [think] "), asText(entry.text || ""), "      ", 20);
 						} else if (entry.role === "tool" || entry.role === "toolResult") {
 							const errorTag = "isError" in entry && entry.isError ? theme.fg("error", " [error]") : "";
 							pushTextBlock(body, dim(`  ← ${entry.toolName}:`) + errorTag + " ", asText(entry.text || ""), "      ", 20);

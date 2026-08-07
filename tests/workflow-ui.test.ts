@@ -438,3 +438,38 @@ describe("phaseless (graph) runs", () => {
 		expect(text).toContain("sum (researcher)");
 	});
 });
+
+describe("navigator detail view: session-derived history", () => {
+	it("renders every entry kind produced by watchSession", () => {
+		const mgr = new WorkflowManager("/tmp");
+		mgr.registerRun("r1", { name: "demo", description: "d" });
+		mgr.markAgentStart("r1", 0, {
+			id: 42,
+			label: "planner",
+			prompt: "plan",
+			status: "running",
+		});
+		// These are the shapes parseSessionMessage emits from a real pi
+		// session JSONL.
+		mgr.recordAgentHistory("r1", 42, { role: "user", text: "Task: plan" });
+		mgr.recordAgentHistory("r1", 42, { role: "assistant", kind: "thinking", text: "I should think." });
+		mgr.recordAgentHistory("r1", 42, { role: "assistant", kind: "toolCall", toolName: "read", text: "read(path)", args: "path=/file" });
+		mgr.recordAgentHistory("r1", 42, { role: "toolResult", toolName: "read", text: "file contents" });
+		mgr.markAgentEnd("r1", 42, "done");
+
+		const model = new NavigatorModel(mgr);
+		const state = new NavigatorState();
+		state.cursor = 0;
+		state.drill(model); // runs -> agents
+		state.cursor = 0;
+		state.drill(model); // agents -> detail
+		state.openPager();
+
+		const text = renderNavigatorText(state, model, 100, 24).join("\n");
+
+		expect(text).toContain("[user] Task: plan");
+		expect(text).toContain("[think] I should think.");
+		expect(text).toContain("→ read: path=/file");
+		expect(text).toContain("← read: file contents");
+	});
+});

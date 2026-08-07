@@ -66,6 +66,12 @@ export interface WorkflowAgentSnapshot {
 	recoverable?: boolean;
 	/** Path to the child transcript JSONL file for live streaming */
 	transcriptPath?: string;
+	/**
+	 * Path to this agent's persisted pi session JSONL, when the node is an
+	 * agent. The /workflows navigator uses this to let the user inspect the
+	 * agent's full conversation (Decision 1 session persistence).
+	 */
+	sessionId?: string;
 	/** Live history events (tool calls, diffs, outputs) */
 	history?: AgentHistoryEntry[];
 }

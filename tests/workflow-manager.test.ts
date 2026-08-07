@@ -511,4 +511,66 @@ g.run();`;
 	it("getRunSource returns undefined for an unknown runId", () => {
 		expect(manager.getRunSource("does-not-exist")).toBeUndefined();
 	});
+
+	it("watchSession replays a node's pi session conversation into history", async () => {
+		manager.registerRun("run-1", { name: "s", description: "d" });
+		manager.markAgentStart("run-1", 0, {
+			id: 1,
+			label: "planner",
+			prompt: "plan",
+			status: "running",
+		});
+
+		// A slice of real pi session JSONL: user prompt, an assistant message
+		// with thinking + text + a tool call, and a tool result as a content
+		// block (pi nests tool results inside assistant messages).
+		const sessionFile = path.join(tempDir, "planner.jsonl");
+		fs.writeFileSync(
+			sessionFile,
+			[
+				JSON.stringify({ type: "session", version: 3, id: "s1", timestamp: 1000, cwd: tempDir }),
+				JSON.stringify({
+					type: "message",
+					timestamp: 1001,
+					message: { role: "user", content: [{ type: "text", text: "Task: plan a todo app" }] },
+				}),
+				JSON.stringify({
+					type: "message",
+					timestamp: 1002,
+					message: {
+						role: "assistant",
+						content: [
+							{ type: "thinking", thinking: "The user wants a plan." },
+							{ type: "text", text: "A todo app needs add/view/toggle/delete." },
+							{ type: "toolUse", name: "read", input: { path: "/file" } },
+						],
+					},
+				}),
+				JSON.stringify({
+					type: "message",
+					timestamp: 1003,
+					message: {
+						role: "assistant",
+						content: [{ type: "toolResult", name: "read", text: "TODO.md" }],
+					},
+				}),
+			].join("\n"),
+		);
+
+		manager.watchSession("run-1", 1, sessionFile);
+
+		await new Promise((r) => setTimeout(r, 500));
+
+		const history = manager.getRun("run-1")?.snapshot.agents[0]?.history ?? [];
+
+		expect(history).toHaveLength(5);
+		expect(history[0]).toMatchObject({ role: "user", text: "Task: plan a todo app" });
+		expect(history[1]).toMatchObject({ role: "assistant", kind: "thinking" });
+		expect(history[2]).toMatchObject({ role: "assistant", text: "A todo app needs add/view/toggle/delete." });
+		expect(history[3]).toMatchObject({ role: "assistant", kind: "toolCall", toolName: "read" });
+		expect(history[4]).toMatchObject({ role: "toolResult", toolName: "read", text: "TODO.md" });
+
+		// Stopping the run tears the watcher down without leaking.
+		manager.markAgentEnd("run-1", 1, "done");
+	});
 });

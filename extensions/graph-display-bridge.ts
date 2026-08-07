@@ -14,6 +14,7 @@
  * inventing one would misrepresent a cyclic walk as a pipeline.
  */
 
+import * as path from "node:path";
 import type { GraphState } from "./graph-dsl.ts";
 import type { NodeExecution } from "./graph-executor.ts";
 import type { WorkflowManager } from "./workflow-manager.ts";
@@ -120,6 +121,7 @@ function routeSuffix(execution: NodeExecution): string {
 export class GraphDisplayBridge {
 	private readonly manager: WorkflowManager;
 	private readonly runId: string;
+	private readonly cwd?: string;
 	/** Display ids are 1-based and increment per visit, not per node. */
 	private nextAgentId = 1;
 	private readonly activeIds = new Map<number, number>();
@@ -127,6 +129,7 @@ export class GraphDisplayBridge {
 	constructor(options: GraphDisplayOptions) {
 		this.manager = options.manager;
 		this.runId = options.runId;
+		this.cwd = options.cwd;
 
 		try {
 			this.manager.registerRun(
@@ -165,6 +168,22 @@ export class GraphDisplayBridge {
 				prompt: `${info.nodeType} node "${info.nodeId}"`,
 				status: "running",
 			});
+			// Start watching this agent's session file up front so its
+			// conversation streams live into the /workflows detail view while
+			// the agent is still working, not only after it finishes. The path
+			// is deterministic per (run, node); the watcher skips it until the
+			// file appears (pi writes it on spawn). human()/mainAgent() nodes
+			// don't own a session file, so they are skipped.
+			if (info.nodeType === "agent" && this.cwd) {
+				const sessionPath = path.join(
+					this.cwd,
+					".pi-workflow",
+					"sessions",
+					this.runId,
+					`${info.nodeId}.jsonl`,
+				);
+				this.manager.watchSession(this.runId, id, sessionPath);
+			}
 		} catch {
 			// Ignore display failures.
 		}
@@ -205,6 +224,12 @@ export class GraphDisplayBridge {
 				execution.tokens,
 				execution.durationMs,
 			);
+			// Watch the agent's persisted pi session so the /workflows navigator
+			// can surface its conversation on demand. Available only for agent
+			// nodes (they own a session file); human/mainAgent nodes have none.
+			if (execution.sessionId) {
+				this.manager.watchSession(this.runId, id, execution.sessionId);
+			}
 		} catch {
 			// Ignore display failures.
 		}

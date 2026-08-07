@@ -44,6 +44,7 @@ export class WorkflowManager extends EventEmitter {
 	private runs = new Map<string, ManagedRun>();
 	private journalDir?: string;
 	private transcriptWatchers = new Map<string, () => void>();
+	private sessionWatchers = new Map<string, () => void>();
 
 	constructor(journalDir?: string) {
 		super();
@@ -150,6 +151,11 @@ export class WorkflowManager extends EventEmitter {
 			stopWatcher();
 			this.transcriptWatchers.delete(key);
 		}
+		const stopSession = this.sessionWatchers.get(key);
+		if (stopSession) {
+			stopSession();
+			this.sessionWatchers.delete(key);
+		}
 
 		const run = this.runs.get(runId);
 		if (!run) return;
@@ -184,6 +190,149 @@ export class WorkflowManager extends EventEmitter {
 			run.updatedAt = Date.now();
 			this.emit("agentHistory", { runId, agentId, history: agent.history });
 		}
+	}
+
+	/**
+	 * Watches an agent node's persisted pi session JSONL and replays its
+	 * conversation into that agent's history so the /workflows navigator can
+	 * show what each agent actually did — not just its final result.
+	 *
+	 * The session JSONL is pi's native format (message records with a content
+	 * array of text/thinking/toolUse/toolResult blocks), so it is parsed
+	 * differently from a child-transcript log.
+	 */
+	watchSession(runId: string, agentId: number, sessionFile: string): void {
+		const run = this.runs.get(runId);
+		if (!run) return;
+
+		const agent = run.snapshot.agents.find((a) => a.id === agentId);
+		if (!agent) return;
+
+		// A node that is re-run (escalation revisit) reuses the same session
+		// file, so stop the prior watcher before starting a new one to avoid
+		// double-counting history entries.
+		const key = `${runId}:${agentId}`;
+		if (this.sessionWatchers.has(key)) this.sessionWatchers.get(key)!();
+		this.sessionWatchers.delete(key);
+
+		agent.sessionId = sessionFile;
+
+		let byteOffset = 0;
+		const stopped = { value: false };
+
+		const parseSessionMessage = (rec: { type: string; [k: string]: unknown }): AgentHistoryEntry[] => {
+			const entries: AgentHistoryEntry[] = [];
+			if (rec.type !== "message") return entries;
+			const msg = rec.message as
+				| { role?: string; content?: unknown; timestamp?: number }
+				| undefined;
+			if (!msg || !msg.role) return entries;
+			const ts = typeof rec.timestamp === "number" ? rec.timestamp : msg.timestamp;
+			const content = Array.isArray(msg.content) ? msg.content : [];
+			for (const block of content) {
+				if (typeof block !== "object" || block === null) continue;
+				const b = block as {
+					type?: string;
+					text?: unknown;
+					thinking?: string;
+					name?: string;
+					input?: string | object;
+					error?: boolean;
+				};
+				if (b.type === "text") {
+					const raw = b.text;
+					const text =
+						typeof raw === "string"
+							? raw
+							: Array.isArray(raw)
+								? raw.map((t) => String(t)).join("")
+								: String(raw ?? "");
+					if (!text.trim()) continue;
+					if (msg.role === "assistant") {
+						entries.push({ role: "assistant", text, timestamp: ts });
+					} else {
+						entries.push({ role: "user", text, timestamp: ts });
+					}
+				} else if (b.type === "thinking") {
+					const text = typeof b.thinking === "string" ? b.thinking : String(b.thinking ?? "");
+					if (text.trim()) entries.push({ role: "assistant", kind: "thinking", text, timestamp: ts });
+				} else if (b.type === "toolUse") {
+					const toolName = b.name ?? "tool";
+					let args = "";
+					if (typeof b.input === "string") args = b.input;
+					else if (b.input !== undefined && b.input !== null) {
+						try {
+							args = typeof b.input === "string" ? b.input : JSON.stringify(b.input);
+						} catch {
+							args = String(b.input);
+						}
+					}
+					entries.push({
+						role: "assistant",
+						kind: "toolCall",
+						toolName,
+						text: `${toolName}(${args.slice(0, 60)})`,
+						args,
+						timestamp: ts,
+					});
+				} else if (b.type === "toolResult") {
+					const raw = b.text;
+					const text =
+						typeof raw === "string"
+							? raw
+							: Array.isArray(raw)
+								? raw.map((t) => (typeof t === "string" ? t : JSON.stringify(t))).join("")
+								: String(raw ?? "");
+					entries.push({
+						role: "toolResult",
+						toolName: b.name ?? "tool",
+						text: text || "(no output)",
+						isError: b.error ?? false,
+						timestamp: ts,
+					});
+				}
+			}
+			return entries;
+		};
+
+		const readNewLines = () => {
+			if (stopped.value) return;
+			try {
+				if (!fs.existsSync(sessionFile)) return;
+				const stat = fs.statSync(sessionFile);
+				if (stat.size <= byteOffset) return;
+				const fd = fs.openSync(sessionFile, "r");
+				const length = stat.size - byteOffset;
+				const buffer = Buffer.alloc(length);
+				fs.readSync(fd, buffer, 0, length, byteOffset);
+				fs.closeSync(fd);
+				byteOffset = stat.size;
+				const content = buffer.toString("utf-8");
+				for (const line of content.split("\n")) {
+					if (!line.trim()) continue;
+					try {
+						const rec = JSON.parse(line);
+						for (const entry of parseSessionMessage(rec)) {
+							this.recordAgentHistory(runId, agentId, entry);
+						}
+					} catch {
+						// Partial final line or non-message record; skip.
+					}
+				}
+			} catch {
+				// Best-effort: a missing or unreadable session file leaves the
+				// agent's history empty, which is strictly better than crashing
+				// the display.
+			}
+		};
+
+		const timer = setInterval(readNewLines, 200);
+		this.sessionWatchers.set(key, () => {
+			stopped.value = true;
+			clearInterval(timer);
+			readNewLines();
+		});
+		readNewLines(); // initial read
 	}
 
 	private watchTranscript(runId: string, agentId: number, transcriptPath: string): void {
