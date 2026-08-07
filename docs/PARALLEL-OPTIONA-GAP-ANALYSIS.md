@@ -15,7 +15,22 @@ was not pursued.
 | Concurrent-node display, barrier logging | `extensions/graph-display-bridge.ts` |
 | Tests | `tests/graph-superstep-executor.test.ts`, `tests/graph-superstep-units.test.ts`, `tests/e2e-superstep.test.ts` |
 
-**Deviations from the plan as written:** none material. One correction was
+**Known deviation from this design — conditional in-edges are not counted.**
+Readiness uses a static in-degree count, but a conditional edge carries only an
+opaque function and declares no target, so it cannot be counted. A join whose
+branch arrives via a conditional edge is therefore under-counted and can run
+early on partial data, then run again when the branch lands. Every documented
+pattern feeds joins with direct edges and is unaffected; the gap is pinned by
+`tests/graph-superstep-known-limits.test.ts` and documented in SKILL.md/README.
+
+Naive fixes do not work and were tried: counting a conditional edge forces a
+guess at which nodes it claims, and because a claim is only released when the
+claiming node runs, claiming an upstream node deadlocks the graph, while
+claiming narrowly reproduces the bug. A real fix needs a different mechanism
+from static counting — most likely deferring a join while any predecessor that
+could still reach it is unsettled.
+
+**Other deviations:** none material. One correction was
 found during end-to-end testing: readiness state (which nodes already ran) has
 to be carried explicitly through resume as `executedNodeIds`, because
 "ready" is *in-degree 0 AND not yet executed* — reconstructing it from an
