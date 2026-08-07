@@ -23,6 +23,7 @@ function completeGraphExamples(markdown: string): string[] {
 }
 
 const DOCS = ["README.md", path.join("docs", "GRAPH-WORKFLOW-DESIGN.md")];
+const SKILL = path.join("skills", "pi-workflow", "SKILL.md");
 
 describe("documentation examples", () => {
 	for (const doc of DOCS) {
@@ -68,5 +69,41 @@ describe("documentation examples", () => {
 		for (const name of shipped) {
 			expect(readme, `README omits bundled agent "${name}"`).toContain(`\`${name}\``);
 		}
+	});
+
+	describe(SKILL, () => {
+		it.skipIf(!fs.existsSync(SKILL))("every complete graph example validates", () => {
+			// The skill is the document the model reads to learn the API. An
+			// example here that fails validation is copied verbatim and breaks
+			// the run -- this is the highest-value doc to keep honest.
+			const examples = completeGraphExamples(fs.readFileSync(SKILL, "utf-8"));
+			expect(examples.length, "SKILL should contain at least one complete graph example").toBeGreaterThan(0);
+
+			for (const [index, example] of examples.entries()) {
+				expect(
+					() => buildGraphFromScript(example, { args: { task: "example task" } }),
+					`${SKILL} example #${index + 1} failed to validate:\n\n${example}`,
+				).not.toThrow();
+			}
+		});
+
+		it.skipIf(!fs.existsSync(SKILL))("does not reference the removed imperative API", () => {
+			const skill = fs.readFileSync(SKILL, "utf-8");
+
+			for (const removed of ["parallel(", "pipeline(", "phase(", "await agent("]) {
+				expect(skill, `SKILL still documents the removed ${removed})`).not.toContain(removed);
+			}
+		});
+
+		it.skipIf(!fs.existsSync(SKILL))("teaches cyclic routing (node reuse), not only flat chains", () => {
+			// The single most common misuse is flattening an iterative task
+			// into a linear chain of uniquely-named nodes (planner_1, planner_2,
+			// ...) that never revisits a node. If the skill stops teaching that
+			// a node can be routed back to, the model will revert to that
+			// mistake. This guards the lesson.
+			const skill = fs.readFileSync(SKILL, "utf-8");
+			expect(skill, "SKILL must explain that revisiting a node overwrites its state").toMatch(/overwrite/i);
+			expect(skill, "SKILL must show a cyclic example that reuses a node id").toMatch(/rounds/);
+		});
 	});
 });

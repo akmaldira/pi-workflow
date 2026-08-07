@@ -68,6 +68,14 @@ g.run({ target: args.target });", args={ target: "auth module" })
 earlier one via `s.<nodeId>`. Interpolating a result gives the agent's text; edge conditions get
 `{ status, text, blockedOn, reason }`.
 
+**Revisiting a node overwrites its state entry.** A node is not single-use: an edge can route
+back to it any number of times (a run is capped at `maxIterations`, default 25). But when a node
+runs again, `s.<nodeId>` is replaced with the **latest** result — earlier results are dropped from
+state (the full visit sequence is still recorded in the run's history/path). This is deliberate:
+cycles are for *iterative refinement* where each pass only needs the most recent state (red finds
+failures → green fixes them → back to red which re-runs tests). It is **not** a way to collect one
+output per pass. If you must keep every intermediate output, give each step its own node id.
+
 **Route blockers to whoever owns the problem.** When an agent reports `status === 'blocked'`, send
 it back rather than retrying the same node — that is the entire point of the graph:
 
@@ -82,6 +90,37 @@ g.edge('green', (state, result) => {
 
 Cycles are allowed and are how escalation works. A run stops at `maxIterations` (default 25) if a
 loop never resolves.
+
+### Cycles vs. linear chains — choose deliberately
+
+The single most common mistake is writing a **flat linear chain with unique node names**
+(`planner_1`, `architect_1`, `planner_2`, …) when the task is actually iterative. That works but
+throws away the only thing the graph adds over plain sequential `await` calls: **routing**.
+
+- A **linear chain** (`g.edge('a','b'); g.edge('b','c')`) is right when the path is fully known in
+  advance and no decision depends on any agent's output.
+- A **cycle** is right when the path depends on what agents actually produce — an implementer gets
+  blocked and must hand work back, a reviewer rejects and the task re-enters an earlier stage, a
+  draft needs another revision round.
+
+To send the *same* node through a known multi-stage loop, reuse the single node id and decide the
+next hop with a visit counter stamped into state:
+
+```js
+export const meta = { name: 'revise', description: 'Revise a draft up to 3 times' };
+const g = graph();
+g.node('planner', agent('planner', (s) => 'Draft from: ' + (s.feedback ?? 'scratch')));
+g.node('reviewer', agent('reviewer', (s) => 'Critique: ' + s.planner));
+g.edge('planner', (s) => {
+  s.rounds = (s.rounds ?? 0) + 1;
+  return s.rounds < 3 ? 'reviewer' : END;   // revise up to 3 times
+});
+g.edge('reviewer', 'planner');
+g.run({});
+```
+
+But note: `s.planner` holds only the *latest* draft. If a reviewer needs every draft, the
+latest-wins behavior is wrong — and that is your signal to use distinct node ids instead.
 
 **Only these globals exist:** `graph`, `agent`, `mainAgent`, `human`, `END`, `args`, `JSON`. No
 `fs`, `process`, `require`, `import`, `fetch`, `Date`, or `Math.random` — a graph describes routing
@@ -147,19 +186,24 @@ Find security issues and code smells. Keep responses concise.
 
 ## Context: Fresh vs Fork
 
-Every subagent runs with one of two context modes, resolved as: explicit `context` option → agent's `defaultContext` frontmatter → `fork`.
+Every subagent runs with one of two context modes, resolved as: explicit `context` option (subagent tool only) → agent's `defaultContext` frontmatter → `fork`.
 
 - **`fork`** (default): the child's system prompt is prepended with a compaction-style structured summary (Goal / Progress / Key Decisions / Next Steps) of the parent session — not the raw transcript. This keeps cost bounded regardless of how long the parent conversation has run. A note referencing the parent's raw session file is included as an escape hatch, in case the child needs an exact detail not captured in the summary.
 - **`fresh`**: the child starts with zero inherited history — only its system prompt + the task you give it. Use this for agents that should run in full isolation with no awareness of the current conversation.
 
-Opt out of forking when a delegated task should run in complete isolation, unaware of the current conversation:
+In the `subagent` tool, override per-call:
 
 ```
 subagent(tasks=[{"agent": "worker", "task": "run an isolated audit", "context": "fresh"}], mode="single")
 ```
 
-```javascript
-await agent('worker: run an isolated audit', { context: 'fresh' })
+In a `workflow` graph there is no inline per-node override — set `defaultContext: fresh` in that agent's frontmatter so every spawn of it runs isolated:
+
+```markdown
+---
+name: auditor
+defaultContext: fresh
+---
 ```
 
 If fork context can't be produced (no active session, or summarization fails), the subagent silently runs fresh instead — it never blocks or throws.
@@ -198,7 +242,7 @@ subagent(tasks=[{"agent": "scout", "task": "Review auth"}, {"agent": "scout", "t
 ```
 
 ### Workflow with conditional logic
-```javascript
+```js
 export const meta = { name: 'fix_issues', description: 'Find and fix issues' };
 const g = graph();
 g.node('scan', agent('scout', () => 'Find security issues'));

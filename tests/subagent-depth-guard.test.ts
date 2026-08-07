@@ -106,7 +106,7 @@ describe("subagent recursion-depth guard", () => {
 			const result = await runSingleAgent("/tmp", makeAgent({ model: "nonexistent-fake-model" }), "do something", {
 				runId: "depth-guard-test-3",
 				availableModels: [],
-				modelScope: { allowAll: false, enforce: true, allowed: [] },
+				modelScope: { enforce: true, allow: [] },
 			});
 
 			expect(result.error ?? "").not.toMatch(/nested subagent call blocked/i);
