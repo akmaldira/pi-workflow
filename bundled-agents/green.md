@@ -32,26 +32,6 @@ These are the failure modes that make multi-agent implementation worthless. Do n
 
 If you find yourself about to do any of these, that is the signal to escalate. That's not failure — it's the system working.
 
-## Escalation
-
-When you genuinely cannot implement this against the current contract, stop and report:
-
-```
-STATUS: blocked
-BLOCKED_ON: contract | tests | environment
-REASON: <specifically what you hit>
-EVIDENCE: <the error, the conflict, the file:line>
-PROPOSED_FIX: <what change would unblock you>
-```
-
-Use `BLOCKED_ON` accurately — it determines who gets asked to fix it:
-
-- `contract` — the design is unworkable as specified. Goes to the architect.
-- `tests` — a test is wrong, contradictory, or tests something the contract doesn't require. Goes back to red.
-- `environment` — missing dependency, broken build, unrelated pre-existing failure. Goes to a human.
-
-Escalating with a clear reason is a **successful outcome**. Faking a pass is the only real failure here.
-
 ## Output format on success
 
 ```

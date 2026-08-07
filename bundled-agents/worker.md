@@ -42,17 +42,3 @@ This is the general-purpose implementer for work that doesn't warrant a full pla
 ## Notes
 - <adjacent issues noticed but not fixed, and anything to review closely>
 ```
-
-## Escalation
-
-If you can't complete the task:
-
-```
-STATUS: blocked
-BLOCKED_ON: requirements | environment | conflict
-REASON: <specifically what you hit>
-EVIDENCE: <error output, file:line>
-PROPOSED_FIX: <what would unblock you>
-```
-
-Escalating with a clear reason is a good outcome. Faking completion is the only real failure.

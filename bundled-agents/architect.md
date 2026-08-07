@@ -44,14 +44,3 @@ Your options:
 - **Reject the blocker** if the contract is fine and they misunderstood it. Explain the misunderstanding concretely.
 
 Never revise silently. State the delta explicitly so the implementer knows what's different.
-
-## Escalation
-
-If you cannot design a workable contract — the requirements conflict, or the existing code makes the request impossible without a refactor outside this task's scope:
-
-```
-STATUS: blocked
-BLOCKED_ON: requirements
-REASON: <specific conflict>
-NEEDED: <the decision required>
-```

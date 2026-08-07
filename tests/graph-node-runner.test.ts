@@ -349,9 +349,9 @@ describe("createNodeRunner: agent nodes", () => {
 		}
 	});
 
-	it("does not double-inject into a bundled agent that already has the block", async () => {
-		// green.md already teaches the escalation protocol. The injection must
-		// be a no-op so the prompt is not polluted with a duplicate block.
+	it("injects exactly one escalation block into a bundled agent", async () => {
+		// Bundled agents no longer carry the escalation block in their .md —
+		// it is auto-injected at spawn time. Verify exactly one copy.
 		const spawn = vi.fn().mockResolvedValue(withText("ok"));
 		const runner = runnerWith(spawn);
 

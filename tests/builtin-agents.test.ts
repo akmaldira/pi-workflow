@@ -60,16 +60,16 @@ describe("bundled agents", () => {
 		}
 	});
 
-	it("teaches escalation to every agent that can get stuck", () => {
+	it("receives escalation protocol via auto-injection at spawn time", () => {
 		const { agents } = discoverAgents("/nonexistent-project", "project");
-		// Scout is deliberately excluded: it is a cheap locator with nothing to
-		// escalate about.
-		const mustEscalate = ["planner", "architect", "red", "green", "researcher", "worker"];
+		const { withEscalationProtocol } = require("../extensions/graph-node-runner.ts");
 
-		for (const name of mustEscalate) {
-			const agent = agents.find((a) => a.name === name)!;
-			expect(agent.systemPrompt, name).toContain("STATUS: blocked");
-			expect(agent.systemPrompt, name).toContain("BLOCKED_ON");
+		// Every bundled agent — regardless of whether its .md mentions
+		// escalation — must receive the protocol via auto-injection.
+		for (const agent of agents) {
+			const injected = withEscalationProtocol(agent);
+			expect(injected.systemPrompt, agent.name).toContain("STATUS: blocked");
+			expect(injected.systemPrompt, agent.name).toContain("BLOCKED_ON");
 		}
 	});
 

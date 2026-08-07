@@ -40,14 +40,3 @@ The tests you write become the definition of done. Downstream, `green` implement
 ## Coverage notes
 - <anything the contract specifies that you could not test, and why>
 ```
-
-## Escalation
-
-If the contract is untestable as specified — it's ambiguous, or testing it requires infrastructure that doesn't exist:
-
-```
-STATUS: blocked
-BLOCKED_ON: contract
-REASON: <what cannot be tested and why>
-NEEDED: <the clarification or infrastructure required>
-```
