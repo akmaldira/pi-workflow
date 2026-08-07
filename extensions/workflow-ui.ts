@@ -595,6 +595,7 @@ export function renderNavigatorFrame(
 				const dotColor = AGENT_DOT_COLOR[a.status] ?? "dim";
 				const dot = theme.fg(dotColor, "●");
 				const tokens = a.outputTokens ? dim(` ${compactTokens(a.outputTokens)}t`) : "";
+				const modelTag = a.model ? dim(` [${asText(a.model)}]`) : "";
 				const labelStyled = selected ? theme.fg("accent", theme.bold(asText(a.label))) : theme.fg("accent", asText(a.label));
 				const cellWidth = phaseless ? fullInner : rightInner;
 				// The routing target is the point of a graph view, so show it
@@ -602,7 +603,7 @@ export function renderNavigatorFrame(
 				const preview =
 					phaseless && a.resultPreview ? dim(`  ${asText(a.resultPreview)}`) : "";
 				rightCell = padRight(
-					marker + dot + " " + labelStyled + tokens + preview,
+					marker + dot + " " + labelStyled + tokens + modelTag + preview,
 					cellWidth,
 				);
 			} else if (k === 0 && agents.length === 0) {

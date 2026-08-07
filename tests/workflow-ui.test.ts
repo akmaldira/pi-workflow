@@ -472,4 +472,34 @@ describe("navigator detail view: session-derived history", () => {
 		expect(text).toContain("→ read: path=/file");
 		expect(text).toContain("← read: file contents");
 	});
+
+	it("shows model in the agent list and detail view", () => {
+		const mgr = new WorkflowManager("/tmp");
+		mgr.registerRun("r1", { name: "demo", description: "d" });
+		mgr.markAgentStart("r1", 0, {
+			id: 1,
+			label: "planner",
+			prompt: "plan",
+			status: "running",
+			model: "openrouter/test-model",
+		});
+		mgr.markAgentEnd("r1", 1, "done");
+
+		const model = new NavigatorModel(mgr);
+		const state = new NavigatorState();
+
+		// Agent list view shows the model tag
+		state.cursor = 0;
+		state.drill(model); // runs -> agents
+		const listText = renderNavigatorText(state, model, 120, 24).join("\n");
+		expect(listText).toContain("openrouter/test-model");
+
+		// Detail pager also shows Model:
+		state.cursor = 0;
+		state.drill(model); // agents -> detail
+		state.openPager();
+		const detailText = renderNavigatorText(state, model, 120, 24).join("\n");
+		expect(detailText).toContain("Model:");
+		expect(detailText).toContain("openrouter/test-model");
+	});
 });

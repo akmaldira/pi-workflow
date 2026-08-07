@@ -38,26 +38,38 @@ function fakeSpawnAgent(cwd: string) {
 		if (sf) {
 			fs.mkdirSync(path.dirname(sf), { recursive: true });
 			fs.writeFileSync(
-				sf,
-				[
-					JSON.stringify({ type: "session", version: 3, id: "s", timestamp: 1000, cwd: _cwd }),
-					JSON.stringify({
-						type: "message",
-						timestamp: 1001,
-						message: { role: "user", content: [{ type: "text", text: "Task: Plan for: a todo app" }] },
-					}),
-					JSON.stringify({
-						type: "message",
-						timestamp: 1002,
-						message: {
-							role: "assistant",
-							content: [
-								{ type: "thinking", thinking: "Let me plan the todo app." },
-								{ type: "text", text: "1. Add  2. View  3. Toggle" },
-							],
-						},
-					}),
-				].join("\n"),
+			sf,
+			[
+				JSON.stringify({ type: "session", version: 3, id: "s", timestamp: 1000, cwd: _cwd }),
+				JSON.stringify({ type: "model_change", timestamp: 1000, provider: "openrouter", modelId: "test-model" }),
+				JSON.stringify({
+					type: "message",
+					timestamp: 1001,
+					message: { role: "user", content: [{ type: "text", text: "Task: Plan for: a todo app" }] },
+				}),
+				JSON.stringify({
+					type: "message",
+					timestamp: 1002,
+					message: {
+						role: "assistant",
+						content: [
+							{ type: "thinking", thinking: "Let me plan the todo app." },
+							{ type: "text", text: "1. Add  2. View  3. Toggle" },
+							{ type: "toolCall", name: "read", arguments: { path: "/file" } },
+						],
+					},
+				}),
+				JSON.stringify({
+					type: "message",
+					timestamp: 1003,
+					message: {
+						role: "toolResult",
+						toolName: "read",
+						isError: false,
+						content: [{ type: "text", text: "file contents here" }],
+					},
+				}),
+			].join("\n"),
 			);
 		}
 		return {
@@ -100,13 +112,19 @@ describe("an agent's session conversation is visible in /workflows", () => {
 		const planner = run.snapshot.agents.find((a) => a.label === "planner (planner)")!;
 		expect(planner.sessionId).toBe(spawned[0]!);
 
-		// The conversation — user prompt + thinking + assistant text — is now
-		// history, exactly what /workflows shows in the detail pager.
+		// The conversation — user prompt + thinking + assistant text + tool call
+		// + tool result — is now history, exactly what /workflows shows in the
+		// detail pager.
 		const history = planner.history ?? [];
-		expect(history.length).toBe(3);
+		expect(history.length).toBe(5);
 		expect(history[0]).toMatchObject({ role: "user", text: "Task: Plan for: a todo app" });
 		expect(history[1]).toMatchObject({ role: "assistant", kind: "thinking" });
 		expect(history[2]).toMatchObject({ role: "assistant", text: "1. Add  2. View  3. Toggle" });
+		expect(history[3]).toMatchObject({ role: "assistant", kind: "toolCall", toolName: "read" });
+		expect(history[4]).toMatchObject({ role: "toolResult", toolName: "read", text: "file contents here" });
+
+		// Model is extracted from the model_change record in the session JSONL.
+		expect(planner.model).toBe("openrouter/test-model");
 
 		const green = run.snapshot.agents.find((a) => a.label === "green (green)")!;
 		expect(green.sessionId).toBe(spawned[1]);

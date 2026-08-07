@@ -724,7 +724,7 @@ export async function buildSystemPrompt(agent: AgentConfig, cwd: string, options
 				signal: options.signal,
 			});
 			if (forkResult) {
-				prompt = appendSystemPrompt(prompt, formatForkContextBlock(forkResult));
+				prompt = prependContext(prompt, formatForkContextBlock(forkResult));
 				parentSessionFile = forkResult.parentSessionFile;
 			} else {
 				notes.push("Requested context: \"fork\" but parent session summary could not be generated; running with fresh context instead.");
@@ -770,4 +770,9 @@ export async function buildSystemPrompt(agent: AgentConfig, cwd: string, options
 
 function appendSystemPrompt(base: string, addition: string): string {
 	return base ? `${base}\n\n${addition}` : addition;
+}
+
+/** Put context BEFORE the task instruction so the agent reads context first. */
+function prependContext(task: string, context: string): string {
+	return context ? `${context}\n\n${task}` : task;
 }

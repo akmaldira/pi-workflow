@@ -192,6 +192,17 @@ export class WorkflowManager extends EventEmitter {
 		}
 	}
 
+	/** Update a single field on an agent snapshot (e.g. model from session). */
+	updateAgentField<K extends keyof WorkflowAgentSnapshot>(runId: string, agentId: number, field: K, value: WorkflowAgentSnapshot[K]): void {
+		const run = this.runs.get(runId);
+		if (!run) return;
+		const agent = run.snapshot.agents.find((a) => a.id === agentId);
+		if (agent) {
+			agent[field] = value;
+			run.updatedAt = Date.now();
+		}
+	}
+
 	/**
 	 * Watches an agent node's persisted pi session JSONL and replays its
 	 * conversation into that agent's history so the /workflows navigator can
@@ -220,15 +231,54 @@ export class WorkflowManager extends EventEmitter {
 		let byteOffset = 0;
 		const stopped = { value: false };
 
-		const parseSessionMessage = (rec: { type: string; [k: string]: unknown }): AgentHistoryEntry[] => {
+		const parseSessionRecord = (rec: { type: string; [k: string]: unknown }): AgentHistoryEntry[] => {
 			const entries: AgentHistoryEntry[] = [];
+
+			// Extract model from model_change records so the TUI can show
+			// which LLM this agent is using.
+			if (rec.type === "model_change") {
+				const modelId = rec.modelId as string | undefined;
+				const provider = rec.provider as string | undefined;
+				if (modelId) {
+					const label = provider ? `${provider}/${modelId}` : modelId;
+					this.updateAgentField(runId, agentId, "model", label);
+				}
+				return entries;
+			}
+
 			if (rec.type !== "message") return entries;
 			const msg = rec.message as
-				| { role?: string; content?: unknown; timestamp?: number }
+				| { role?: string; content?: unknown; timestamp?: number; toolName?: string; toolCallId?: string; isError?: boolean }
 				| undefined;
 			if (!msg || !msg.role) return entries;
 			const ts = typeof rec.timestamp === "number" ? rec.timestamp : msg.timestamp;
 			const content = Array.isArray(msg.content) ? msg.content : [];
+
+			// Pi session format: tool results are whole messages with
+			// role="toolResult", toolName, isError, and content blocks of
+			// type "text".  Handle them at the message level, not inside
+			// the block loop.
+			if (msg.role === "toolResult") {
+				const parts: string[] = [];
+				for (const block of content) {
+					if (typeof block !== "object" || block === null) continue;
+					const b = block as { type?: string; text?: unknown };
+					if (b.type === "text") {
+						const raw = b.text;
+						const text = typeof raw === "string" ? raw : String(raw ?? "");
+						if (text) parts.push(text);
+					}
+				}
+				entries.push({
+					role: "toolResult",
+					toolName: msg.toolName ?? "tool",
+					text: parts.join("\n") || "(no output)",
+					isError: msg.isError ?? false,
+					timestamp: ts,
+				});
+				return entries;
+			}
+
 			for (const block of content) {
 				if (typeof block !== "object" || block === null) continue;
 				const b = block as {
@@ -236,6 +286,7 @@ export class WorkflowManager extends EventEmitter {
 					text?: unknown;
 					thinking?: string;
 					name?: string;
+					arguments?: string | object;
 					input?: string | object;
 					error?: boolean;
 				};
@@ -256,38 +307,26 @@ export class WorkflowManager extends EventEmitter {
 				} else if (b.type === "thinking") {
 					const text = typeof b.thinking === "string" ? b.thinking : String(b.thinking ?? "");
 					if (text.trim()) entries.push({ role: "assistant", kind: "thinking", text, timestamp: ts });
-				} else if (b.type === "toolUse") {
+				} else if (b.type === "toolCall" || b.type === "toolUse") {
+					// Pi session format uses "toolCall" with {name, arguments}.
+					// Also accept legacy "toolUse" with {name, input}.
 					const toolName = b.name ?? "tool";
+					const rawArgs = b.arguments ?? b.input;
 					let args = "";
-					if (typeof b.input === "string") args = b.input;
-					else if (b.input !== undefined && b.input !== null) {
+					if (typeof rawArgs === "string") args = rawArgs;
+					else if (rawArgs !== undefined && rawArgs !== null) {
 						try {
-							args = typeof b.input === "string" ? b.input : JSON.stringify(b.input);
+							args = JSON.stringify(rawArgs);
 						} catch {
-							args = String(b.input);
+							args = String(rawArgs);
 						}
 					}
 					entries.push({
 						role: "assistant",
 						kind: "toolCall",
 						toolName,
-						text: `${toolName}(${args.slice(0, 60)})`,
+						text: `${toolName}(${args.slice(0, 200)})`,
 						args,
-						timestamp: ts,
-					});
-				} else if (b.type === "toolResult") {
-					const raw = b.text;
-					const text =
-						typeof raw === "string"
-							? raw
-							: Array.isArray(raw)
-								? raw.map((t) => (typeof t === "string" ? t : JSON.stringify(t))).join("")
-								: String(raw ?? "");
-					entries.push({
-						role: "toolResult",
-						toolName: b.name ?? "tool",
-						text: text || "(no output)",
-						isError: b.error ?? false,
 						timestamp: ts,
 					});
 				}
@@ -312,7 +351,7 @@ export class WorkflowManager extends EventEmitter {
 					if (!line.trim()) continue;
 					try {
 						const rec = JSON.parse(line);
-						for (const entry of parseSessionMessage(rec)) {
+						for (const entry of parseSessionRecord(rec)) {
 							this.recordAgentHistory(runId, agentId, entry);
 						}
 					} catch {

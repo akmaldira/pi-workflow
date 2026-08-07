@@ -542,16 +542,20 @@ g.run();`;
 						content: [
 							{ type: "thinking", thinking: "The user wants a plan." },
 							{ type: "text", text: "A todo app needs add/view/toggle/delete." },
-							{ type: "toolUse", name: "read", input: { path: "/file" } },
+							{ type: "toolCall", name: "read", arguments: { path: "/file" } },
 						],
 					},
 				}),
+				// Pi session format: tool results are separate messages with
+				// role="toolResult", not content blocks inside an assistant message.
 				JSON.stringify({
 					type: "message",
 					timestamp: 1003,
 					message: {
-						role: "assistant",
-						content: [{ type: "toolResult", name: "read", text: "TODO.md" }],
+						role: "toolResult",
+						toolName: "read",
+						isError: false,
+						content: [{ type: "text", text: "TODO.md" }],
 					},
 				}),
 			].join("\n"),
