@@ -4,7 +4,6 @@
  * Implements:
  *  - ask_user_question: batched multi-question custom TUI, registered for both
  *    parent and child agents.
- *  - ask_human: simple single-prompt wrapper that returns text directly.
  *  - ask_supervisor: lets child agents ask the main agent for decisions.
  */
 
@@ -35,14 +34,6 @@ const TUIQuestionSchema = Type.Object({
 
 const AskUserQuestionParams = Type.Object({
 	questions: Type.Array(TUIQuestionSchema, { description: "1 to 4 questions to ask" }),
-});
-
-const AskHumanParams = Type.Object({
-	question: Type.String({ description: "The question to ask the user" }),
-	options: Type.Optional(
-		Type.Array(Type.String(), { description: "Optional options to choose from" }),
-	),
-	default: Type.Optional(Type.String({ description: "Default fallback answer" })),
 });
 
 const AskSupervisorParams = Type.Object({
@@ -176,112 +167,6 @@ export function createAskUserQuestionTool(): ToolDefinition {
 			return {
 				content: [{ type: "text" as const, text: "Headless mode; used default fallbacks." }],
 				details: { answers, cancelled: false },
-			};
-		},
-	});
-}
-
-/**
- * The `ask_human` tool.
- *
- * Simple single-question wrapper that matches the standard subagent pattern
- * and maps internally to `ask_user_question`.
- */
-export function createAskHumanTool(): ToolDefinition {
-	return defineTool({
-		name: "ask_human",
-		label: "Ask Human",
-		description:
-			"Ask the user a question and get a text answer back. Can optional restrict to a list of options. " +
-			"Use this when you need human guidance, approval, or specific values.",
-		parameters: AskHumanParams,
-
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const { question, options, default: defVal } = params;
-
-			// Map to ask_user_question questions format
-			const mappedQuestions: TUIQuestion[] = [
-				{
-					question: question as string,
-					header: "Question",
-					options: (options as string[] | undefined)?.map((o) => ({ label: o })),
-				},
-			];
-
-			// 1. Child process check
-			const client = ChannelClient.fromEnv();
-			if (client) {
-				const reply = await client.ask({
-					kind: "human",
-					question: question as string,
-					options: (options as string[] | undefined)?.map((o) => ({ label: o })),
-					expectsReply: true,
-					default: defVal as string | undefined,
-				});
-
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: reply.answer
-								? `User answered: ${reply.answer}`
-								: "User cancelled the question.",
-						},
-					],
-					details: {
-						answer: reply.answer ?? null,
-						cancelled: reply.source === "cancelled",
-						error: reply.source === "timeout" ? "timeout" : undefined,
-					},
-				};
-			}
-
-			// 2. Parent process: TUI execution
-			if (ctx.mode === "tui" && ctx.ui) {
-				const result = await runAskUserQuestionTUI(ctx, mappedQuestions);
-				const answer = result.answers[0]?.answer ?? null;
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: result.cancelled
-								? "User cancelled the question."
-								: `User answered: ${answer}`,
-						},
-					],
-					details: {
-						answer,
-						cancelled: result.cancelled,
-					},
-				};
-			}
-
-			// 3. Parent process: non-TUI fallback
-			if (ctx.hasUI && ctx.ui) {
-				let ans: string | undefined;
-				if (options && (options as string[]).length > 0) {
-					ans = await ctx.ui.select(question as string, options as string[]);
-				} else {
-					ans = await ctx.ui.input(question as string);
-				}
-
-				if (ans === undefined) {
-					return {
-						content: [{ type: "text" as const, text: "User cancelled the question." }],
-						details: { answer: defVal ?? null, cancelled: true },
-					};
-				}
-
-				return {
-					content: [{ type: "text" as const, text: `User answered: ${ans}` }],
-					details: { answer: ans, cancelled: false },
-				};
-			}
-
-			// 4. Parent process: headless fallback
-			return {
-				content: [{ type: "text" as const, text: "Headless mode; used default fallback." }],
-				details: { answer: defVal ?? null, cancelled: false },
 			};
 		},
 	});

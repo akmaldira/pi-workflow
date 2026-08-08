@@ -22,7 +22,6 @@ import { sweepOrphanedChannels } from "./channel.ts";
 import { RequestBroker } from "./request-broker.ts";
 import {
 	createAskUserQuestionTool,
-	createAskHumanTool,
 	createAskSupervisorTool,
 } from "./ask-tools.ts";
 import { installBrokerSinks, setBrokerContext } from "./broker-sinks.ts";
@@ -502,7 +501,7 @@ export default function (pi: ExtensionAPI) {
 	// Graph-based coordination: nodes are agents, edges decide where each
 	// result goes next. Replaces the imperative agent()/parallel() script.
 	//
-	// The broker carries judgement requests between processes. ask_human,
+	// The broker carries judgement requests between processes. ask_user_question,
 	// ask_supervisor, and (after re-routing) the human() node all pass through
 	// here. The sinks route each request to whoever can answer it: the user's
 	// TUI for human questions, the main agent's conversation for supervisor ones.
@@ -531,7 +530,6 @@ export default function (pi: ExtensionAPI) {
 
 	// --- Ask Tools (User & Supervisor communication) ---
 	pi.registerTool(createAskUserQuestionTool());
-	pi.registerTool(createAskHumanTool());
 	pi.registerTool(createAskSupervisorTool());
 
 	/**

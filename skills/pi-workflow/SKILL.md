@@ -99,9 +99,9 @@ Workflows support two distinct ways to bring external judgment or decisions into
    - **Usage:** The workflow walk pauses at this node. The user is prompted (via a custom TUI or command line) for input before routing continues.
    - **Rule:** Always specify a `default` fallback for human nodes so a headless run (no TUI) does not hang.
 
-2. **In-Flight Tools (`ask_human`, `ask_user_question`, `ask_supervisor`)**
+2. **In-Flight Tools (`ask_user_question`, `ask_supervisor`)**
    - **Purpose:** Prompting for details *while an agent is executing* inside its node.
-   - **`ask_user_question` / `ask_human`**: Spawns a custom questionnaire dialog to ask the user. Used when an agent needs user values or design preferences to proceed.
+   - **`ask_user_question`**: Spawns a custom questionnaire dialog to ask the user. Used when an agent needs user values or design preferences to proceed.
    - **`ask_supervisor`**: Child agents call this to ask the main agent (the supervisor) for instructions or to report progress.
    - **Restrictions:** Agents MUST NOT use these tools to debug errors or ask for code implementations. Errors and missing capabilities must be escalated via the escalation protocol (`STATUS: blocked`).
 

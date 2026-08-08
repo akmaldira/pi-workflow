@@ -1,5 +1,5 @@
 /**
- * Tests for ask_user_question, ask_human, and ask_supervisor tools.
+ * Tests for ask_user_question and ask_supervisor tools.
  */
 
 import * as fs from "node:fs";
@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	createAskUserQuestionTool,
-	createAskHumanTool,
 	createAskSupervisorTool,
 } from "../extensions/ask-tools.ts";
 import {
@@ -20,7 +19,7 @@ import {
 } from "../extensions/channel.ts";
 
 describe("Ask Tools in Parent Process (direct UI calling)", () => {
-	it("ask_human calls custom TUI when in tui mode", async () => {
+	it("ask_user_question calls custom TUI when in tui mode", async () => {
 		const custom = vi.fn().mockImplementation((fn) => {
 			const done = vi.fn();
 			const tui = { requestRender: vi.fn() };
@@ -47,17 +46,25 @@ describe("Ask Tools in Parent Process (direct UI calling)", () => {
 			ui: { custom },
 		} as unknown as ExtensionContext;
 
-		const tool = createAskHumanTool();
+		const tool = createAskUserQuestionTool();
 		const res: any = await tool.execute(
 			"call-1",
-			{ question: "Choose?", options: ["A", "B"] } as never,
+			{
+				questions: [
+					{
+						question: "Choose?",
+						header: "H1",
+						options: [{ label: "A" }, { label: "B" }],
+					},
+				],
+			} as never,
 			undefined,
 			undefined,
 			ctx,
 		);
 
 		expect(custom).toHaveBeenCalled();
-		expect(res.details.answer).toBe("B");
+		expect(res.details.answers).toEqual([{ questionIndex: 0, kind: "option", answer: "B" }]);
 		expect(res.details.cancelled).toBe(false);
 	});
 
@@ -109,20 +116,32 @@ describe("Ask Tools in Child Process (filesystem channel routing)", () => {
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	it("ask_human routes request to channel and receives answer", async () => {
+	it("ask_user_question routes request to channel and receives answer", async () => {
 		poller = new ChannelPoller(chDir, {
 			onRequest: (req) => {
 				expect(req.kind).toBe("human");
-				expect(req.question).toBe("Ready?");
+				expect(req.questions?.[0].question).toBe("Ready?");
 				// Reply via poller
-				poller.reply(req.id, { source: "human", answer: "yes indeed" });
+				poller.reply(req.id, {
+					source: "human",
+					answer: "yes indeed",
+					answers: [{ questionIndex: 0, kind: "option", answer: "yes indeed" }],
+				});
 			},
 		});
 
-		const tool = createAskHumanTool();
+		const tool = createAskUserQuestionTool();
 		const toolPromise = tool.execute(
 			"call-2",
-			{ question: "Ready?" } as never,
+			{
+				questions: [
+					{
+						question: "Ready?",
+						header: "H1",
+						options: [{ label: "yes indeed" }],
+					},
+				],
+			} as never,
 			undefined,
 			undefined,
 			{} as never,
@@ -133,7 +152,7 @@ describe("Ask Tools in Child Process (filesystem channel routing)", () => {
 		poller.poll();
 
 		const res: any = await toolPromise;
-		expect(res.details.answer).toBe("yes indeed");
+		expect(res.details.answers).toEqual([{ questionIndex: 0, kind: "option", answer: "yes indeed" }]);
 		expect(res.details.cancelled).toBe(false);
 	});
 

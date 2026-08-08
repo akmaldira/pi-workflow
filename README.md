@@ -109,7 +109,7 @@ g.run(initialState);        // required, once
 
 Workflows support two ways to bring external judgment/preferences into a run:
 - **Interactive Nodes (`human(...)`)**: Structural gates defined explicitly in the graph script. The workflow walk pauses at this node and prompts the user.
-- **In-Flight Tools (`ask_human`/`ask_user_question`, `ask_supervisor`)**: Tools called by subagents during their execution. `ask_human`/`ask_user_question` prompts the user, while `ask_supervisor` lets child subagents ask the main agent for a decision. Subagents must not use these tools to debug errors; those must be escalated via `STATUS: blocked`.
+- **In-Flight Tools (`ask_user_question`, `ask_supervisor`)**: Tools called by subagents during their execution. `ask_user_question` prompts the user, while `ask_supervisor` lets child subagents ask the main agent for a decision. Subagents must not use these tools to debug errors; those must be escalated via `STATUS: blocked`.
 
 ### Edges
 
