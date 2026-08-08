@@ -196,4 +196,49 @@ describe("ask_user_question TUI component input and rendering", () => {
 		expect(res.answers[0].selected).toEqual(["A"]);
 		expect(res.answers[0].kind).toBe("multi");
 	});
+
+	it("guarantees rendered lines never exceed the terminal width", async () => {
+		const custom = vi.fn().mockImplementation((fn) => {
+			const tui = { requestRender: vi.fn() };
+			const theme = {
+				fg: (_c: string, s: string) => s,
+				bg: (_c: string, s: string) => s,
+				bold: (s: string) => s,
+				dim: (s: string) => s,
+			};
+			const kb = {};
+			const done = () => {};
+
+			const comp = fn(tui, theme, kb, done);
+
+			// Test rendering at narrow, standard, and wide dimensions
+			const widths = [40, 80, 120, 180];
+			for (const w of widths) {
+				const lines = comp.render(w);
+				for (const line of lines) {
+					const lineLen = line.replace(/\x1b\[[0-9;]*m/g, "").length; // length excluding ANSI styles
+					expect(lineLen, `Rendered line must not exceed width ${w}: "${line}"`).toBeLessThanOrEqual(w);
+				}
+			}
+
+			return { cancelled: false };
+		});
+
+		const ctx = { mode: "tui", ui: { custom } } as unknown as ExtensionContext;
+		const questions: TUIQuestion[] = [
+			{
+				question: "This is an extremely long question string that will definitely require word-wrapping at almost any reasonable terminal width.",
+				header: "ExtremelyLongHeaderNameHere",
+				options: [
+					{
+						label: "Option A has a very long label text to test wrapping of option labels.",
+						description: "Description A is also very detailed to test that descriptions are wrapped properly to the left-hand column width.",
+						preview: "Preview A is markdown that will trigger the side-by-side split screen rendering because it has a preview and width is high.",
+					},
+				],
+			},
+		];
+
+		await runAskUserQuestionTUI(ctx, questions);
+	});
 });

@@ -21,6 +21,7 @@ import {
 	Text,
 	visibleWidth,
 	wrapTextWithAnsi,
+	truncateToWidth,
 } from "@earendil-works/pi-tui";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -547,7 +548,7 @@ export async function runAskUserQuestionTUI(
 			} else {
 				tabs.push(theme.fg("muted", " Submit "));
 			}
-			lines.push(`  ${tabs.join(" │ ")}`);
+			lines.push(truncateToWidth(`  ${tabs.join(" │ ")}`, renderWidth));
 			lines.push(theme.fg("accent", "─".repeat(renderWidth)));
 
 			// ── Submit Tab ──────────────────────────────────────────────────
@@ -620,18 +621,29 @@ export async function runAskUserQuestionTUI(
 			const currentOpt = opts[optionIndex];
 			if (currentOpt?.preview && renderWidth >= 100) {
 				leftWidth = Math.floor(renderWidth * 0.6);
-				const previewWidth = renderWidth - leftWidth - 3;
-				rightLines.push(theme.fg("accent", "┌" + "─".repeat(previewWidth + 1) + "┐"));
+				const previewWidth = renderWidth - leftWidth - 6;
+				rightLines.push(theme.fg("accent", "┌" + "─".repeat(previewWidth + 2) + "┐"));
 				const wrapped = wrapTextWithAnsi(currentOpt.preview, previewWidth);
 				for (const rl of wrapped) {
 					rightLines.push(theme.fg("accent", "│ ") + theme.fg("text", rl.padEnd(previewWidth)) + theme.fg("accent", " │"));
 				}
-				rightLines.push(theme.fg("accent", "└" + "─".repeat(previewWidth + 1) + "┘"));
+				rightLines.push(theme.fg("accent", "└" + "─".repeat(previewWidth + 2) + "┘"));
 			}
 
 			const leftLines: string[] = [];
+
+			function addLeft(prefix: string, text: string) {
+				const prefLen = visibleWidth(prefix);
+				const maxW = Math.max(1, leftWidth - prefLen);
+				const wrapped = wrapTextWithAnsi(text, maxW);
+				const cont = " ".repeat(prefLen);
+				wrapped.forEach((line, i) => {
+					leftLines.push(`${i === 0 ? prefix : cont}${line}`);
+				});
+			}
+
 			leftLines.push("");
-			leftLines.push(`  ${theme.bold(q.question)}`);
+			addLeft("  ", theme.bold(q.question));
 			leftLines.push("");
 
 			// Render options
@@ -653,13 +665,13 @@ export async function runAskUserQuestionTUI(
 						: "";
 				const noteSuffix = optionNotes.get(currentTab)?.has(idx) ? " (✎)" : "";
 
-				leftLines.push(`${prefix}${theme.fg(labelColor, `${box}${opt.label}${otherSuffix}${noteSuffix}`)}`);
+				addLeft(prefix, theme.fg(labelColor, `${box}${opt.label}${otherSuffix}${noteSuffix}`));
 
 				if (opt.description) {
-					leftLines.push(`      ${theme.fg("muted", opt.description)}`);
+					addLeft("      ", theme.fg("muted", opt.description));
 					const noteText = optionNotes.get(currentTab)?.get(idx);
 					if (noteText) {
-						leftLines.push(`      ${theme.fg("accent", `Note: ${noteText}`)}`);
+						addLeft("      ", theme.fg("accent", `Note: ${noteText}`));
 					}
 				}
 			});
@@ -669,7 +681,7 @@ export async function runAskUserQuestionTUI(
 			// Chat Row
 			const isChatFocused = focusArea === "chat";
 			const chatPrefix = isChatFocused ? theme.fg("accent", "> ") : "  ";
-			leftLines.push(`${chatPrefix}${theme.bold("Chat redirect:")}`);
+			addLeft(chatPrefix, theme.bold("Chat redirect:"));
 			if (isChatFocused) {
 				const editorLines = chatEditor.render(Math.max(1, leftWidth - 6));
 				for (const el of editorLines) {
@@ -677,26 +689,26 @@ export async function runAskUserQuestionTUI(
 				}
 			} else {
 				const textVal = chatTexts.get(currentTab) ?? "";
-				leftLines.push(`    ${theme.fg(textVal ? "text" : "dim", textVal || "Type text to chat with the subagent instead...")}`);
+				addLeft("    ", theme.fg(textVal ? "text" : "dim", textVal || "Type text to chat with the subagent instead..."));
 			}
 
 			// Note/Other input modes overlay
 			if (focusArea === "note") {
 				leftLines.push("");
-				leftLines.push(`  ${theme.fg("accent", "✎ Enter note for selected option:")}`);
+				addLeft("  ", theme.fg("accent", "✎ Enter note for selected option:"));
 				const editorLines = noteEditor.render(Math.max(1, leftWidth - 6));
 				for (const el of editorLines) {
 					leftLines.push(`    ${el}`);
 				}
-				leftLines.push(`  ${theme.fg("dim", "  Enter to save • Esc to cancel")}`);
+				addLeft("  ", theme.fg("dim", "  Enter to save • Esc to cancel"));
 			} else if (focusArea === "other") {
 				leftLines.push("");
-				leftLines.push(`  ${theme.fg("accent", "✎ Enter custom value:")}`);
+				addLeft("  ", theme.fg("accent", "✎ Enter custom value:"));
 				const editorLines = otherEditor.render(Math.max(1, leftWidth - 6));
 				for (const el of editorLines) {
 					leftLines.push(`    ${el}`);
 				}
-				leftLines.push(`  ${theme.fg("dim", "  Enter to save • Esc to cancel")}`);
+				addLeft("  ", theme.fg("dim", "  Enter to save • Esc to cancel"));
 			}
 
 			leftLines.push("");
@@ -706,7 +718,7 @@ export async function runAskUserQuestionTUI(
 			const selectHelp = isMulti ? "Space toggle" : "Enter select";
 			const noteHelp = "n note";
 			const chatHelp = "c chat";
-			leftLines.push(`  ${theme.fg("dim", `↑↓ navigate • ${selectHelp} • ${noteHelp} • ${chatHelp} • Tab switch • Esc cancel`)}`);
+			addLeft("  ", theme.fg("dim", `↑↓ navigate • ${selectHelp} • ${noteHelp} • ${chatHelp} • Tab switch • Esc cancel`));
 
 			// Side-by-side or stacked rendering
 			if (rightLines.length > 0) {
@@ -717,10 +729,12 @@ export async function runAskUserQuestionTUI(
 					// Visible width padding to align columns
 					const leftVisWidth = visibleWidth(left);
 					const padding = " ".repeat(Math.max(0, leftWidth - leftVisWidth));
-					lines.push(left + padding + "  " + right);
+					lines.push(truncateToWidth(left + padding + "  " + right, renderWidth));
 				}
 			} else {
-				lines.push(...leftLines);
+				for (const line of leftLines) {
+					lines.push(truncateToWidth(line, renderWidth));
+				}
 				// If stacked preview is needed
 				if (currentOpt?.preview) {
 					lines.push("");
