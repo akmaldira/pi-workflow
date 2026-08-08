@@ -387,7 +387,6 @@ Inspects a run's progress or investigates a failure.
 |---|---|
 | `/workflows` | Interactive navigator: runs → nodes → detail |
 | `/wf normal\|plan\|workflow` | Switch execution mode (Normal, Plan, or Workflow) |
-| `/workflow on\|off` | Legacy alias for `/wf workflow` and `/wf normal` |
 | `/agents` | Show the discovered roster |
 | `/saved-workflows` | List or delete saved graphs |
 

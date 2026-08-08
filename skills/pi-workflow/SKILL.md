@@ -231,9 +231,9 @@ The user can also save a workflow after the fact from the `/workflows` TUI navig
 
 You can switch the execution mode of the session using the `/wf` command to enforce specific tool and behavioral restrictions on the agent. The active mode is displayed in the status widget below the editor.
 
-* **`/wf normal`** (or `/wf build`, `/workflow off`): The default mode. All tools are enabled, and the agent can write files directly or delegate.
+* **`/wf normal`** (or `/wf build`): The default mode. All tools are enabled, and the agent can write files directly or delegate.
 * **`/wf plan`**: Read-only mode. Blocks all write tools (`write`, `edit`) and delegation tools (`subagent`, `workflow`). Restricts `bash` to read-only commands (e.g. `cat`, `grep`, `ls`, `git diff`). Use this for safe, modification-free planning and codebase research.
-* **`/wf workflow`** (or `/wf on`, `/workflow on`): Enforced delegation mode. Blocks direct writes (`write`, `edit`) and direct subagents (`subagent`). Forces the agent to write a graph script and execute it via the `workflow` tool for any file changes or task delegation. `read`, read-only `bash`, `grep`, `find`, `ls`, `workflow`, `workflow_status`, `list_agents`, and `list_workflows` remain available.
+* **`/wf workflow`**: Enforced delegation mode. Blocks direct writes (`write`, `edit`) and direct subagents (`subagent`). Forces the agent to write a graph script and execute it via the `workflow` tool for any file changes or task delegation. `read`, read-only `bash`, `grep`, `find`, `ls`, `workflow`, `workflow_status`, `list_agents`, and `list_workflows` remain available.
 
 Use the `list_workflows` tool to discover available pre-built and saved workflows (such as "tdd" and "review_loop") that you can run instantly via the `loadWorkflow` parameter. Use the `list_agents` tool to discover available subagents and their roles.
 

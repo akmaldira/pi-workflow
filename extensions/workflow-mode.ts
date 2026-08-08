@@ -237,27 +237,6 @@ export function registerWorkflowMode(
 		},
 	});
 
-	// --- Legacy Command: /workflow [on|off|status] (alias for backwards compatibility) ---
-	pi.registerCommand("workflow", {
-		description: "Toggle workflow-only mode. Usage: /workflow [on|off]",
-		handler: async (args, ctx) => {
-			const arg = (args || "").trim().toLowerCase();
-			if (arg === "on") {
-				handleModeSwitch("workflow", "WORKFLOW", "enforced delegation mode (workflow tool only)", ctx);
-				return;
-			}
-			if (arg === "off") {
-				handleModeSwitch("normal", "NORMAL", "all tools fully enabled", ctx);
-				return;
-			}
-			if (arg === "" || arg === "status") {
-				ctx.ui.notify(`Workflow mode is ${state.currentMode === "workflow" ? "ON" : "OFF"}. Usage: /workflow [on|off]`, "info");
-				return;
-			}
-			ctx.ui.notify(`Unknown argument "${args}". Usage: /workflow [on|off]`, "warning");
-		},
-	});
-
 	// --- Hook: tool_call (block writes/mutations in plan/workflow modes) ---
 	const disabledInWorkflow = new Set<string>(["write", "edit", "subagent"]);
 	if (options.subagentToolName) disabledInWorkflow.add(options.subagentToolName);

@@ -143,10 +143,9 @@ describe("registerWorkflowMode /wf modes", () => {
 		pi = makeMockPi();
 	});
 
-	it("registers /wf and /workflow commands", () => {
+	it("registers /wf command", () => {
 		registerWorkflowMode(asExtensionAPI(pi));
 		expect(pi.commands.wf).toBeDefined();
-		expect(pi.commands.workflow).toBeDefined();
 	});
 
 	it("/wf plan restricts active tools (read-only plan mode)", async () => {
@@ -195,25 +194,6 @@ describe("registerWorkflowMode /wf modes", () => {
 		expect(pi.activeTools.sort()).toEqual(before.sort());
 		expect(ctx.notifications[1].message).toContain("NORMAL");
 		expect(ctx.widgets["pi-workflow-mode"].lines[0]).toContain("Normal");
-	});
-
-	it("/workflow on (legacy alias) enters workflow mode", async () => {
-		registerWorkflowMode(asExtensionAPI(pi));
-		const ctx = makeMockCtx();
-
-		await pi.commands.workflow.handler("on", ctx);
-		expect(pi.activeTools).not.toContain("write");
-		expect(pi.activeTools).toContain("workflow");
-	});
-
-	it("/workflow off (legacy alias) restores normal mode", async () => {
-		registerWorkflowMode(asExtensionAPI(pi));
-		const ctx = makeMockCtx();
-		const before = pi.activeTools;
-
-		await pi.commands.workflow.handler("on", ctx);
-		await pi.commands.workflow.handler("off", ctx);
-		expect(pi.activeTools.sort()).toEqual(before.sort());
 	});
 
 	it("blocks write and edit tool calls while in workflow or plan modes", async () => {
