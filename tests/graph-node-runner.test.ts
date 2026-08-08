@@ -358,7 +358,7 @@ describe("createNodeRunner: agent nodes", () => {
 		await runner(agentNode("a", "green"), {}, { step: 1, runId: "r1" });
 
 		const passedPrompt = spawn.mock.calls[0][1].systemPrompt as string;
-		const occurrences = passedPrompt.split("STATUS: blocked").length - 1;
+		const occurrences = passedPrompt.split("## Escalation").length - 1;
 		expect(occurrences).toBe(1);
 	});
 

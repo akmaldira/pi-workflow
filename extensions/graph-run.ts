@@ -158,7 +158,7 @@ export async function executeGraphRun(options: GraphRunOptions): Promise<GraphRu
 						nodeId: request.nodeId,
 						agent: request.agent,
 						kind: request.kind,
-						questions: [
+						questions: request.questions ?? [
 							{
 								question: request.question,
 								header: request.agent ?? "Workflow Agent",
@@ -173,6 +173,7 @@ export async function executeGraphRun(options: GraphRunOptions): Promise<GraphRu
 							source: result.source,
 							answer: result.text,
 							reason: result.reason,
+							answers: result.answers?.questions,
 						});
 					});
 			},

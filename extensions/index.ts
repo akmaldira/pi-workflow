@@ -20,6 +20,11 @@ import { createGraphWorkflowTool } from "./graph-tool.ts";
 import { installResultDelivery } from "./result-delivery.ts";
 import { sweepOrphanedChannels } from "./channel.ts";
 import { RequestBroker } from "./request-broker.ts";
+import {
+	createAskUserQuestionTool,
+	createAskHumanTool,
+	createAskSupervisorTool,
+} from "./ask-tools.ts";
 import { installBrokerSinks, setBrokerContext } from "./broker-sinks.ts";
 import { runSingleAgent } from "./execution.ts";
 import {
@@ -523,6 +528,11 @@ export default function (pi: ExtensionAPI) {
 
 	// --- Workflow Catalog ---
 	pi.registerTool(createListWorkflowsTool());
+
+	// --- Ask Tools (User & Supervisor communication) ---
+	pi.registerTool(createAskUserQuestionTool());
+	pi.registerTool(createAskHumanTool());
+	pi.registerTool(createAskSupervisorTool());
 
 	/**
 	 * Injects the live agent roster into the delegation tools' guidelines.

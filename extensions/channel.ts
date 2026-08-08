@@ -72,6 +72,12 @@ export interface ChannelRequest {
 	options?: Array<{ label: string; description?: string }>;
 	expectsReply: boolean;
 	default?: string;
+	questions?: Array<{
+		question: string;
+		header: string;
+		options?: Array<{ label: string; description?: string; preview?: string }>;
+		multiSelect?: boolean;
+	}>;
 }
 
 export interface ChannelReply {
@@ -81,6 +87,13 @@ export interface ChannelReply {
 	source: string;
 	answer?: string;
 	reason?: string;
+	answers?: Array<{
+		questionIndex: number;
+		kind: "option" | "custom" | "chat" | "multi";
+		answer: string | null;
+		selected?: string[];
+		notes?: string;
+	}>;
 }
 
 // ── Child side: write requests, poll for replies ────────────────────────
