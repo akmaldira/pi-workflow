@@ -71,7 +71,7 @@ export interface NodeRunOutcome {
 	error?: string;
 	/**
 	 * Path to the pi session file this node ran in, when the node is an agent.
-	 * Absent for human/mainAgent nodes, which share the parent session rather
+	 * Absent for human nodes, which share the parent session rather
 	 * than owning one. Recorded in the journal for traceability.
 	 */
 	sessionId?: string;

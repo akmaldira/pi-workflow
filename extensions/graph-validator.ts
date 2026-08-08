@@ -26,7 +26,6 @@ import {
 	agent,
 	createGraphFactory,
 	human,
-	mainAgent,
 } from "./graph-dsl.ts";
 import { extractConditionalTargets } from "./graph-edge-targets.ts";
 
@@ -64,7 +63,6 @@ export class GraphValidationError extends Error {
 const ALLOWED_GLOBALS = new Set([
 	"graph",
 	"agent",
-	"mainAgent",
 	"human",
 	"END",
 	"args",
@@ -287,7 +285,7 @@ export function validateGraphAst(ast: AnyNode, options: AstValidationOptions = {
 			case "ImportDeclaration":
 			case "ImportExpression":
 				problems.push(
-					"import is not allowed in a graph script. Everything a graph needs is already provided: graph, agent, mainAgent, human, END, args.",
+					"import is not allowed in a graph script. Everything a graph needs is already provided: graph, agent, human, END, args.",
 				);
 				break;
 			case "ExportDefaultDeclaration":
@@ -486,7 +484,6 @@ export function buildGraphFromScript(
 	const sandbox: Record<string, unknown> = {
 		graph,
 		agent,
-		mainAgent,
 		human,
 		END,
 	};

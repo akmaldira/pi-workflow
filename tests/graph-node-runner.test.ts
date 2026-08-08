@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { agent, END, GraphBuilder, human, mainAgent } from "../extensions/graph-dsl.ts";
+import { agent, END, GraphBuilder, human } from "../extensions/graph-dsl.ts";
+import { RequestBroker } from "../extensions/request-broker.ts";
 import { runSuperstepGraph } from "../extensions/graph-executor.ts";
 import {
 	createNodeRunner,
@@ -508,33 +509,7 @@ describe("createNodeRunner: interactive nodes", () => {
 		expect((outcome.result as { answer?: string }).answer).toBeUndefined();
 	});
 
-	it("calls the main-agent handler with the built prompt", async () => {
-		const onMainAgent = vi.fn().mockResolvedValue("Revise the contract.");
-		const runner = createNodeRunner({
-			cwd,
-			runId: "r1",
-			spawnAgent: vi.fn() as never,
-			handlers: { onMainAgent },
-		});
-
-		const node = { id: "think", def: mainAgent((s) => `Blocker: ${s.green}`) };
-		const outcome = await runner(node, { green: "contract gap" }, { step: 1, runId: "r1" });
-
-		expect(onMainAgent).toHaveBeenCalledWith("Blocker: contract gap", { green: "contract gap" });
-		expect(outcome.result).toMatchObject({ status: "ok", text: "Revise the contract." });
-	});
-
-	it("marks a headless main-agent checkpoint as skipped", async () => {
-		const runner = createNodeRunner({ cwd, runId: "r1", spawnAgent: vi.fn() as never });
-
-		const node = { id: "think", def: mainAgent("Review this") };
-		const outcome = await runner(node, {}, { step: 1, runId: "r1" });
-
-		expect(outcome.result).toMatchObject({ status: "skipped" });
-		expect(outcome.technicalFailure).toBeFalsy();
-	});
-
-	// Live-tested regression: human()/mainAgent() node results interpolated
+	// Live-tested regression: human() node results interpolated
 	// into a downstream prompt (`${state.ask}`) rendered as the literal text
 	// "[object Object]" instead of the chosen value, because only agent()
 	// results were given a toString(). Confirmed against a real model via
@@ -573,20 +548,10 @@ describe("createNodeRunner: interactive nodes", () => {
 		expect(`${outcome.result}`).toBe("");
 	});
 
-	it("a headless main-agent checkpoint's result interpolates to an empty string, not [object Object]", async () => {
-		const runner = createNodeRunner({ cwd, runId: "r1", spawnAgent: vi.fn() as never });
-
-		const node = { id: "think", def: mainAgent("Review this") };
-		const outcome = await runner(node, {}, { step: 1, runId: "r1" });
-
-		expect(`${outcome.result}`).toBe("");
-		expect(`Review result: "${outcome.result}"`).toBe('Review result: ""');
-	});
-
 	it("a human node's result surviving a JSON round-trip (resume) still interpolates correctly", async () => {
 		// rehydrateState() re-attaches toString() after journal replay, where
 		// JSON.parse has stripped it. Only kicks in for values with a `text`
-		// field — verifies human()/mainAgent() results qualify now too.
+		// field — verifies human results qualify now too.
 		const onHuman = vi.fn().mockResolvedValue("fast");
 		const runner = createNodeRunner({
 			cwd,
@@ -602,6 +567,39 @@ describe("createNodeRunner: interactive nodes", () => {
 
 		rehydrateState(roundTripped);
 		expect(`${roundTripped.ask}`).toBe("fast"); // proves rehydrateState() restores it
+	});
+
+	it("routes a human node through the broker when present", async () => {
+		const broker = new RequestBroker({ coalesceMs: 0 });
+		const runner = createNodeRunner({
+			cwd,
+			runId: "r1",
+			spawnAgent: vi.fn() as never,
+			broker,
+		});
+
+		broker.onBatch((batch) => {
+			expect(batch).toHaveLength(1);
+			expect(batch[0].kind).toBe("human");
+			expect(batch[0].questions[0].question).toBe("Pick a mode");
+			broker.resolve(batch[0].id, {
+				source: "human",
+				text: "thorough",
+				answers: {
+					questions: [{ questionIndex: 0, kind: "option", answer: "thorough" }],
+					cancelled: false,
+				},
+			});
+		});
+
+		const node = { id: "ask", def: human("Pick a mode", { options: ["fast", "thorough"], default: "fast" }) };
+		// Start the broker loop tick manually for the coalescing window
+		const outcomePromise = runner(node, {}, { step: 1, runId: "r1" });
+		broker.tick();
+
+		const outcome = await outcomePromise;
+		expect(outcome.result).toMatchObject({ status: "ok", answer: "thorough" });
+		expect(`${outcome.result}`).toBe("thorough");
 	});
 });
 

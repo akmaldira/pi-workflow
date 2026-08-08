@@ -18,6 +18,7 @@ import { discoverAgents } from "./agents.ts";
 import { classifySingleResultFailure } from "./failure-classifier.ts";
 import type { GraphNode, GraphState } from "./graph-dsl.ts";
 import type { NodeRunOutcome, NodeRunner } from "./graph-executor.ts";
+import type { RequestBroker } from "./request-broker.ts";
 import {
 	type ArtifactConfig,
 	type ForkContextOptions,
@@ -275,7 +276,7 @@ export type SpawnAgentFn = (
 ) => Promise<SingleResult>;
 
 /**
- * Handlers for the two node types that pause the graph.
+ * Handler for the node type that pauses the graph.
  *
  * Supplied by the tool layer, which owns the UI and the parent session.
  * Absent handlers degrade rather than hang: see task #16/#17.
@@ -299,12 +300,12 @@ export interface InteractiveHandlers {
 		node: { prompt: string; options?: string[]; default?: string },
 		state: GraphState,
 	) => Promise<string | HumanHandlerResult>;
-	onMainAgent?: (prompt: string, state: GraphState) => Promise<string>;
 }
 
 export interface CreateNodeRunnerOptions extends AgentSpawnOptions {
 	spawnAgent: SpawnAgentFn;
 	handlers?: InteractiveHandlers;
+	broker?: RequestBroker;
 }
 
 function usageTokens(result: SingleResult): number | undefined {
@@ -329,36 +330,56 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 			case "agent":
 				return runAgentNode(node, node.def.agentName, node.def.promptFn(state), signal);
 
-			case "mainAgent": {
-				const prompt = node.def.promptFn(state);
-				if (!options.handlers?.onMainAgent) {
-					// Degrade rather than hang. The graph continues with an
-					// explicit marker so an edge can notice the checkpoint was
-					// skipped instead of mistaking silence for approval.
-					return {
-						result: withResultText({
-							status: "skipped",
-							text: "",
-							reason: "No main-agent handler is available (headless run).",
-							prompt,
-						}),
-					};
-				}
-				const reply = await options.handlers.onMainAgent(prompt, state);
-				const answered = typeof reply === "string" && reply.trim() !== "";
-				return {
-					result: withResultText({
-						status: answered ? "ok" : "skipped",
-						text: answered ? reply : "",
-						prompt,
-						...(answered ? {} : { reason: "No decision was given at this checkpoint." }),
-					}),
-				};
-			}
-
 			case "human": {
 				const def = node.def;
 				const prompt = def.promptFn(state);
+
+				// Route through RequestBroker if present (for background execution / IPC).
+				if (options.broker) {
+					const result = await options.broker.ask({
+						runId: context.runId,
+						nodeId: node.id,
+						kind: "human",
+						questions: [
+							{
+								question: prompt,
+								header: node.id,
+								options: def.options?.map((o) => ({ label: o })),
+							},
+						],
+						default: def.default,
+						expectsReply: true,
+					});
+
+					if (result.source === "cancelled") {
+						return {
+							result: withResultText({
+								status: "skipped",
+								text: "",
+								reason: result.reason ?? "Cancelled by user.",
+								prompt,
+							}),
+						};
+					}
+
+					const answer = result.text ?? def.default;
+					const status = result.source === "default" ? "default" : "ok";
+
+					return {
+						result: withResultText({
+							status,
+							text: answer ?? "",
+							answer,
+							prompt,
+							...(status === "ok"
+								? {}
+								: {
+										reason: "No answer was given; fell back to the node's default.",
+									}),
+						}),
+					};
+				}
+
 				if (!options.handlers?.onHuman) {
 					const answer = def.default;
 					return {

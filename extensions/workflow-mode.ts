@@ -115,7 +115,6 @@ For any task that requires changing files or delegating to an agent:
    - Define nodes using:
      * \`agent(name, promptFn)\` for subagents.
      * \`human(prompt | promptFn, { options, default })\` to ask the user.
-     * \`mainAgent(prompt | promptFn)\` to pause for your own judgment mid-run.
    - Route between them with \`g.edge(from, to)\` or conditional \`g.edge(from, (state, result) => target)\`.
 5. Use the \`list_workflows\` tool to see available pre-built and saved workflows (such as "tdd" and "review_loop") that you can run instantly via the \`loadWorkflow\` parameter.
 6. Use \`workflow_status\` to inspect a run's progress or investigate a failure.

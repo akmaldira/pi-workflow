@@ -58,7 +58,6 @@ g.run({ target: args.target });", args={ target: "auth module" })
 **Building a graph:**
 - `graph()` — create the graph (exactly one per script)
 - `g.node(id, agent(name, (state) => prompt))` — an agent node
-- `g.node(id, mainAgent(prompt | promptFn))` — pause for your own judgement mid-run
 - `g.node(id, human(prompt | promptFn, { options, default }))` — ask the user; always give a `default`
 - `g.edge(from, to)` / `g.edge(from, END)` — direct routing
 - `g.edge(from, (state, result) => target)` — conditional routing
@@ -90,6 +89,21 @@ g.edge('green', (state, result) => {
 
 Cycles are allowed and are how escalation works. A run stops at `maxIterations` (default 25) if a
 loop never resolves.
+
+### Interactive Gates vs. In-Flight Tools
+
+Workflows support two distinct ways to bring external judgment or decisions into a run:
+
+1. **Interactive Nodes (`human(...)`)**
+   - **Purpose:** Structural gates defined explicitly in the graph routing.
+   - **Usage:** The workflow walk pauses at this node. The user is prompted (via a custom TUI or command line) for input before routing continues.
+   - **Rule:** Always specify a `default` fallback for human nodes so a headless run (no TUI) does not hang.
+
+2. **In-Flight Tools (`ask_human`, `ask_user_question`, `ask_supervisor`)**
+   - **Purpose:** Prompting for details *while an agent is executing* inside its node.
+   - **`ask_user_question` / `ask_human`**: Spawns a custom questionnaire dialog to ask the user. Used when an agent needs user values or design preferences to proceed.
+   - **`ask_supervisor`**: Child agents call this to ask the main agent (the supervisor) for instructions or to report progress.
+   - **Restrictions:** Agents MUST NOT use these tools to debug errors or ask for code implementations. Errors and missing capabilities must be escalated via the escalation protocol (`STATUS: blocked`).
 
 ### Edge result shape and escalation vocabulary
 
@@ -207,7 +221,7 @@ distinct keys and let a downstream node combine them.
 measure how deep the coordination went; node executions measure how much work happened. They differ
 because one round can run several nodes. `maxIterations` caps **rounds** in a parallel graph.
 
-**What's available in a script:** the graph API (`graph`, `agent`, `mainAgent`, `human`, `END`,
+**What's available in a script:** the graph API (`graph`, `agent`, `human`, `END`,
 `args`) plus ordinary language intrinsics (`JSON`, `Object`, `Array`, `String`, `Math`, etc. —
 they resolve to the sandbox's own copies, so using them cannot reach the host). No `fs`,
 `process`, `require`, `import`, `fetch`, `Date`, or `Math.random` — a graph describes routing
@@ -436,16 +450,16 @@ g.edge('reviewer', (state, result) => {
 g.run({});
 ```
 
-### 4. Interactive Research (Main Agent mid-workflow)
-Uses `mainAgent` so *you* (the agent running the graph) get to read the research and decide the implementation approach before spawning the worker.
+### 4. Interactive Research (Human mid-workflow)
+Uses `human` so the user gets to read the research and decide the implementation approach before spawning the worker.
 
 ```js
 export const meta = { name: 'investigate_fix', description: 'Research then decide approach' };
 const g = graph();
 g.node('scout',      agent('scout',      (s) => `Find all files related to: ${args.task}`));
 g.node('researcher', agent('researcher', (s) => `Analyze this area of code:\n${s.scout}\nQuestion: ${args.task}`));
-// The #{nodeId} syntax is required for mainAgent and human prompts
-g.node('decide',     mainAgent(`Based on the research, should we refactor or patch?\n\nResearch:\n#{researcher}`));
+// The #{nodeId} syntax is required for human prompts
+g.node('decide',     human(`Based on the research, should we refactor or patch?\n\nResearch:\n#{researcher}`, { options: ['refactor', 'patch'], default: 'patch' }));
 g.node('worker',     agent('worker',     (s) => `${s.decide}\n\nContext:\n${s.researcher}`));
 
 g.edge('scout', 'researcher');

@@ -55,7 +55,7 @@ export interface GraphJournalNodeRecord {
 	 */
 	round?: number;
 	nodeId: string;
-	nodeType: "agent" | "mainAgent" | "human";
+	nodeType: "agent" | "human";
 	agentName?: string;
 	/** Pi session file path, for agent nodes only. */
 	sessionId?: string;

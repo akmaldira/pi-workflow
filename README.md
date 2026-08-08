@@ -103,8 +103,13 @@ g.run(initialState);        // required, once
 | Constructor | Purpose |
 |---|---|
 | `agent(name, promptFn)` | Spawn a subagent. `promptFn(state) => string` |
-| `mainAgent(prompt \| promptFn)` | Pause for your judgement mid-run |
 | `human(prompt \| promptFn, opts?)` | Ask the user. `opts: { options?, default? }` |
+
+### Interactive Gates vs. In-Flight Tools
+
+Workflows support two ways to bring external judgment/preferences into a run:
+- **Interactive Nodes (`human(...)`)**: Structural gates defined explicitly in the graph script. The workflow walk pauses at this node and prompts the user.
+- **In-Flight Tools (`ask_human`/`ask_user_question`, `ask_supervisor`)**: Tools called by subagents during their execution. `ask_human`/`ask_user_question` prompts the user, while `ask_supervisor` lets child subagents ask the main agent for a decision. Subagents must not use these tools to debug errors; those must be escalated via `STATUS: blocked`.
 
 ### Edges
 
@@ -165,7 +170,7 @@ Interpolating a result yields the agent's **text**; edge conditions get the stru
 
 ### What is available
 
-The graph API — `graph`, `agent`, `mainAgent`, `human`, `END`, `args` — plus ordinary language
+The graph API — `graph`, `agent`, `human`, `END`, `args` — plus ordinary language
 intrinsics (`JSON`, `Object`, `Array`, `String`, `Math` for arithmetic, and so on).
 
 No `fs`, `process`, `require`, `import`, `fetch`, `Date`, or `Math.random`. A graph describes

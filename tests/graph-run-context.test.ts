@@ -261,7 +261,7 @@ describe("GraphRunContext", () => {
 	});
 
 	it("tolerates nodes that report no tokens", () => {
-		// Human and mainAgent nodes have no token cost.
+		// Human nodes have no token cost.
 		const context = new GraphRunContext({ cwd: tempDir, runId: "r1", tokenBudget: 1000 });
 		context.recordNode(execution(undefined));
 

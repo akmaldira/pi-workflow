@@ -269,7 +269,7 @@ g.run({ task: args.task });
 const g = graph();
 g.node("architect", agent("architect", (s) => "design " + s.task));
 g.node("green", agent("green", (s) => "implement " + s.architect));
-g.node("review", mainAgent((s) => "Review: " + s.green));
+g.node("review", human((s) => "Review: " + s.green));
 g.edge("architect", "green");
 g.edge("green", (state, result) => {
   if (result.status === "blocked" && result.blockedOn === "contract") return "architect";

@@ -48,11 +48,6 @@ export interface AgentNodeDef {
 	promptFn: PromptFn;
 }
 
-export interface MainAgentNodeDef {
-	type: "mainAgent";
-	promptFn: PromptFn;
-}
-
 export interface HumanNodeDef {
 	type: "human";
 	promptFn: PromptFn;
@@ -60,7 +55,7 @@ export interface HumanNodeDef {
 	default?: string;
 }
 
-export type NodeDef = AgentNodeDef | MainAgentNodeDef | HumanNodeDef;
+export type NodeDef = AgentNodeDef | HumanNodeDef;
 
 export interface GraphNode {
 	id: string;
@@ -145,17 +140,6 @@ export function agent(agentName: string, promptFn: PromptFn): AgentNodeDef {
 	return { type: "agent", agentName: agentName.trim(), promptFn };
 }
 
-export function mainAgent(prompt: string | PromptFn): MainAgentNodeDef {
-	if (typeof prompt === "string") {
-		const text = prompt;
-		return { type: "mainAgent", promptFn: () => text };
-	}
-	if (typeof prompt !== "function") {
-		throw new GraphDefinitionError("mainAgent() requires a prompt string or function");
-	}
-	return { type: "mainAgent", promptFn: prompt };
-}
-
 export function human(prompt: string | PromptFn, options: HumanNodeOptions = {}): HumanNodeDef {
 	let promptFn: PromptFn;
 	if (typeof prompt === "string") {
@@ -209,7 +193,7 @@ export class GraphBuilder {
 		}
 		if (!def || typeof def !== "object" || !("type" in def)) {
 			throw new GraphDefinitionError(
-				`Node "${id}" must be defined with agent(), mainAgent(), or human()`,
+			`Node "${id}" must be defined with agent() or human()`,
 			);
 		}
 		this.nodes.set(id, { id, def });

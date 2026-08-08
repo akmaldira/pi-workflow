@@ -128,14 +128,16 @@ g.node("red", agent("red", (s) => `Write failing tests for:\n${s.architect}`));
 g.node("green", agent("green", (s) => `Implement to pass:\n${s.red}\nContract:\n${s.architect}`));
 g.node("reviewer", agent("reviewer", (s) => `Review:\n${s.green}`));
 
-// Main-agent node: pauses graph, main pi agent weighs in
-g.node("decide", mainAgent((s) =>
-  `Tests are failing after revision. Current contract:\n${s.architect}\n\nGreen says:\n${s.green}\n\nShould we revise the contract or the tests?`
+// Human node: pauses graph, asks the human
+g.node("decide", human((s) =>
+  `Tests are failing after revision. Current contract:\n${s.architect}\n\nGreen says:\n${s.green}\n\nShould we revise the contract or the tests?`,
+  { options: ["contract", "tests"], default: "tests" }
 ));
 
 // Human node: pauses graph, asks the human
 g.node("approve", human("Approve this implementation for merge?", {
   options: ["approve", "reject", "revise"],
+  default: "approve",
 }));
 
 // ── Edges: direct or conditional ─────────────────────────────────────
@@ -159,12 +161,12 @@ g.edge("green", (s, result) => {
 
 g.edge("reviewer", (s, result) => {
   if (result.approved) return "approve";
-  if (result.needsContractChange) return "decide";  // escalate to main agent
+  if (result.needsContractChange) return "decide";  // escalate
   return "green";  // retry implementation
 });
 
 g.edge("approve", END);
-g.edge("decide", "architect");  // after main agent decides, replan
+g.edge("decide", "architect");  // after human decides, replan
 
 // ── Run ──────────────────────────────────────────────────────────────
 g.run({ task: args.task });

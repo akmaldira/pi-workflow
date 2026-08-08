@@ -2,10 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	createHumanHandler,
 	createInteractiveHandlers,
-	createMainAgentHandler,
 	formatStateForReview,
 } from "../extensions/graph-interactive.ts";
-import { agent, END, GraphBuilder, human, mainAgent } from "../extensions/graph-dsl.ts";
+import { agent, END, GraphBuilder, human } from "../extensions/graph-dsl.ts";
 import { runSuperstepGraph } from "../extensions/graph-executor.ts";
 import { createNodeRunner } from "../extensions/graph-node-runner.ts";
 
@@ -153,47 +152,11 @@ describe("createHumanHandler", () => {
 	});
 });
 
-describe("createMainAgentHandler", () => {
-	it("asks for a decision and returns it", async () => {
-		const input = vi.fn().mockResolvedValue("Revise the contract.");
-		const ctx = uiCtx({ input });
-		const handler = createMainAgentHandler({ ctx });
-
-		const answer = await handler!("Green is blocked. What now?", { green: "blocked" });
-
-		expect(input).toHaveBeenCalled();
-		expect(answer).toBe("Revise the contract.");
-	});
-
-	it("returns empty when skipped", async () => {
-		const ctx = uiCtx({ input: vi.fn().mockResolvedValue("") });
-		const handler = createMainAgentHandler({ ctx });
-
-		expect(await handler!("Decide", {})).toBe("");
-	});
-
-	it("skips rather than inventing a decision when headless", async () => {
-		// Fabricating an answer would let downstream edges treat silence as
-		// considered judgement.
-		const handler = createMainAgentHandler({ ctx: HEADLESS });
-
-		expect(await handler!("Decide", {})).toBe("");
-	});
-
-	it("survives a dialog that throws", async () => {
-		const ctx = uiCtx({ input: vi.fn().mockRejectedValue(new Error("boom")) });
-		const handler = createMainAgentHandler({ ctx });
-
-		expect(await handler!("Decide", {})).toBe("");
-	});
-});
-
 describe("createInteractiveHandlers", () => {
-	it("builds both handlers", () => {
+	it("builds the handler", () => {
 		const handlers = createInteractiveHandlers({ ctx: uiCtx() });
 
 		expect(handlers.onHuman).toBeTypeOf("function");
-		expect(handlers.onMainAgent).toBeTypeOf("function");
 	});
 });
 
@@ -288,60 +251,11 @@ describe("interactive nodes end to end", () => {
 		expect(result.state.approve).toMatchObject({ status: "ok", answer: "ship" });
 	});
 
-	it("runs a main-agent checkpoint mid-walk", async () => {
-		const input = vi.fn().mockResolvedValue("revise the contract");
-		const ctx = uiCtx({ input });
-
-		const g = new GraphBuilder();
-		g.node("green", agent("green", () => "build"));
-		g.node("decide", mainAgent((s) => `Green said: ${s.green}. What now?`));
-		g.node("architect", agent("architect", (s) => `revise per: ${s.decide}`));
-		g.edge("green", "decide");
-		g.edge("decide", "architect");
-		g.edge("architect", END);
-		g.run();
-
-		const spawn = spawnStub();
-		const result = await runSuperstepGraph(g.build(), {
-			runId: "r1",
-			runNode: createNodeRunner({
-				cwd: "/nonexistent",
-				runId: "r1",
-				spawnAgent: spawn as never,
-				handlers: createInteractiveHandlers({ ctx }),
-			}),
-		});
-
-		expect(result.status).toBe("completed");
-		expect(result.state.decide).toMatchObject({ status: "ok" });
-		// The checkpoint's decision reaches the next agent's prompt as text.
-		expect(spawn.mock.calls[1][2]).toContain("revise the contract");
-	});
-
-	it("marks a skipped checkpoint rather than faking a decision", async () => {
-		const g = new GraphBuilder();
-		g.node("decide", mainAgent("What now?"));
-		g.edge("decide", END);
-		g.run();
-
-		const result = await runSuperstepGraph(g.build(), {
-			runId: "r1",
-			runNode: createNodeRunner({
-				cwd: "/nonexistent",
-				runId: "r1",
-				spawnAgent: spawnStub() as never,
-				handlers: createInteractiveHandlers({ ctx: HEADLESS }),
-			}),
-		});
-
-		expect(result.state.decide).toMatchObject({ status: "skipped" });
-	});
-
 	it("never blocks a headless run containing several interactive nodes", async () => {
 		// The whole point: a fully unattended graph terminates.
 		const g = new GraphBuilder();
 		g.node("a", human("First?", { default: "x" }));
-		g.node("b", mainAgent("Second?"));
+		g.node("b", human("Second?", { default: "y" }));
 		g.node("c", human("Third?", { options: ["p", "q"], default: "q" }));
 		g.edge("a", "b");
 		g.edge("b", "c");

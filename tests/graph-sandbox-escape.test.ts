@@ -194,7 +194,7 @@ describe("legitimate scripts still work", () => {
 const g = graph();
 g.node("architect", agent("architect", (s) => "Design: " + s.task));
 g.node("green", agent("green", (s) => "Implement:\\n" + s.architect));
-g.node("review", mainAgent((s) => "Review:\\n" + s.green));
+g.node("review", human((s) => "Review:\\n" + s.green));
 g.node("approve", human("Ship it?", { options: ["yes", "no"], default: "no" }));
 
 g.edge("architect", "green");

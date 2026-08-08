@@ -172,7 +172,7 @@ export class GraphDisplayBridge {
 			// conversation streams live into the /workflows detail view while
 			// the agent is still working, not only after it finishes. The path
 			// is deterministic per (run, node); the watcher skips it until the
-			// file appears (pi writes it on spawn). human()/mainAgent() nodes
+			// file appears (pi writes it on spawn). human() nodes
 			// don't own a session file, so they are skipped.
 			if (info.nodeType === "agent" && this.cwd) {
 				const sessionPath = path.join(
@@ -226,7 +226,7 @@ export class GraphDisplayBridge {
 			);
 			// Watch the agent's persisted pi session so the /workflows navigator
 			// can surface its conversation on demand. Available only for agent
-			// nodes (they own a session file); human/mainAgent nodes have none.
+			// nodes (they own a session file); human nodes have none.
 			if (execution.sessionId) {
 				this.manager.watchSession(this.runId, id, execution.sessionId);
 			}

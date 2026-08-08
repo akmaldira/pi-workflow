@@ -47,7 +47,7 @@ const GraphToolParams = Type.Object({
 		Type.String({
 			description:
 				"Graph workflow script. Must begin with `export const meta = { name, description }`. " +
-			"Create a graph with graph(), define nodes with g.node(id, agent(name, promptFn) | mainAgent(prompt) | human(prompt, opts)), " +
+			"Create a graph with graph(), define nodes with g.node(id, agent(name, promptFn) | human(prompt, opts)), " +
 				"route with g.edge(from, to | (state, result) => target), and start it with g.run({ ... }). " +
 				"Required unless loadWorkflow names a saved graph.",
 		}),
@@ -143,11 +143,11 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 			"Use it for multi-step work where the path is not known in advance. For a single delegation, use the subagent tool instead.",
 		].join(" "),
 		promptSnippet:
-			"Run a coordinating graph of agents. Required header: export const meta = { name, description }. Nodes are agent()/mainAgent()/human(); edges are direct or (state, result) => target.",
+			"Run a coordinating graph of agents. Required header: export const meta = { name, description }. Nodes are agent()/human(); edges are direct or (state, result) => target.",
 		promptGuidelines: [
 			"For workflow, write the script as one raw JavaScript string with no Markdown fences or surrounding prose.",
 			"For workflow, the first statement must be `export const meta = { name: 'short_snake_case', description: 'what this graph does' }`.",
-			"For workflow, available globals are graph, agent, mainAgent, human, END, args, and JSON. There is no fs, process, require, import, fetch, Date, or Math.random — a graph describes routing only.",
+			"For workflow, available globals are graph, agent, human, END, args, and JSON. There is no fs, process, require, import, fetch, Date, or Math.random — a graph describes routing only.",
 			"For workflow, define every node before routing it and make sure some path reaches END. A node normally has one outgoing edge; give it several to fan out and run those branches in parallel.",
 			"For workflow, parallel branches run concurrently in rounds. A node with several incoming edges waits for ALL of them before running, so it never sees partial work. Each branch's result lands under its own node id, so give branches distinct ids rather than writing shared state keys.",
 			"For workflow, a node's prompt function receives the accumulated state, where each previous node's result is stored under its node id: agent('green', (s) => `Implement:\\n${s.architect}`).",
@@ -155,7 +155,7 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 			"For workflow, agent results carry { status, text, blockedOn, reason } — status is 'blocked' when the agent escalated. Interpolating a result into a prompt yields its text.",
 			"For workflow, prefer routing a blocked agent back to whoever owns the problem (contract issues to the designer, test issues to whoever wrote them) rather than retrying the same node.",
 			"For workflow, cycles are allowed and are how escalation works; the run stops at maxIterations if a loop never resolves.",
-			"For workflow, use mainAgent(prompt) to pause for your own judgement mid-run, and human(prompt, { options, default }) to ask the user. Always give human() a default so a headless run cannot hang.",
+			"For workflow, use human(prompt, { options, default }) to ask the user. Always give human() a default so a headless run cannot hang.",
 		],
 		parameters: GraphToolParams,
 
@@ -322,6 +322,7 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 					artifactConfig: context.artifactConfig,
 					extraEnv: context.extraEnv,
 					spawnAgent: spawnAgent as never,
+					broker: options.broker,
 					// Built from ctx so human() actually asks. It degrades to the
 					// node's default when the run has no UI.
 					handlers:

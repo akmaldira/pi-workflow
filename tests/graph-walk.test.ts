@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { agent, END, GraphBuilder, human, mainAgent } from "../extensions/graph-dsl.ts";
+import { agent, END, GraphBuilder, human } from "../extensions/graph-dsl.ts";
 import type { BuiltGraph, GraphState } from "../extensions/graph-dsl.ts";
 import {
 	DEFAULT_MAX_ITERATIONS,
@@ -559,20 +559,18 @@ describe("graph walk: observability", () => {
 	it("captures node type and agent name", async () => {
 		const g = new GraphBuilder();
 		g.node("ask", human("Approve?", { default: "no" }));
-		g.node("think", mainAgent("Consider this"));
 		g.node("work", agent("worker", () => "w"));
-		g.edge("ask", "think");
-		g.edge("think", "work");
+		g.edge("ask", "work");
 		g.edge("work", END);
 		g.run();
 
 		const result = await runSuperstepGraph(g.build(), {
 			runId: "r1",
-			runNode: scriptedRunner({ ask: "yes", think: "ok", work: "done" }),
+			runNode: scriptedRunner({ ask: "yes", work: "done" }),
 		});
 
-		expect(result.history.map((h) => h.nodeType)).toEqual(["human", "mainAgent", "agent"]);
-		expect(result.history.map((h) => h.agentName)).toEqual([undefined, undefined, "worker"]);
+		expect(result.history.map((h) => h.nodeType)).toEqual(["human", "agent"]);
+		expect(result.history.map((h) => h.agentName)).toEqual([undefined, "worker"]);
 	});
 
 	it("records where each node routed", async () => {

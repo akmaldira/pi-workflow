@@ -6,7 +6,6 @@ import {
 	GraphBuilder,
 	GraphDefinitionError,
 	human,
-	mainAgent,
 } from "../extensions/graph-dsl.ts";
 
 describe("node constructors", () => {
@@ -35,26 +34,6 @@ describe("node constructors", () => {
 			// likely mistake when writing a graph by hand.
 			// @ts-expect-error deliberately wrong type
 			expect(() => agent("planner", "not a function")).toThrow(/agent\("planner", \(state\)/);
-		});
-	});
-
-	describe("mainAgent()", () => {
-		it("accepts a plain string prompt", () => {
-			const node = mainAgent("Review this diff");
-
-			expect(node.type).toBe("mainAgent");
-			expect(node.promptFn({})).toBe("Review this diff");
-		});
-
-		it("accepts a prompt function with access to state", () => {
-			const node = mainAgent((s) => `Blocker: ${s.green}`);
-
-			expect(node.promptFn({ green: "contract mismatch" })).toBe("Blocker: contract mismatch");
-		});
-
-		it("rejects a non-string, non-function prompt", () => {
-			// @ts-expect-error deliberately wrong type
-			expect(() => mainAgent(42)).toThrow(GraphDefinitionError);
 		});
 	});
 
@@ -157,7 +136,7 @@ describe("GraphBuilder", () => {
 			const g = new GraphBuilder();
 
 			// @ts-expect-error deliberately wrong type
-			expect(() => g.node("a", { notANode: true })).toThrow(/agent\(\), mainAgent\(\), or human\(\)/);
+			expect(() => g.node("a", { notANode: true })).toThrow(/agent\(\) or human\(\)/);
 		});
 	});
 

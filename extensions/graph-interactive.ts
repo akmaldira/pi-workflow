@@ -1,11 +1,10 @@
 /**
- * Interactive graph nodes — `human()` and `mainAgent()`.
+ * Interactive graph nodes — `human()`.
  *
- * Both pause the walk to bring judgement in from outside the agent pool.
- * Both are pi-native: `human()` uses ctx.ui, `mainAgent()` goes back to the
- * session that started the run. There is no external notification channel.
+ * Pauses the walk to bring judgement in from outside the agent pool.
+ * It is pi-native: `human()` uses ctx.ui. There is no external notification channel.
  *
- * The hard requirement for both is that a run without a UI must never hang.
+ * The hard requirement is that a run without a UI must never hang.
  * A graph that blocks forever waiting for an answer nobody can give is worse
  * than one that proceeds on a stated default, because the first is invisible
  * and the second is at least recorded in the transcript.
@@ -16,7 +15,7 @@ import type { GraphState } from "./graph-dsl.ts";
 import type { HumanHandlerResult, InteractiveHandlers } from "./graph-node-runner.ts";
 
 /** How an interactive node was answered. Edges can branch on this. */
-export type InteractiveSource = "human" | "default" | "skipped" | "mainAgent";
+export type InteractiveSource = "human" | "default" | "skipped";
 
 /** Cap for state included in a checkpoint, so a long run stays readable. */
 const STATE_PREVIEW_LIMIT = 2000;
@@ -115,58 +114,9 @@ export function createHumanHandler(options: InteractiveOptions): InteractiveHand
 	};
 }
 
-/**
- * Builds the main-agent checkpoint handler.
- *
- * A checkpoint asks the session that started the run to weigh in mid-walk.
- * Since a tool cannot re-enter its own agent loop, the checkpoint is
- * surfaced to the human on the main agent's behalf: they answer as the
- * session would. This keeps the main agent a participant in the graph
- * without a central dispatcher, and without pretending to an autonomy the
- * runtime does not offer.
- *
- * Headless runs skip the checkpoint and say so, rather than fabricating an
- * answer that downstream edges would treat as considered judgement.
- */
-export function createMainAgentHandler(
-	options: InteractiveOptions,
-): InteractiveHandlers["onMainAgent"] {
-	return async (prompt, state) => {
-		const hasUi = Boolean(options.ctx?.hasUI && options.ctx.ui);
-
-		if (!hasUi) {
-			options.onEvent?.("checkpoint: no interactive session, so it was skipped.");
-			return "";
-		}
-
-		const ui = options.ctx!.ui;
-
-		try {
-			const answer = await ui.input(
-				prompt,
-				"Your decision (leave empty to skip)",
-			);
-
-			if (answer === undefined || answer.trim() === "") {
-				options.onEvent?.("checkpoint: skipped without a decision.");
-				return "";
-			}
-
-			options.onEvent?.(`checkpoint: "${previewValue(answer, 80)}"`);
-			return answer;
-		} catch (error) {
-			options.onEvent?.(
-				`checkpoint: dialog failed (${error instanceof Error ? error.message : String(error)}); skipped.`,
-			);
-			return "";
-		}
-	};
-}
-
-/** Builds both handlers for a run. */
+/** Builds the handler for a run. */
 export function createInteractiveHandlers(options: InteractiveOptions): InteractiveHandlers {
 	return {
 		onHuman: createHumanHandler(options),
-		onMainAgent: createMainAgentHandler(options),
 	};
 }
