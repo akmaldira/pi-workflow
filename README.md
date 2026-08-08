@@ -216,30 +216,65 @@ Read-only roles have no `write`/`edit` tools — that restriction is mechanical,
 Agents resolve live from the installed package, so upgrades propagate and nothing is written into
 your repository.
 
-### Customising them
+## Customizing & Overriding Agents
 
-Three options, lightest first:
+You can customize, override, or replace any bundled agent using three mechanisms (lightest first):
 
-**1. Override fields** — `.pi-workflow/settings.json`:
+### 1. Fine-grained overrides (`settings.json`)
 
+To override specific properties of an agent (such as its LLM model, budget, or tools) without copying the entire markdown file, create a settings file:
+- **Project-level**: `.pi-workflow/settings.json`
+- **User-level**: `~/.pi/agent/pi-workflow-settings.json` (or `<agentDir>/pi-workflow-settings.json`)
+
+Example:
 ```json
 {
   "agents": {
     "green": {
-      "model": "claude-opus-4",
+      "model": "anthropic/claude-3-7-sonnet",
       "systemPromptAppend": "This project uses tabs. Never touch src/legacy/."
     }
   }
 }
 ```
 
-`systemPromptAppend` survives package upgrades; `systemPrompt` replaces wholesale and will drift.
+*Note: `systemPromptAppend` is recommended for adding rules to a bundled agent, since replacing the whole `systemPrompt` wholesale makes it prone to drift when upgrading the package.*
 
-**2. Disable** — `{ "agents": { "monitor": { "disabled": true } } }`, or `{ "disableBuiltins": true }`.
+Supported override fields:
+- `model`: Change the primary LLM model.
+- `fallbackModels`: Array of backup models.
+- `thinking`: Adjust thinking budget (`"off"`, `"low"`, `"medium"`, `"high"`, or `false`).
+- `tools`: Array of allowed tool names (e.g. `["read", "bash"]`).
+- `systemPrompt` / `systemPromptAppend`: System prompt overrides.
+- `turnBudget` / `toolBudget`: Execution limits.
 
-**3. Shadow** — author `.pi/agents/green.md`; a project agent wins outright.
+### 2. Disabling agents
 
-Precedence: `builtin < user < project`.
+To remove a bundled agent from the roster entirely:
+```json
+{
+  "agents": {
+    "monitor": {
+      "disabled": true
+    }
+  }
+}
+```
+
+Or to disable all built-ins globally:
+```json
+{
+  "disableBuiltins": true
+}
+```
+
+### 3. Shadowing (Full file replacement)
+
+You can override a built-in agent completely by creating a markdown file with the exact same name in your agent directories:
+- **Project-level**: `.pi/agents/<name>.md` (wins over user and built-in)
+- **User-level**: `~/.pi/agent/agents/<name>.md` (wins over built-in)
+
+Precedence order: `builtin < user < project`.
 
 ### Creating custom agents
 
