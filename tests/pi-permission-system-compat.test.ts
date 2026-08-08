@@ -29,6 +29,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildPiArgs } from "../extensions/pi-args.ts";
 import { getSubagentDepthEnv } from "../extensions/types.ts";
 import { discoverAgents } from "../extensions/agents.ts";
+import { createGraphWorkflowTool } from "../extensions/graph-tool.ts";
+import { vi } from "vitest";
 
 describe("pi-permission-system compatibility", () => {
 	describe("subagent detection + ask-forwarding env vars at spawn time", () => {
@@ -148,6 +150,52 @@ permission:
 			// permission: block's nested `skill` surface key.
 			expect(agent!.skills).toEqual(["some-skill"]);
 			expect(agent!.extraFields?.permission).toBeDefined();
+		});
+	});
+
+	describe("parent session ID propagation", () => {
+		let tempDir: string;
+
+		beforeEach(() => {
+			tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-workflow-perm-prop-"));
+		});
+
+		afterEach(() => {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		});
+
+		it("propagates parentSessionId from the extension context to spawnAgent", async () => {
+			const script = `export const meta = { name: "test_prop", description: "d" };
+const g = graph();
+g.node("planner", agent("planner", () => "plan"));
+g.edge("planner", END);
+g.run();`;
+
+			const spawnAgent = vi.fn().mockResolvedValue({
+				exitCode: 0,
+				messages: [],
+				durationMs: 1,
+			});
+
+			const tool = createGraphWorkflowTool({
+				cwd: tempDir,
+				spawnAgent: spawnAgent as never,
+			});
+
+			const sessionManager = {
+				getSessionId: () => "parent-session-123456",
+				getSessionFile: () => "/tmp/sess.jsonl",
+			};
+
+			await (tool as any).execute("c", { script }, undefined, undefined, {
+				cwd: tempDir,
+				sessionManager,
+				modelRegistry: undefined,
+			});
+
+			expect(spawnAgent).toHaveBeenCalled();
+			const spawnOpts = spawnAgent.mock.calls[0][3];
+			expect(spawnOpts.parentSessionId).toBe("parent-session-123456");
 		});
 	});
 });

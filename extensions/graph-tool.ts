@@ -318,6 +318,7 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 				runId,
 				signal,
 				forkContext,
+				parentSessionId: ctx.sessionManager?.getSessionId() ?? process.env.PI_SUBAGENT_PARENT_SESSION,
 				artifactsDir: context.artifactsDir,
 				artifactConfig: context.artifactConfig,
 				spawnAgent: spawnAgent as never,
