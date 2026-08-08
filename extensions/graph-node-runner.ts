@@ -349,6 +349,7 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 
 			case "human": {
 				const def = node.def;
+				const prompt = def.promptFn(state);
 				if (!options.handlers?.onHuman) {
 					const answer = def.default;
 					return {
@@ -365,12 +366,12 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 								def.default !== undefined
 									? "No UI available; used the node's default answer."
 									: "No UI available and no default was set.",
-							prompt: def.prompt,
+							prompt,
 						}),
 					};
 				}
 				const raw = await options.handlers.onHuman(
-					{ prompt: def.prompt, options: def.options, default: def.default },
+					{ prompt, options: def.options, default: def.default },
 					state,
 				);
 
@@ -394,7 +395,7 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 						status,
 						text: answer ?? "",
 						answer,
-						prompt: def.prompt,
+						prompt,
 						...(status === "ok"
 							? {}
 							: {

@@ -63,8 +63,15 @@ describe("node constructors", () => {
 			const node = human("Approve this?");
 
 			expect(node.type).toBe("human");
-			expect(node.prompt).toBe("Approve this?");
+			expect(node.promptFn({})).toBe("Approve this?");
 			expect(node.options).toBeUndefined();
+		});
+
+		it("builds a human node with a prompt function", () => {
+			const node = human((s) => `Output was: ${s.worker}`);
+
+			expect(node.type).toBe("human");
+			expect(node.promptFn({ worker: "100%" })).toBe("Output was: 100%");
 		});
 
 		it("builds a choice node with a headless default", () => {
@@ -83,7 +90,7 @@ describe("node constructors", () => {
 		});
 
 		it("rejects an empty prompt", () => {
-			expect(() => human("")).toThrow(/requires a prompt string/);
+			expect(() => human("")).toThrow(/requires a non-empty prompt string/);
 		});
 
 		it("rejects malformed options", () => {

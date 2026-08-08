@@ -55,7 +55,7 @@ export interface MainAgentNodeDef {
 
 export interface HumanNodeDef {
 	type: "human";
-	prompt: string;
+	promptFn: PromptFn;
 	options?: string[];
 	default?: string;
 }
@@ -156,9 +156,18 @@ export function mainAgent(prompt: string | PromptFn): MainAgentNodeDef {
 	return { type: "mainAgent", promptFn: prompt };
 }
 
-export function human(prompt: string, options: HumanNodeOptions = {}): HumanNodeDef {
-	if (typeof prompt !== "string" || prompt.trim().length === 0) {
-		throw new GraphDefinitionError("human() requires a prompt string");
+export function human(prompt: string | PromptFn, options: HumanNodeOptions = {}): HumanNodeDef {
+	let promptFn: PromptFn;
+	if (typeof prompt === "string") {
+		const text = prompt;
+		if (text.trim().length === 0) {
+			throw new GraphDefinitionError("human() requires a non-empty prompt string");
+		}
+		promptFn = () => text;
+	} else if (typeof prompt === "function") {
+		promptFn = prompt;
+	} else {
+		throw new GraphDefinitionError("human() requires a prompt string or function");
 	}
 	if (options.options !== undefined) {
 		if (!Array.isArray(options.options) || options.options.length === 0) {
@@ -178,7 +187,7 @@ export function human(prompt: string, options: HumanNodeOptions = {}): HumanNode
 	}
 	return {
 		type: "human",
-		prompt,
+		promptFn,
 		options: options.options ? [...options.options] : undefined,
 		default: options.default,
 	};

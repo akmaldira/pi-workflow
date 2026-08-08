@@ -96,7 +96,7 @@ g.run(initialState);        // required, once
 |---|---|
 | `agent(name, promptFn)` | Spawn a subagent. `promptFn(state) => string` |
 | `mainAgent(prompt \| promptFn)` | Pause for your judgement mid-run |
-| `human(prompt, opts?)` | Ask the user. `opts: { options?, default? }` |
+| `human(prompt \| promptFn, opts?)` | Ask the user. `opts: { options?, default? }` |
 
 ### Edges
 
