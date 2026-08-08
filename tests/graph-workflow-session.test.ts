@@ -14,6 +14,7 @@ import * as path from "node:path";
 import { agent, END } from "../extensions/graph-dsl.ts";
 import { buildGraphFromScript } from "../extensions/graph-validator.ts";
 import { createGraphWorkflowTool } from "../extensions/graph-tool.ts";
+import { trackDetached } from "./helpers/detached.ts";
 import { WorkflowManager } from "../extensions/workflow-manager.ts";
 
 const SCRIPT = `export const meta = { name: "sess_view", description: "d" };
@@ -90,25 +91,27 @@ describe("an agent's session conversation is visible in /workflows", () => {
 		const { spawnAgent, spawned } = fakeSpawnAgent(cwd);
 		const manager = new WorkflowManager();
 
-		const tool = createGraphWorkflowTool({ cwd, spawnAgent, workflowManager: manager });
-		const res: any = await (tool as any).execute("c", { script: SCRIPT }, undefined, undefined, {
+		const tracker = trackDetached();
+		const tool = createGraphWorkflowTool({ cwd, spawnAgent, workflowManager: manager, ...tracker });
+		await (tool as any).execute("c", { script: SCRIPT }, undefined, undefined, {
 			cwd,
 			model: undefined,
 			sessionManager: undefined,
 			modelRegistry: undefined,
 		});
+		const res = (await tracker.settled())!;
 
-		expect(res.details.status).toBe("completed");
+		expect(res.status).toBe("completed");
 		expect(spawned).toEqual([
-			path.join(cwd, ".pi-workflow", "sessions", res.details.runId!, "planner.jsonl"),
-			path.join(cwd, ".pi-workflow", "sessions", res.details.runId!, "green.jsonl"),
+			path.join(cwd, ".pi-workflow", "sessions", res.runId, "planner.jsonl"),
+			path.join(cwd, ".pi-workflow", "sessions", res.runId, "green.jsonl"),
 		]);
 
 		// Give the session watcher a poll cycle to read the files it was
 		// pointed at during nodeStarted.
 		await new Promise((r) => setTimeout(r, 500));
 
-		const run = manager.getRun(res.details.runId)!;
+		const run = manager.getRun(res.runId)!;
 		const planner = run.snapshot.agents.find((a) => a.label === "planner (planner)")!;
 		expect(planner.sessionId).toBe(spawned[0]!);
 

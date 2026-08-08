@@ -30,6 +30,7 @@ import { buildPiArgs } from "../extensions/pi-args.ts";
 import { getSubagentDepthEnv } from "../extensions/types.ts";
 import { discoverAgents } from "../extensions/agents.ts";
 import { createGraphWorkflowTool } from "../extensions/graph-tool.ts";
+import { trackDetached } from "./helpers/detached.ts";
 import { vi } from "vitest";
 
 describe("pi-permission-system compatibility", () => {
@@ -177,9 +178,11 @@ g.run();`;
 				durationMs: 1,
 			});
 
+			const tracker = trackDetached();
 			const tool = createGraphWorkflowTool({
 				cwd: tempDir,
 				spawnAgent: spawnAgent as never,
+				...tracker,
 			});
 
 			const sessionManager = {
@@ -192,6 +195,8 @@ g.run();`;
 				sessionManager,
 				modelRegistry: undefined,
 			});
+			// The spawn happens after the tool detaches, so wait for the run.
+			await tracker.settled();
 
 			expect(spawnAgent).toHaveBeenCalled();
 			const spawnOpts = spawnAgent.mock.calls[0][3];

@@ -250,6 +250,21 @@ export class GraphDisplayBridge {
 		}
 	}
 
+	/**
+	 * Reports a run that crashed rather than finishing with a result.
+	 *
+	 * A detached run has no tool call left to fail, so an unexpected throw has
+	 * to be recorded here or it disappears entirely: the run would sit at
+	 * "running" forever and nothing would ever be delivered.
+	 */
+	runFailed(error: string): void {
+		try {
+			this.manager.completeRun(this.runId, undefined, error);
+		} catch {
+			// Ignore display failures.
+		}
+	}
+
 	log(message: string): void {
 		try {
 			this.manager.log(this.runId, message);

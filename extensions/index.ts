@@ -17,6 +17,7 @@ import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { buildAgentCatalogGuideline, createListAgentsTool } from "./agent-catalog.ts";
 import { createGraphWorkflowTool } from "./graph-tool.ts";
+import { installResultDelivery } from "./result-delivery.ts";
 import { runSingleAgent } from "./execution.ts";
 import {
 	type SingleResult,
@@ -499,6 +500,12 @@ export default function (pi: ExtensionAPI) {
 	const workflowTool = createGraphWorkflowTool({ workflowManager: globalWorkflowManager });
 	pi.registerTool(workflowTool);
 	registerWorkflowStatusTool(pi, globalWorkflowManager);
+
+	// Runs are background-only, so a graph's report is not a tool result. It is
+	// injected into the conversation when the walk finishes; without this, a
+	// finished run would be visible only in /workflows and the model would never
+	// learn what it produced.
+	installResultDelivery(pi, globalWorkflowManager);
 
 	// --- Agent Catalog ---
 	pi.registerTool(createListAgentsTool());

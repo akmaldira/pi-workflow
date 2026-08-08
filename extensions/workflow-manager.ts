@@ -11,6 +11,17 @@ import type { WorkflowMeta } from "./workflow-display-types.ts";
 
 export type RunStatus = "running" | "paused" | "completed" | "error" | "stopped";
 
+/**
+ * Cap on runs executing at once.
+ *
+ * Runs are background-only, so nothing stops the model from starting several.
+ * Each one spawns child processes and spends tokens against its own budget,
+ * and each competes for the single modal dialog when a node asks the user
+ * something. Three is high enough that legitimate concurrent work is not
+ * obstructed and low enough that a runaway loop is caught early.
+ */
+export const DEFAULT_MAX_CONCURRENT_RUNS = 3;
+
 export interface ManagedRun {
 	runId: string;
 	status: RunStatus;
@@ -45,6 +56,7 @@ export class WorkflowManager extends EventEmitter {
 	private journalDir?: string;
 	private transcriptWatchers = new Map<string, () => void>();
 	private sessionWatchers = new Map<string, () => void>();
+	private maxConcurrentRuns = DEFAULT_MAX_CONCURRENT_RUNS;
 
 	constructor(journalDir?: string) {
 		super();
@@ -550,6 +562,56 @@ export class WorkflowManager extends EventEmitter {
 
 	listActiveRuns(): ManagedRun[] {
 		return Array.from(this.runs.values());
+	}
+
+	/** Runs currently executing, as opposed to finished ones still tracked. */
+	listRunningRuns(): ManagedRun[] {
+		return Array.from(this.runs.values()).filter((r) => r.status === "running");
+	}
+
+	setMaxConcurrentRuns(max: number): void {
+		this.maxConcurrentRuns = Math.max(1, Math.floor(max));
+	}
+
+	getMaxConcurrentRuns(): number {
+		return this.maxConcurrentRuns;
+	}
+
+	/**
+	 * Decides whether another run may start, and says why not when it may not.
+	 *
+	 * Two separate guards. The cap is about resource exhaustion. The name guard
+	 * is about intent: starting a graph that is already running under the same
+	 * name is nearly always an accidental double-submit, so it is refused unless
+	 * the caller says otherwise. Refusing by returning a reason rather than
+	 * throwing keeps the decision testable and lets the caller phrase the error.
+	 */
+	checkCanStart(name: string, options: { allowDuplicateName?: boolean } = {}): { ok: true } | { ok: false; reason: string } {
+		const running = this.listRunningRuns();
+
+		if (!options.allowDuplicateName) {
+			const duplicate = running.find((r) => r.snapshot.meta.name === name);
+			if (duplicate) {
+				return {
+					ok: false,
+					reason:
+						`Workflow "${name}" is already running (runId: ${duplicate.runId}). ` +
+						`Wait for it, stop it from /workflows, or pass allowConcurrentDuplicate: true if a second copy is genuinely wanted.`,
+				};
+			}
+		}
+
+		if (running.length >= this.maxConcurrentRuns) {
+			const active = running.map((r) => `${r.snapshot.meta.name || "unnamed"} (${r.runId})`).join(", ");
+			return {
+				ok: false,
+				reason:
+					`Already running ${running.length} workflow${running.length === 1 ? "" : "s"} (limit ${this.maxConcurrentRuns}): ${active}. ` +
+					`Wait for one to finish or stop one from /workflows.`,
+			};
+		}
+
+		return { ok: true };
 	}
 
 	listRuns(): PersistedRun[] {

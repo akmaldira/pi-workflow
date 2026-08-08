@@ -23,6 +23,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createGraphWorkflowTool } from "../extensions/graph-tool.ts";
+import { trackDetached } from "./helpers/detached.ts";
 import { WorkflowManager } from "../extensions/workflow-manager.ts";
 import { listGraphRuns } from "../extensions/graph-journal.ts";
 
@@ -96,28 +97,31 @@ describe("end to end: an implementer escalates instead of faking", () => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	function runTool(
+	async function runTool(
 		spawn: ReturnType<typeof vi.fn>,
 		params: Record<string, unknown> = {},
 		manager?: WorkflowManager,
 	) {
+		const tracker = trackDetached();
 		const tool = createGraphWorkflowTool({
 			cwd: tempDir,
 			spawnAgent: spawn as never,
 			workflowManager: manager,
+			...tracker,
 		});
-		return tool.execute(
+		await tool.execute(
 			"call-1",
 			{ script: TDD_GRAPH, args: { task: "soft-delete users" }, ...params },
 			new AbortController().signal,
 			() => {},
 			{ cwd: tempDir } as never,
 		);
+		// The tool detaches; the outcome arrives on the run's own promise.
+		return tracker.settled();
 	}
 
 	function textOf(result: unknown): string {
-		const content = (result as { content?: { text?: string }[] }).content;
-		return (content ?? []).map((c) => c.text ?? "").join("\n");
+		return (result as { text?: string } | undefined)?.text ?? "";
 	}
 
 	/**
@@ -150,7 +154,7 @@ describe("end to end: an implementer escalates instead of faking", () => {
 	it("routes the blocker back to the contract owner and recovers", async () => {
 		const { spawn } = scriptedAgents(ESCALATION_REPLIES);
 		const result = await runTool(spawn);
-		const details = result.details as { path: string[]; status: string };
+		const details = { path: result!.result.path, status: result!.status };
 
 		expect(details.status).toBe("completed");
 		// architect runs twice: the loop is the coordination.
@@ -184,7 +188,7 @@ describe("end to end: an implementer escalates instead of faking", () => {
 	it("parses the escalation into a routing key rather than leaving it as prose", async () => {
 		const { spawn } = scriptedAgents(ESCALATION_REPLIES);
 		const result = await runTool(spawn);
-		const state = (result.details as { state: Record<string, unknown> }).state;
+		const state = result!.result.state;
 
 		// green's FINAL result is the successful retry; the blocked one was
 		// overwritten, which is correct — state holds the latest per node.
@@ -217,7 +221,7 @@ describe("end to end: an implementer escalates instead of faking", () => {
 			red: ["Wrote 4 failing tests.", "Corrected the contradictory test."],
 		});
 		const result = await runTool(spawn);
-		const details = result.details as { path: string[] };
+		const details = { path: result!.result.path };
 
 		// Back to red, NOT to architect.
 		expect(details.path).toEqual(["architect", "red", "green", "red", "green", "reviewer"]);
@@ -230,7 +234,7 @@ describe("end to end: an implementer escalates instead of faking", () => {
 			green: ["STATUS: blocked\nBLOCKED_ON: contract\nREASON: still impossible"],
 		});
 		const result = await runTool(spawn, { maxIterations: 9 });
-		const details = result.details as { status: string };
+		const details = { status: result!.status };
 
 		expect(details.status).toBe("max_iterations");
 	});
@@ -247,19 +251,23 @@ describe("end to end: the run is observable and recoverable", () => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	function runTool(spawn: ReturnType<typeof vi.fn>, params: Record<string, unknown> = {}, manager?: WorkflowManager) {
+	async function runTool(spawn: ReturnType<typeof vi.fn>, params: Record<string, unknown> = {}, manager?: WorkflowManager) {
+		const tracker = trackDetached();
 		const tool = createGraphWorkflowTool({
 			cwd: tempDir,
 			spawnAgent: spawn as never,
 			workflowManager: manager,
+			...tracker,
 		});
-		return tool.execute(
+		await tool.execute(
 			"call-1",
 			{ script: TDD_GRAPH, args: { task: "soft-delete users" }, ...params },
 			new AbortController().signal,
 			() => {},
 			{ cwd: tempDir } as never,
 		);
+		// The tool detaches; the outcome arrives on the run's own promise.
+		return tracker.settled();
 	}
 
 	const REPLIES = {
@@ -322,12 +330,10 @@ describe("end to end: the run is observable and recoverable", () => {
 			};
 		});
 
-		let runId: string | undefined;
-		try {
-			await runTool(spawn);
-		} catch (error) {
-			runId = /Run ID: (\S+)/.exec(error instanceof Error ? error.message : "")?.[1];
-		}
+		// A detached run reports a crash in its report rather than by throwing,
+		// but the resumable id must still be there to be read.
+		const crashedRun = await runTool(spawn);
+		const runId = /Run ID: (\S+)/.exec(crashedRun?.text ?? "")?.[1];
 		expect(runId, "a failed run must report a resumable id").toBeTruthy();
 
 		const before = spawn.mock.calls.length;
@@ -351,6 +357,8 @@ describe("end to end: the sandbox holds against a real tool call", () => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
+	/** Calls execute() directly: these assert on start-time validation, which
+	 *  must still fail the tool call rather than a background run. */
 	function runScript(script: string, spawn = vi.fn()) {
 		const tool = createGraphWorkflowTool({ cwd: tempDir, spawnAgent: spawn as never });
 		return tool.execute("c", { script }, new AbortController().signal, () => {}, {

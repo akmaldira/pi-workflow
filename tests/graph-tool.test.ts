@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createGraphWorkflowTool } from "../extensions/graph-tool.ts";
+import { runGraphTool } from "./helpers/run-graph-tool.ts";
 import { listGraphRuns } from "../extensions/graph-journal.ts";
 
 const META = `export const meta = { name: "test_graph", description: "a test graph" };`;
@@ -17,11 +18,10 @@ function reply(text: string) {
 	};
 }
 
-/** Reads the text the model actually receives. */
+/** Reads the text the model actually receives from the tool call itself. */
 function textOf(result: unknown): string {
-	const content = (result as { content?: { type: string; text?: string }[] }).content;
-	expect(content, "tool result must carry a content array").toBeDefined();
-	return content!.map((part) => part.text ?? "").join("\n");
+	const content = (result as { content?: { type: string; text?: string }[] } | undefined)?.content;
+	return (content ?? []).map((part) => part.text ?? "").join("\n");
 }
 
 describe("graph workflow tool", () => {
@@ -43,20 +43,17 @@ describe("graph workflow tool", () => {
 	 * on `failed` rather than on a returned flag that the runtime never reads.
 	 */
 	async function run(script: string, params: Record<string, unknown> = {}, spawn = vi.fn()) {
-		const tool = createGraphWorkflowTool({ cwd: tempDir, spawnAgent: spawn as never });
-		try {
-			const result = await tool.execute(
-				"id",
-				{ script, ...params },
-				new AbortController().signal,
-				() => {},
-				{ cwd: tempDir } as never,
-			);
-			return { failed: false, result, text: textOf(result), details: result.details };
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			return { failed: true, result: undefined, text: message, details: undefined };
-		}
+		const outcome = await runGraphTool(
+			{ script, ...params },
+			{ cwd: tempDir, spawnAgent: spawn as never },
+		);
+		return {
+			failed: outcome.failed,
+			result: outcome.receipt,
+			text: outcome.text,
+			details: outcome.details,
+			receiptText: textOf(outcome.receipt),
+		};
 	}
 
 	const LINEAR = `${META}
@@ -160,6 +157,9 @@ g.run();
 `;
 			const result = await run(script);
 
+			// The roster is checked before the run detaches, so a misspelled
+			// agent still fails the tool call itself — the model finds out while
+			// it can still fix the script, rather than in a later message.
 			expect(result.failed).toBe(true);
 			expect(result.text).toMatch(/Unknown agent "does_not_exist"/);
 		});
@@ -272,7 +272,7 @@ g.run();
 				.mockRejectedValueOnce(new Error("spawn exploded"));
 
 			const first = await run(LINEAR, { args: { task: "t" } }, failing);
-			expect(first.failed).toBe(true);
+			expect(first.details?.status).toBe("aborted");
 			// A failed run reports its id as resumable in the message itself,
 			// which is the only way a caller learns it — so read it from there
 			// rather than from details, exercising the affordance.
@@ -323,12 +323,6 @@ g.run();
 		it("calls the human handler when one is supplied", async () => {
 			const onHuman = vi.fn().mockResolvedValue("yes");
 			const spawn = vi.fn().mockResolvedValue(reply("done"));
-			const tool = createGraphWorkflowTool({
-				cwd: tempDir,
-				spawnAgent: spawn as never,
-				handlers: { onHuman },
-			});
-
 			const script = `${META}
 const g = graph();
 g.node("build", agent("green", () => "build"));
@@ -337,9 +331,10 @@ g.edge("build", "ok");
 g.edge("ok", END);
 g.run();
 `;
-			await tool.execute("id", { script }, new AbortController().signal, () => {}, {
-				cwd: tempDir,
-			} as never);
+			await runGraphTool(
+				{ script },
+				{ cwd: tempDir, spawnAgent: spawn as never, handlers: { onHuman } },
+			);
 
 			expect(onHuman).toHaveBeenCalledOnce();
 		});
@@ -360,6 +355,7 @@ g.run();
 
 	describe("tool surface", () => {
 		const tool = createGraphWorkflowTool();
+
 
 		it("is registered as `workflow`", () => {
 			expect(tool.name).toBe("workflow");
@@ -382,6 +378,8 @@ g.run();
 					{ cwd: tempDir } as never,
 				),
 			).rejects.toThrow(/not available in a graph script/);
+			// Validation happens before the detach, so a bad script still fails
+			// the tool call itself rather than a background run nobody is watching.
 		});
 
 		it("returns normally for a successful run", async () => {

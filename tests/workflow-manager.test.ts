@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { WorkflowManager } from "../extensions/workflow-manager.ts";
+import { trackDetached } from "./helpers/detached.ts";
 
 describe("WorkflowManager", () => {
 	let tempDir: string;
@@ -368,9 +369,11 @@ describe("WorkflowManager", () => {
 		// reported "No runs yet" forever while runs completed normally —
 		// invisible to any test that exercised the tool in isolation.
 		const { createGraphWorkflowTool } = await import("../extensions/graph-tool.ts");
+		const tracker = trackDetached();
 		const tool = createGraphWorkflowTool({
 			cwd: tempDir,
 			workflowManager: manager,
+			...tracker,
 			spawnAgent: (async () => ({
 				agent: "scout",
 				task: "t",
@@ -390,6 +393,8 @@ g.run();`;
 			cwd: tempDir,
 			sessionManager: { getSessionId: () => "s1" },
 		} as unknown as ExtensionContext);
+		// The run outlives the tool call, so wait for it before reading state.
+		await tracker.settled();
 
 		const runs = manager.listRuns();
 		expect(runs.length).toBe(1);
@@ -408,9 +413,11 @@ g.run();`;
 		// process that created it — even though the journal file was right
 		// there on disk.
 		const { createGraphWorkflowTool } = await import("../extensions/graph-tool.ts");
+		const tracker = trackDetached();
 		const tool = createGraphWorkflowTool({
 			cwd: tempDir,
 			workflowManager: manager,
+			...tracker,
 			spawnAgent: (async () => ({
 				agent: "scout",
 				task: "t",
@@ -430,6 +437,7 @@ g.run();`;
 			cwd: tempDir,
 			sessionManager: { getSessionId: () => "s1" },
 		} as unknown as ExtensionContext);
+		await tracker.settled();
 		const runId = (result.details as { runId: string }).runId;
 
 		// A brand-new manager, with nothing in memory — exactly what
@@ -449,9 +457,11 @@ g.run();`;
 		// Count per agent, not globally: green must block on ITS first call,
 		// which is the second spawn overall.
 		const calls: Record<string, number> = {};
+		const tracker = trackDetached();
 		const tool = createGraphWorkflowTool({
 			cwd: tempDir,
 			workflowManager: manager,
+			...tracker,
 			spawnAgent: (async (_cwd: string, agentConfig: { name: string }) => {
 				const name = agentConfig.name;
 				calls[name] = (calls[name] ?? 0) + 1;
@@ -485,6 +495,7 @@ g.run();`;
 			cwd: tempDir,
 			sessionManager: { getSessionId: () => "s1" },
 		} as unknown as ExtensionContext);
+		await tracker.settled();
 
 		const runs = manager.listRuns();
 		// architect, green, architect, green — collapsing repeats would hide

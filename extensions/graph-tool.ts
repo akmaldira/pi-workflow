@@ -1,36 +1,42 @@
 /**
  * The `workflow` tool — graph-based multi-agent coordination.
  *
- * Assembles the pieces: validate the script (before any agent spawns),
- * build the run context, walk the graph, journal each node, and report.
+ * The tool validates and detaches. It parses the script, checks it against the
+ * agent roster, resolves resume state, and then starts the walk *without
+ * awaiting it*, returning a run id so the turn can end immediately.
+ *
+ * There is no foreground mode. A blocking run would leave the main agent stuck
+ * inside this call for the whole walk, which is precisely what makes
+ * `ask_supervisor` impossible: an agent that cannot take a turn cannot answer a
+ * question. Offering both modes would mean every downstream feature has to
+ * document which of them it works in.
+ *
+ * The report is delivered back into the conversation when the walk finishes
+ * (see result-delivery.ts).
  */
 
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { buildAgentCatalogSummary } from "./agent-catalog.ts";
 import { discoverAgents } from "./agents.ts";
-import type { GraphState } from "./graph-dsl.ts";
 import {
 	DEFAULT_MAX_ITERATIONS,
-	formatPath,
 	type GraphRunResult,
 	type NodeExecution,
 } from "./graph-executor.ts";
 import {
-	GraphJournal,
 	graphScriptHash,
 	loadGraphSuperstepResumeState,
 } from "./graph-journal.ts";
-import {
-	runSuperstepGraph,
-	type SuperstepResumeInput,
-} from "./graph-executor.ts";
+import type { SuperstepResumeInput } from "./graph-executor.ts";
 import { createNodeRunner, type InteractiveHandlers } from "./graph-node-runner.ts";
 import { createInteractiveHandlers } from "./graph-interactive.ts";
-import { GraphRunContext } from "./graph-run-context.ts";
 import { buildGraphFromScript, GraphValidationError } from "./graph-validator.ts";
 import { GraphDisplayBridge } from "./graph-display-bridge.ts";
-import { loadSavedWorkflowScript, saveWorkflowScript } from "./workflow-library.ts";
+import type { GraphRunContext } from "./graph-run-context.ts";
+import { executeGraphRun, type GraphRunReport } from "./graph-run.ts";
+import { stageRunReport } from "./result-delivery.ts";
+import { loadSavedWorkflowScript } from "./workflow-library.ts";
 import type { WorkflowManager } from "./workflow-manager.ts";
 import type { ForkContextOptions } from "./types.ts";
 import { runSingleAgent } from "./execution.ts";
@@ -85,6 +91,12 @@ const GraphToolParams = Type.Object({
 				"Persist this graph under meta.name after a successful run so it can be re-run later with loadWorkflow. Default false.",
 		}),
 	),
+	allowConcurrentDuplicate: Type.Optional(
+		Type.Boolean({
+			description:
+				"Start this graph even though another run of the same name is already in flight. Default false, because a same-name collision is almost always an accidental double-submit.",
+		}),
+	),
 });
 
 export interface GraphToolOptions {
@@ -99,63 +111,21 @@ export interface GraphToolOptions {
 	workflowManager?: WorkflowManager;
 	/**
 	 * Overrides the ctx-derived interactive handlers. Tests inject stubs;
-	 * production leaves it unset so human()/mainAgent() reach the real UI.
+	 * production leaves it unset so human() reaches the real UI.
 	 */
 	handlers?: InteractiveHandlers;
 	onRunStart?: (info: { runId: string; name: string; nodeIds: string[] }) => void;
 	onNodeStart?: (info: { step: number; nodeId: string; nodeType: string }) => void;
 	onNodeComplete?: (execution: NodeExecution) => void;
 	onRunComplete?: (result: GraphRunResult) => void;
-}
-
-function summariseResult(value: unknown, limit = 400): string {
-	if (value === null || value === undefined) return "(no result)";
-	const text = typeof value === "string" ? value : String(value);
-	const collapsed = text.replace(/\s+/g, " ").trim();
-	return collapsed.length <= limit ? collapsed : `${collapsed.slice(0, limit - 1)}…`;
-}
-
-/**
- * Renders the walk with each node's outcome.
- *
- * The path is the most useful thing to report: it shows which agents ran,
- * in what order, and where escalations sent work back.
- */
-function formatHistory(history: NodeExecution[]): string {
-	if (history.length === 0) return "(no nodes ran)";
-
-	return history
-		.map((execution) => {
-			const who = execution.agentName ? `${execution.nodeId} (${execution.agentName})` : execution.nodeId;
-			const arrow = execution.routedTo ? ` -> ${execution.routedTo}` : "";
-			const marker = execution.status === "failed" ? " [failed]" : "";
-			const detail = execution.error ? ` — ${execution.error}` : "";
-			return `  ${execution.step}. ${who}${marker}${arrow}${detail}`;
-		})
-		.join("\n");
-}
-
-/**
- * Reports blocked outcomes separately.
- *
- * A blocked agent is the signal this whole design exists to surface: it
- * means an agent hit a real wall and said so instead of faking progress.
- * Burying it in the walk would waste the escalation.
- */
-function formatEscalations(state: GraphState): string {
-	const escalations: string[] = [];
-
-	for (const [nodeId, value] of Object.entries(state)) {
-		if (!value || typeof value !== "object") continue;
-		const result = value as { status?: string; blockedOn?: string; reason?: string };
-		if (result.status !== "blocked") continue;
-
-		const target = result.blockedOn ? ` (blocked on: ${result.blockedOn})` : "";
-		const reason = result.reason ? ` — ${result.reason}` : "";
-		escalations.push(`  ${nodeId}${target}${reason}`);
-	}
-
-	return escalations.join("\n");
+	/**
+	 * Called with the detached run's promise.
+	 *
+	 * The tool cannot await the walk — that is the whole point — so tests need
+	 * a handle on it to know when it finished. Production ignores it; delivery
+	 * happens through the manager's completion events instead.
+	 */
+	onRunDetached?: (info: { runId: string; done: Promise<GraphRunReport | undefined> }) => void;
 }
 
 export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDefinition {
@@ -225,6 +195,32 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 
 			const { meta, graph } = built;
 			const nodeIds = [...graph.nodes.keys()];
+
+			// Check the roster before detaching. Once the run is in the background
+			// its failures are reported in a message rather than by failing this
+			// call, and a misspelled agent name is exactly the kind of mistake the
+			// model should be told about immediately, while it can still fix it.
+			{
+				const named = new Set<string>();
+				for (const node of graph.nodes.values()) {
+					if (node.def.type === "agent") named.add(node.def.agentName);
+				}
+				if (named.size > 0) {
+					const roster = discoverAgents(cwd, "both").agents;
+					const known = new Set(roster.map((a) => a.name));
+					const unknown = [...named].filter((name) => !known.has(name)).sort();
+					if (unknown.length > 0) {
+						const available = roster.map((a) => a.name).sort().join(", ") || "(none)";
+						const subject =
+							unknown.length === 1
+								? `Unknown agent "${unknown[0]}"`
+								: `Unknown agents ${unknown.map((n) => `"${n}"`).join(", ")}`;
+						throw new Error(
+							`Graph was not run.\n\n${subject}. Available agents: ${available}.`,
+						);
+					}
+				}
+			}
 			const runId = params.resumeRunId ?? `graph-${Date.now()}`;
 			const journalDir = `${cwd}/.pi-workflow/runs`;
 
@@ -265,30 +261,27 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 				};
 			}
 
-			const context = new GraphRunContext({
-				cwd,
-				runId,
-				tokenBudget: params.tokenBudget,
-				useWorktree: params.useWorktree,
-			});
-
-			const journal = GraphJournal.create({
-				journalDir,
-				runId,
-				scriptHash,
-				name: meta.name,
-				description: meta.description,
-				entry: graph.entry,
-				nodeIds,
-				initialState: graph.initialState,
-			});
-
 			// Point the manager at this run's journal directory so
 			// workflow_status and /workflows can look up completed runs by
 			// runId even after this process exits (each call may use a
 			// different cwd, so this is set per-run rather than once at
 			// extension init — see workflow-manager.ts's setJournalDir()).
 			options.workflowManager?.setJournalDir(journalDir);
+
+			// Refuse before spawning anything. Both guards report what is already
+			// running so the model can decide whether to wait or stop something,
+			// rather than being told only that it may not proceed.
+			if (options.workflowManager && !params.resumeRunId) {
+				const permitted = options.workflowManager.checkCanStart(meta.name, {
+					allowDuplicateName: params.allowConcurrentDuplicate,
+				});
+				if (!permitted.ok) throw new Error(permitted.reason);
+			}
+
+			// The run outlives this tool call, so it cannot use the call's signal:
+			// that aborts the moment execute() returns. It gets its own controller,
+			// which /workflows and stopRun() reach through the manager.
+			const runAbort = new AbortController();
 
 			const display = options.workflowManager
 				? new GraphDisplayBridge({
@@ -298,6 +291,7 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 						description: meta.description,
 						script,
 						cwd,
+						abortController: runAbort,
 					})
 				: undefined;
 
@@ -311,165 +305,96 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 					}
 				: undefined;
 
-			// Shared by both executors: the node runner and per-node callbacks are
-			// identical, so only the walk itself differs.
-			const runNode = createNodeRunner({
-				cwd: context.cwd,
-				runId,
-				signal,
-				forkContext,
-				parentSessionId: ctx.sessionManager?.getSessionId() ?? process.env.PI_SUBAGENT_PARENT_SESSION,
-				artifactsDir: context.artifactsDir,
-				artifactConfig: context.artifactConfig,
-				spawnAgent: spawnAgent as never,
-				// Built from ctx so human() actually asks and mainAgent()
-				// actually checkpoints. Both degrade to their defaults when
-				// the run has no UI.
-				handlers:
-					options.handlers ??
-					createInteractiveHandlers({
-						ctx,
-						onEvent: (message) => display?.log(message),
-					}),
-			});
-
-			const onNodeStart = (info: {
-				step: number;
-				nodeId: string;
-				nodeType: string;
-				round?: number;
-			}): void => {
-				const def = graph.nodes.get(info.nodeId)?.def;
-				display?.nodeStarted({
-					...info,
-					agentName: def?.type === "agent" ? def.agentName : undefined,
+			// Built per-run rather than once: the runner needs the run context's
+			// cwd, which is the worktree path when the run is isolated.
+			const makeRunNode = (context: GraphRunContext) =>
+				createNodeRunner({
+					cwd: context.cwd,
+					runId,
+					signal: runAbort.signal,
+					forkContext,
+					parentSessionId:
+						ctx.sessionManager?.getSessionId() ?? process.env.PI_SUBAGENT_PARENT_SESSION,
+					artifactsDir: context.artifactsDir,
+					artifactConfig: context.artifactConfig,
+					spawnAgent: spawnAgent as never,
+					// Built from ctx so human() actually asks. It degrades to the
+					// node's default when the run has no UI.
+					handlers:
+						options.handlers ??
+						createInteractiveHandlers({
+							ctx,
+							onEvent: (message) => display?.log(message),
+						}),
 				});
-				options.onNodeStart?.(info);
-			};
 
-			const onNodeComplete = (execution: NodeExecution): void => {
-				journal.recordNode(execution);
-				context.recordNode(execution);
-				display?.nodeCompleted(execution);
-				options.onNodeComplete?.(execution);
-			};
+			// Detach. Everything below this line happens after the tool has
+			// returned and the turn has ended.
+			const done = executeGraphRun({
+				runId,
+				cwd,
+				script,
+				scriptHash,
+				meta,
+				graph,
+				journalDir,
+				signal: runAbort.signal,
+				maxIterations: params.maxIterations,
+				tokenBudget: params.tokenBudget,
+				useWorktree: params.useWorktree,
+				saveWorkflow: params.saveWorkflow,
+				resume: superstepResume,
+				makeRunNode,
+				display,
+				onNodeStart: options.onNodeStart,
+				onNodeComplete: options.onNodeComplete,
+				onRunComplete: options.onRunComplete,
+			})
+				.then((report) => {
+					// Staged before the display marks the run complete, because
+					// that is what fires the event delivery listens for.
+					if (options.workflowManager) stageRunReport(options.workflowManager, report);
+					display?.runCompleted(report.result);
+					return report;
+				})
+				.catch((error: unknown) => {
+					// A detached run has no tool call left to fail, so a crash has to
+					// be reported through the manager or it vanishes silently.
+					const message = error instanceof Error ? error.message : String(error);
+					display?.runFailed(message);
+					return undefined;
+				});
 
-			let result: GraphRunResult;
-			/** Node executions. Diverges from iterations only for superstep runs. */
-			let nodeExecutions: number;
-			try {
-				{
-					const superstepResult = await runSuperstepGraph(graph, {
-						runId,
-						signal,
-						maxIterations: params.maxIterations,
-						resume: superstepResume,
-						runNode,
-						onNodeStart,
-						onNodeComplete,
-						onRoundComplete: (info) => {
-							// The barrier marker is what makes a crashed parallel run
-							// resumable: it records the frontier and readiness counters.
-							journal.recordRoundComplete(info);
-							display?.roundComplete(info);
-						},
-					});
-					nodeExecutions = superstepResult.nodeExecutions;
-					result = superstepResult;
-				}
-			} finally {
-				context.cleanup();
-			}
+			// Never let the detached promise reject unhandled: that crashes the
+			// whole pi process, taking the user's session with it.
+			void done.catch(() => {});
+			options.onRunDetached?.({ runId, done });
 
-			journal.recordResult({
-				status: result.status,
-				iterations: result.iterations,
-				nodeExecutions,
-				durationMs: result.durationMs,
-				error: result.error,
-			});
-			display?.runCompleted(result);
-			options.onRunComplete?.(result);
-
-			// Only persist a graph that actually worked: saving a broken one
-			// would offer it for reuse under a name that implies it runs.
-			let savedAs: string | undefined;
-			if (params.saveWorkflow && result.status === "completed") {
-				try {
-					savedAs = saveWorkflowScript(cwd, script, meta).name;
-				} catch {
-					// Reported below; a save failure must not fail the run.
-				}
-			}
-
-			const summary = context.summary();
-			const lines: string[] = [];
-
-			// A superstep run reports both counters: rounds measure how deep the
-			// coordination went, node executions measure how much work happened.
-			// Collapsing them would make a 5-node round read as a single step.
-			const completedSummary = `${nodeExecutions} node execution${nodeExecutions === 1 ? "" : "s"} across ${result.iterations} round${result.iterations === 1 ? "" : "s"}`;
-			const heading =
-				result.status === "completed"
-					? `Graph "${meta.name}" completed in ${completedSummary}.`
-					: result.status === "max_iterations"
-						? `Graph "${meta.name}" stopped at the round cap.`
-						: `Graph "${meta.name}" aborted.`;
-			lines.push(heading);
-
-			if (result.error) lines.push(`\n${result.error}`);
-
-			lines.push(`\nPath: ${formatPath(result)}`);
-			lines.push(`\nNodes:\n${formatHistory(result.history)}`);
-
-			const escalations = formatEscalations(result.state);
-			if (escalations) {
-				lines.push(`\nEscalations reported:\n${escalations}`);
-			}
-
-			if (result.status === "completed") {
-				lines.push(`\nFinal result:\n${summariseResult(result.finalResult)}`);
-			}
-
-			for (const warning of summary.warnings) {
-				lines.push(`\n⚠ ${warning.message}`);
-			}
-			if (summary.worktreeSkipped) {
-				lines.push(`\nNote: ${summary.worktreeSkipped}`);
-			}
-			if (journal.writeErrors.length > 0) {
-				lines.push(`\nNote: the run journal could not be written (${journal.writeErrors[0]}).`);
-			}
-
-			if (savedAs) {
-				lines.push(`\nSaved as "${savedAs}"; re-run it later with loadWorkflow: "${savedAs}".`);
-			} else if (params.saveWorkflow && result.status !== "completed") {
-				lines.push("\nNot saved: only graphs that complete successfully are persisted.");
-			}
-
-			lines.push(`\nRun ID: ${runId}${result.status !== "completed" ? " (resumable)" : ""}`);
-
-			// An aborted run throws so the model sees a failed tool call rather
-			// than a successful one whose text happens to describe a failure. The
-			// full report is preserved in the message, including the resumable run
-			// id, so nothing is lost by throwing.
-			if (result.status === "aborted") {
-				throw new Error(lines.join("\n"));
-			}
+			const nodeList = nodeIds.join(" -> ");
+			const started = params.resumeRunId
+				? `Resumed workflow "${meta.name}" in the background.`
+				: `Workflow "${meta.name}" started in the background.`;
 
 			return {
-				content: [{ type: "text" as const, text: lines.join("\n") }],
+				content: [
+					{
+						type: "text" as const,
+						text: [
+							started,
+							`  runId: ${runId}`,
+							`  nodes: ${nodeList}`,
+							"",
+							"The run continues after this turn ends. You will be notified with the full report when it finishes,",
+							"so end your turn now rather than polling. Use workflow_status if the user asks about progress.",
+						].join("\n"),
+					},
+				],
 				details: {
 					runId,
 					name: meta.name,
-					status: result.status,
-					iterations: result.iterations,
-					nodeExecutions,
-					path: result.path,
-					durationMs: result.durationMs,
-					budget: summary.budget,
-					state: result.state,
-					error: result.error,
+					background: true,
+					nodeIds,
+					resumed: Boolean(params.resumeRunId),
 				},
 			};
 		},

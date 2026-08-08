@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createGraphWorkflowTool } from "../extensions/graph-tool.ts";
+import { trackDetached } from "./helpers/detached.ts";
 
 const SCRIPT = `export const meta = { name: "parallel_research", description: "fan out research then summarise" };
 const g = graph();
@@ -45,29 +46,32 @@ describe("e2e: superstep graph through the workflow tool", () => {
       };
     }) as any;
 
-    const tool = createGraphWorkflowTool({ cwd, spawnAgent });
-    const res: any = await (tool as any).execute(
+    const tracker = trackDetached();
+    const tool = createGraphWorkflowTool({ cwd, spawnAgent, ...tracker });
+    await (tool as any).execute(
       "call-1",
       { script: SCRIPT, args: { task: "auth system" } },
       undefined,
       undefined,
       { cwd, model: undefined, sessionManager: undefined, modelRegistry: undefined },
     );
+    // The tool detaches, so the outcome arrives on the run's own promise.
+    const res: any = await tracker.settled();
 
-    const text = res.content[0].text;
+    const text = res.text;
     console.log("\n=== TOOL OUTPUT ===\n" + text + "\n===================\n");
     console.log("details:", JSON.stringify({
-      iterations: res.details.iterations,
-      nodeExecutions: res.details.nodeExecutions,
-      path: res.details.path,
+      iterations: res.iterations,
+      nodeExecutions: res.nodeExecutions,
+      path: res.result.path,
     }, null, 2));
     console.log("max concurrent spawns:", maxConcurrent);
 
-    expect(res.details.status).toBe("completed");
+    expect(res.status).toBe("completed");
     // Every node should have succeeded, not silently failed.
     expect(text).not.toContain("[failed]");
-    expect(res.details.iterations).toBe(3);
-    expect(res.details.nodeExecutions).toBe(4);
+    expect(res.iterations).toBe(3);
+    expect(res.nodeExecutions).toBe(4);
     expect(maxConcurrent).toBe(2); // researchers actually ran concurrently
     expect(text).toContain("4 node executions across 3 rounds");
 
@@ -80,7 +84,7 @@ describe("e2e: superstep graph through the workflow tool", () => {
     expect(summPrompt).toContain("researcher-output-B");
 
     // Journal must contain round_complete markers.
-    const runId = res.details.runId;
+    const runId = res.runId;
     const journal = fs.readFileSync(path.join(cwd, ".pi-workflow/runs", runId + ".jsonl"), "utf-8");
     const rounds = journal.split("\n").filter((l) => l.includes('"round_complete"'));
     console.log("round_complete markers:", rounds.length);
@@ -108,19 +112,19 @@ describe("superstep resume", () => {
       };
     }) as any;
 
-    const tool = createGraphWorkflowTool({ cwd, spawnAgent });
-    const run = (params: any) =>
-      (tool as any).execute("c", params, undefined, undefined, {
+    const tracker = trackDetached();
+    const tool = createGraphWorkflowTool({ cwd, spawnAgent, ...tracker });
+    const run = async (params: any) => {
+      await (tool as any).execute("c", params, undefined, undefined, {
         cwd, model: undefined, sessionManager: undefined, modelRegistry: undefined,
       });
+      return tracker.settled();
+    };
 
-    // First attempt: crashes at the summarizer (round 3).
-    let runId: string | undefined;
-    try {
-      await run({ script: SCRIPT, args: { task: "auth" } });
-    } catch (e: any) {
-      runId = /Run ID: (\S+)/.exec(e.message)?.[1];
-    }
+    // First attempt: crashes at the summarizer (round 3). A detached run
+    // reports an abort in its report rather than by throwing.
+    const first: any = await run({ script: SCRIPT, args: { task: "auth" } });
+    const runId = /Run ID: (\S+)/.exec(first.text)?.[1];
     console.log("first attempt ran:", ran.join(", "), "| runId:", runId);
     expect(runId).toBeDefined();
     expect(ran).toEqual(["scout", "researcherA", "researcherB", "worker"]);
@@ -131,9 +135,9 @@ describe("superstep resume", () => {
     const res: any = await run({ script: SCRIPT, args: { task: "auth" }, resumeRunId: runId });
 
     console.log("resumed run executed only:", ran.join(", "));
-    console.log(res.content[0].text.split("\n")[0]);
+    console.log(res.text.split("\n")[0]);
     expect(ran).toEqual(["worker"]); // only the failed node re-ran
-    expect(res.details.status).toBe("completed");
+    expect(res.status).toBe("completed");
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 });
@@ -164,18 +168,20 @@ g.edge("deploy", END);
 g.edge("rollback", END);
 g.run({});`;
 
-    const tool = createGraphWorkflowTool({ cwd, spawnAgent });
-    const res: any = await (tool as any).execute("c", { script: SCRIPT }, undefined, undefined, {
+    const tracker = trackDetached();
+    const tool = createGraphWorkflowTool({ cwd, spawnAgent, ...tracker });
+    await (tool as any).execute("c", { script: SCRIPT }, undefined, undefined, {
       cwd, model: undefined, sessionManager: undefined, modelRegistry: undefined,
     });
+    const res: any = await tracker.settled();
 
     console.log("agents actually spawned:", spawned.join(", "));
-    console.log(res.content[0].text.split("\n")[0]);
+    console.log(res.text.split("\n")[0]);
 
     // green succeeds, so deploy runs and rollback must never spawn.
     expect(spawned).toEqual(["green", "worker"]);
     expect(spawned).not.toContain("reviewer");
-    expect(res.details.status).toBe("completed");
+    expect(res.status).toBe("completed");
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
@@ -199,15 +205,17 @@ g.edge("architect", "green");
 g.edge("green", END);
 g.run({});`;
 
-    const tool = createGraphWorkflowTool({ cwd, spawnAgent });
-    const res: any = await (tool as any).execute("s", { script: SCRIPT }, undefined, undefined, {
+    const tracker = trackDetached();
+    const tool = createGraphWorkflowTool({ cwd, spawnAgent, ...tracker });
+    await (tool as any).execute("s", { script: SCRIPT }, undefined, undefined, {
       cwd, model: undefined, sessionManager: undefined, modelRegistry: undefined,
     });
+    const res: any = await tracker.settled();
 
     expect(spawned).toEqual(["architect", "green"]);
     // One node per round: a sequential graph is just a graph with no fan-out.
-    expect(res.details.iterations).toBe(2);
-    expect(res.details.nodeExecutions).toBe(2);
+    expect(res.iterations).toBe(2);
+    expect(res.nodeExecutions).toBe(2);
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 });
