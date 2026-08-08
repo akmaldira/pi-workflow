@@ -386,9 +386,10 @@ Inspects a run's progress or investigates a failure.
 | Command | Purpose |
 |---|---|
 | `/workflows` | Interactive navigator: runs → nodes → detail |
-| `/saved-workflows` | List or delete saved graphs |
+| `/wf normal\|plan\|workflow` | Switch execution mode (Normal, Plan, or Workflow) |
+| `/workflow on\|off` | Legacy alias for `/wf workflow` and `/wf normal` |
 | `/agents` | Show the discovered roster |
-| `/workflow on\|off\|status` | Workflow-only mode |
+| `/saved-workflows` | List or delete saved graphs |
 
 `/workflows` shows the walk with routing inline, so an escalation loop is legible at a glance:
 
@@ -406,11 +407,15 @@ During a run the status line names the node currently working:
 ▶ tdd_feature: green (green) · step 4 · 12.4kt
 ```
 
-### Workflow-only mode
+### Execution modes (`/wf`)
 
-`/workflow on` blocks `write`, `edit`, and `subagent`, and restricts `bash` to read-only commands.
-File changes must then go through a graph, so they inherit journaling, budget tracking, artifacts,
-and error handling. `/workflow off` restores the exact prior tool set.
+You can switch the execution mode of the session using the `/wf` command to enforce specific tool and behavioral restrictions on the agent. The current mode is displayed as a sticky status widget below the editor.
+
+* **`/wf normal`** (or `/wf build`): The default mode. All tools are enabled, and the agent can write files directly or delegate.
+* **`/wf plan`**: Read-only mode. Blocks all write tools (`write`, `edit`) and delegation tools (`subagent`, `workflow`). Restricts `bash` to read-only commands (e.g. `cat`, `grep`, `ls`, `git diff`). Use this for safe, modification-free architecture planning and codebase research.
+* **`/wf workflow`** (or `/wf on`): Enforced delegation mode. Blocks direct writes (`write`, `edit`) and direct subagents (`subagent`). Forces the agent to write a graph script and execute it via the `workflow` tool for any file changes or task delegation.
+
+The active mode prompt is continuously injected into the agent's system prompt along with a high-salience banner to prevent model confusion.
 
 ## Production behaviour
 

@@ -1,46 +1,29 @@
 /**
- * "/workflow" command: forces the agent to delegate all work through the
- * `workflow` (and `subagent`) tools by restricting the active tool set to a
- * read-only + orchestration surface and injecting a system-prompt directive,
- * mirroring the approach the bundled `plan-mode` example extension uses for
- * its `/plan` read-only mode and the keyword-arming / prompt-injection
- * pattern in pi-dynamic-workflows' `workflow-editor.ts`
- * (`installWorkflowKeywordArming`, `buildArmedWorkflowPrompt`).
+ * "/wf" (and legacy "/workflow") command: switches the session mode between:
+ *  - "normal": full write and delegation access.
+ *  - "plan": read-only planning and exploration (writes, subagents, and workflows are blocked).
+ *  - "workflow": enforced delegation mode (writes and subagent are blocked, workflow is allowed).
  *
- * When ON:
- *  - Active tools are restricted to: read, bash, grep, find, ls, workflow,
- *    workflow_status (plus any other currently-active non-mutating tools).
- *    `write`, `edit`, and `subagent` are removed from the active set —
- *    `subagent` is blocked too so the model can't bypass workflow's
- *    journaling/budget/error-resilience machinery by calling a single
- *    subagent directly; all delegation must go through `workflow`.
- *  - `bash` remains active, but write-shaped bash commands (redirects, `rm`,
- *    `mv`, `sed -i`, `git commit`, package installs, etc. — the same
- *    destructive-pattern list `plan-mode`'s `isSafeCommand()` uses) are
- *    blocked via a `tool_call` handler with a clear "use workflow" message.
- *  - A `before_agent_start` handler injects a non-displayed system message
- *    instructing the model to use the `workflow` tool for any work that
- *    needs file changes or delegation, and to use `read`/`bash` (read-only)
- *    only for investigation.
- *
- * When OFF: the prior active tool set is restored and no injection happens.
+ * Implements mode banners, tool block gates, bash write-blocking, and live TUI widgets.
  */
 
 import type { ExtensionAPI, ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 
-/** Tools that remain (or become) active while workflow mode is on. */
-const WORKFLOW_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "workflow", "workflow_status", "list_agents", "list_workflows"];
+export type SessionMode = "normal" | "plan" | "workflow";
 
-/** Tools explicitly removed from the active set while workflow mode is on. */
+export interface WorkflowModeState {
+	currentMode: SessionMode;
+	toolsBeforeWorkflowMode?: string[];
+}
+
+/** Tools explicitly blocked in Plan Mode. */
+const PLAN_MODE_DISABLED_TOOLS = new Set<string>(["write", "edit", "subagent", "workflow", "workflow_status"]);
+
+/** Tools explicitly blocked in Workflow Mode. */
 const WORKFLOW_MODE_DISABLED_TOOLS = new Set<string>(["write", "edit", "subagent"]);
 
-/** Tools this feature owns when computing the restricted/restored sets. */
-const WORKFLOW_MANAGED_TOOLS = new Set<string>([...WORKFLOW_MODE_TOOLS, ...WORKFLOW_MODE_DISABLED_TOOLS]);
-
-// Reuses the same destructive-bash-pattern approach as the bundled
-// plan-mode example (examples/extensions/plan-mode/utils.ts): a bash
-// command is blocked in workflow mode if it matches any mutating pattern
-// below, regardless of whether it also matches a "safe" read pattern.
+// Reuses the same destructive-bash-pattern approach as plan-mode:
+// a bash command is blocked in plan/workflow modes if it matches any mutating pattern below.
 const WRITE_BASH_PATTERNS: RegExp[] = [
 	/\brm\b/i,
 	/\brmdir\b/i,
@@ -56,7 +39,7 @@ const WRITE_BASH_PATTERNS: RegExp[] = [
 	/\btruncate\b/i,
 	/\bdd\b/i,
 	/\bshred\b/i,
-	/(^|[^<])>(?!>)/, // redirect overwrite: `> file` (not `>>` handled separately, not `<`)
+	/(^|[^<])>(?!>)/, // redirect overwrite: `> file`
 	/>>/, // redirect append
 	/\bsed\s+-i\b/i,
 	/\bnpm\s+(install|uninstall|update|ci|link|publish)/i,
@@ -77,43 +60,42 @@ const WRITE_BASH_PATTERNS: RegExp[] = [
 	/\bservice\s+\S+\s+(start|stop|restart)/i,
 ];
 
-/**
- * Whether a bash command mutates the filesystem/system state and should be
- * blocked while workflow mode is on. Pure-read commands (cat, grep, ls,
- * git status/log/diff, npm list, curl, etc.) are allowed through unchanged.
- */
 export function isWriteBashCommand(command: string): boolean {
 	return WRITE_BASH_PATTERNS.some((p) => p.test(command));
 }
 
-/** Shared, mutable view of whether workflow-only mode is currently active. */
-export interface WorkflowModeState {
-	enabled: boolean;
-	toolsBeforeWorkflowMode?: string[];
+const WIDGET_ID = "pi-workflow-mode";
+
+function modeBanner(mode: SessionMode): string {
+	const labels: Record<SessionMode, string> = {
+		normal: "🟢 NORMAL",
+		plan: "🔵 PLAN",
+		workflow: "🧪 WORKFLOW",
+	};
+	return [
+		"",
+		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+		`📍 ACTIVE EXECUTION MODE: ${labels[mode]}`,
+		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+		"This is your ACTIVE execution mode as of this turn. If any earlier messages in this conversation",
+		"mention a different mode, that is STALE — the mode was switched since then. Always obey this active mode's rules.",
+	].join("\n");
 }
 
-function uniqueToolNames(toolNames: string[]): string[] {
-	return [...new Set(toolNames)];
-}
+export const NORMAL_MODE_SYSTEM_DIRECTIVE = `## NORMAL MODE ACTIVE
 
-/** Compute the restricted active-tool list: current tools minus disabled ones, plus the workflow-mode set. */
-export function getWorkflowModeTools(activeToolNames: string[]): string[] {
-	return uniqueToolNames([
-		...activeToolNames.filter((name) => !WORKFLOW_MODE_DISABLED_TOOLS.has(name)),
-		...WORKFLOW_MODE_TOOLS,
-	]);
-}
+You are in **normal mode** — all tools are fully enabled.
+- You have direct filesystem modification access (you can write and edit files directly).
+- You can run bash commands freely without write-blocking restrictions.
+- You can optionally delegate tasks using the \`subagent\` and \`workflow\` tools.`;
 
-/** Compute the restored active-tool list when leaving workflow mode, given the currently active (restricted) set. */
-export function getRestoredTools(activeToolNames: string[], toolsBeforeWorkflowMode: string[] | undefined): string[] {
-	if (toolsBeforeWorkflowMode) return toolsBeforeWorkflowMode;
-	// Fallback if we somehow don't have a saved snapshot: put back the
-	// disabled tools alongside whatever's currently active (keep the
-	// currently-active restricted set as-is; just re-add write/edit/subagent).
-	return uniqueToolNames([...activeToolNames, ...Array.from(WORKFLOW_MODE_DISABLED_TOOLS)]);
-}
+export const PLAN_MODE_SYSTEM_DIRECTIVE = `## PLAN MODE ACTIVE
 
-/** The non-displayed system-prompt injection added to every turn while workflow mode is on. */
+You are in **plan mode** — read-only planning and investigation.
+- Direct file mutations (\`write\`/\`edit\`) and delegation (\`subagent\`/\`workflow\`) are disabled.
+- Bash is restricted to read-only commands (e.g. \`cat\`, \`grep\`, \`ls\`, \`git status\`, \`git diff\`).
+- Focus on planning, discussing architectural designs, researching code, and answering questions. Do not attempt to write code.`;
+
 export const WORKFLOW_MODE_SYSTEM_DIRECTIVE = `[WORKFLOW MODE ACTIVE]
 You must delegate all work through the \`workflow\` tool. Direct filesystem mutation and direct subagent
 delegation are unavailable in this mode:
@@ -142,118 +124,226 @@ If the user's request is purely conversational or a question that needs no file 
 just answer directly — workflow mode does not force you to call the \`workflow\` tool for every message,
 only when file mutation or delegation is actually needed.`;
 
-/**
- * Register the `/workflow` command (on/off/status toggle) and the two
- * enforcement hooks (bash write-blocking, system-prompt injection).
- *
- * `workflowToolName`/`subagentToolName` let callers pass the actual
- * registered tool names (defaults match this package's own tools) in case a
- * consumer renames them.
- */
+function getWidgetLines(mode: SessionMode): string[] {
+	switch (mode) {
+		case "normal":
+			return ["\x1b[32m🟢 Normal · all tools enabled\x1b[0m"];
+		case "plan":
+			return ["\x1b[34m🔵 Plan · write tools blocked (read-only)\x1b[0m"];
+		case "workflow":
+			return ["\x1b[35m🧪 Workflow · enforced delegation (workflow tool only)\x1b[0m"];
+	}
+}
+
+function updateWidget(ctx: ExtensionContext, mode: SessionMode): void {
+	if (ctx?.ui?.setWidget) {
+		ctx.ui.setWidget(WIDGET_ID, getWidgetLines(mode), { placement: "belowEditor" });
+	}
+}
+
 export function registerWorkflowMode(
 	pi: ExtensionAPI,
 	options: { workflowToolName?: string; subagentToolName?: string } = {},
 ): WorkflowModeState {
-	const state: WorkflowModeState = { enabled: false };
+	const state: WorkflowModeState = { currentMode: "normal" };
 
-	function setMode(enabled: boolean, ctx?: ExtensionContext): void {
-		if (enabled === state.enabled) return;
-		state.enabled = enabled;
-		if (enabled) {
-			if (state.toolsBeforeWorkflowMode === undefined) {
-				try {
-					state.toolsBeforeWorkflowMode = pi.getActiveTools?.() ?? [];
-				} catch {
-					state.toolsBeforeWorkflowMode = [];
-				}
-			}
+	function getActiveModeTools(mode: SessionMode, activeToolNames: string[]): string[] {
+		const disabled = mode === "plan" ? PLAN_MODE_DISABLED_TOOLS : (mode === "workflow" ? WORKFLOW_MODE_DISABLED_TOOLS : new Set<string>());
+		const kept = activeToolNames.filter((name) => !disabled.has(name));
+		// Make sure core workflow tools are available if the mode is workflow
+		if (mode === "workflow") {
+			return [...new Set([...kept, "workflow", "workflow_status", "list_agents", "list_workflows"])];
+		}
+		if (mode === "plan") {
+			return [...new Set([...kept, "list_agents", "list_workflows"])];
+		}
+		return [...new Set([...kept, "write", "edit", "subagent", "workflow", "workflow_status"])];
+	}
+
+	function setMode(mode: SessionMode, ctx?: ExtensionContext): void {
+		if (mode === state.currentMode) return;
+
+		// If transitioning from normal, save the tools snapshot
+		if (state.currentMode === "normal" && state.toolsBeforeWorkflowMode === undefined) {
 			try {
-				pi.setActiveTools?.(getWorkflowModeTools(state.toolsBeforeWorkflowMode ?? []));
+				state.toolsBeforeWorkflowMode = pi.getActiveTools?.() ?? [];
 			} catch {
-				// best-effort; the system-prompt injection still steers the model
+				state.toolsBeforeWorkflowMode = [];
 			}
-		} else {
-			try {
-				pi.setActiveTools?.(getRestoredTools(pi.getActiveTools?.() ?? [], state.toolsBeforeWorkflowMode));
-			} catch {
-				// ignore
-			}
+		}
+
+		state.currentMode = mode;
+
+		const baseTools = state.toolsBeforeWorkflowMode ?? [];
+		const activeTools = getActiveModeTools(mode, baseTools);
+		try {
+			pi.setActiveTools?.(activeTools);
+		} catch {
+			// best-effort
+		}
+
+		if (mode === "normal") {
 			state.toolsBeforeWorkflowMode = undefined;
 		}
-		if (ctx?.ui) updateStatus(ctx.ui);
-	}
 
-	function updateStatus(ui: ExtensionUIContext): void {
-		try {
-			ui.setStatus?.("workflow-mode", state.enabled ? ui.theme?.fg?.("warning", "\u2699 workflow-only") ?? "\u2699 workflow-only" : undefined);
-		} catch {
-			// status bar is cosmetic; ignore failures
+		if (ctx) {
+			updateWidget(ctx, mode);
+			if (ctx.ui?.setStatus) {
+				const label = mode === "normal" ? undefined : (mode === "plan" ? "🔵 PLAN" : "🧪 WORKFLOW");
+				ctx.ui.setStatus("workflow-mode", label ? ctx.ui.theme?.fg?.("warning", label) ?? label : undefined);
+			}
 		}
 	}
 
-	pi.registerCommand("workflow", {
-		description: "Toggle workflow-only mode: blocks write/edit/subagent, forces delegation through the workflow tool. Usage: /workflow [on|off]",
+	const handleModeSwitch = (mode: SessionMode, label: string, infoMsg: string, ctx: any) => {
+		setMode(mode, ctx);
+		ctx.ui.notify(`Mode: ${label} \u2014 ${infoMsg}`, "info");
+		if (ctx.hasUI) {
+			updateWidget(ctx, mode);
+			pi.sendMessage?.({
+				customType: "mode-switch-notice",
+				content: [{ type: "text", text: `[MODE SWITCHED \u2192 ${label}] ${infoMsg}. Previous mode context is now STALE.` }],
+				display: true,
+			});
+		}
+	};
+
+	// --- Command: /wf [normal|plan|workflow|status] ---
+	pi.registerCommand("wf", {
+		description: "Switch session execution mode: /wf [normal|plan|workflow|status]",
 		handler: async (args, ctx) => {
 			const arg = (args || "").trim().toLowerCase();
-			if (arg === "on") {
-				setMode(true, ctx);
-				ctx.ui.notify(
-					"Workflow mode ON \u2014 write/edit/subagent are disabled; bash is read-only; use the workflow tool for any file changes or delegation. Use /workflow off to restore full access.",
-					"info",
-				);
+			if (arg === "normal" || arg === "build") {
+				handleModeSwitch("normal", "NORMAL", "all tools fully enabled", ctx);
+				return;
+			}
+			if (arg === "plan") {
+				handleModeSwitch("plan", "PLAN", "write/edit/delegation blocked (read-only)", ctx);
+				return;
+			}
+			if (arg === "workflow" || arg === "on") {
+				handleModeSwitch("workflow", "WORKFLOW", "enforced delegation mode (workflow tool only)", ctx);
 				return;
 			}
 			if (arg === "off") {
-				setMode(false, ctx);
-				ctx.ui.notify("Workflow mode OFF \u2014 full tool access restored.", "info");
+				handleModeSwitch("normal", "NORMAL", "all tools fully enabled", ctx);
 				return;
 			}
 			if (arg === "" || arg === "status") {
-				ctx.ui.notify(`Workflow mode is ${state.enabled ? "ON" : "OFF"}. Usage: /workflow [on|off]`, "info");
+				ctx.ui.notify(`Active execution mode is ${state.currentMode.toUpperCase()}. Usage: /wf [normal|plan|workflow]`, "info");
+				return;
+			}
+			ctx.ui.notify(`Unknown argument "${args}". Usage: /wf [normal|plan|workflow]`, "warning");
+		},
+	});
+
+	// --- Legacy Command: /workflow [on|off|status] (alias for backwards compatibility) ---
+	pi.registerCommand("workflow", {
+		description: "Toggle workflow-only mode. Usage: /workflow [on|off]",
+		handler: async (args, ctx) => {
+			const arg = (args || "").trim().toLowerCase();
+			if (arg === "on") {
+				handleModeSwitch("workflow", "WORKFLOW", "enforced delegation mode (workflow tool only)", ctx);
+				return;
+			}
+			if (arg === "off") {
+				handleModeSwitch("normal", "NORMAL", "all tools fully enabled", ctx);
+				return;
+			}
+			if (arg === "" || arg === "status") {
+				ctx.ui.notify(`Workflow mode is ${state.currentMode === "workflow" ? "ON" : "OFF"}. Usage: /workflow [on|off]`, "info");
 				return;
 			}
 			ctx.ui.notify(`Unknown argument "${args}". Usage: /workflow [on|off]`, "warning");
 		},
 	});
 
-	// Block write-shaped bash commands, and any direct write/edit/subagent
-	// tool call that slips through (e.g. a stale tool reference from
-	// mid-turn context) while workflow mode is on.
-	const disabledToolNames = new Set<string>([
-		...Array.from(WORKFLOW_MODE_DISABLED_TOOLS),
-	]);
-	if (options.subagentToolName) disabledToolNames.add(options.subagentToolName);
+	// --- Hook: tool_call (block writes/mutations in plan/workflow modes) ---
+	const disabledInWorkflow = new Set<string>(["write", "edit", "subagent"]);
+	if (options.subagentToolName) disabledInWorkflow.add(options.subagentToolName);
+
+	const disabledInPlan = new Set<string>(["write", "edit", "subagent", "workflow", "workflow_status"]);
+	if (options.subagentToolName) disabledInPlan.add(options.subagentToolName);
 
 	pi.on("tool_call", async (event: { toolName: string; input: Record<string, unknown> }) => {
-		if (!state.enabled) return;
-		if (disabledToolNames.has(event.toolName)) {
-			return {
-				block: true,
-				reason: `Workflow mode is active: "${event.toolName}" is disabled. Use the workflow tool to delegate this work to a subagent instead.`,
-			};
-		}
-		if (event.toolName === "bash") {
-			const command = String(event.input?.command ?? "");
-			if (isWriteBashCommand(command)) {
+		if (state.currentMode === "normal") return;
+
+		// 1. Plan Mode blocks
+		if (state.currentMode === "plan") {
+			if (disabledInPlan.has(event.toolName)) {
 				return {
 					block: true,
-					reason: `Workflow mode is active: bash is read-only (this command looks like a write/mutation). Use the workflow tool instead.\nCommand: ${command}`,
+					reason: `Plan mode is active: "${event.toolName}" is disabled. Switch to normal or workflow mode using /wf to run code or delegate tasks.`,
 				};
+			}
+			if (event.toolName === "bash") {
+				const command = String(event.input?.command ?? "");
+				if (isWriteBashCommand(command)) {
+					return {
+						block: true,
+						reason: `Plan mode is active: bash is read-only (this command looks like a write/mutation). Switch to normal or workflow mode to modify files.\nCommand: ${command}`,
+					};
+				}
+			}
+		}
+
+		// 2. Workflow Mode blocks
+		if (state.currentMode === "workflow") {
+			if (disabledInWorkflow.has(event.toolName)) {
+				return {
+					block: true,
+					reason: `Workflow mode is active: "${event.toolName}" is disabled. Use the workflow tool to delegate this work to a subagent instead.`,
+				};
+			}
+			if (event.toolName === "bash") {
+				const command = String(event.input?.command ?? "");
+				if (isWriteBashCommand(command)) {
+					return {
+						block: true,
+						reason: `Workflow mode is active: bash is read-only (this command looks like a write/mutation). Use the workflow tool instead.\nCommand: ${command}`,
+					};
+				}
 			}
 		}
 	});
 
-	// Inject the workflow-mode directive into the system prompt for every
-	// turn while the mode is active.
+	// --- Hook: before_agent_start (system prompt mode directives & banner) ---
 	pi.on("before_agent_start", async (event: { systemPrompt: string }) => {
-		if (!state.enabled) return;
+		let directive = "";
+		if (state.currentMode === "normal") {
+			directive = NORMAL_MODE_SYSTEM_DIRECTIVE;
+		} else if (state.currentMode === "plan") {
+			directive = PLAN_MODE_SYSTEM_DIRECTIVE;
+		} else if (state.currentMode === "workflow") {
+			directive = WORKFLOW_MODE_SYSTEM_DIRECTIVE;
+		}
+
 		return {
-			systemPrompt: `${event.systemPrompt}\n\n${WORKFLOW_MODE_SYSTEM_DIRECTIVE}`,
+			systemPrompt: `${event.systemPrompt}\n\n${directive}${modeBanner(state.currentMode)}`,
 		};
 	});
 
+	// --- Hooks: UI session widgets ---
 	pi.on("session_start", (_event, ctx) => {
-		if (ctx?.ui) updateStatus(ctx.ui);
+		if (ctx) {
+			updateWidget(ctx, state.currentMode);
+			if (ctx.ui?.setStatus && state.currentMode !== "normal") {
+				const label = state.currentMode === "plan" ? "🔵 PLAN" : "🧪 WORKFLOW";
+				ctx.ui.setStatus("workflow-mode", ctx.ui.theme?.fg?.("warning", label) ?? label);
+			}
+		}
+	});
+
+	pi.on("agent_settled", (_event, ctx) => {
+		if (ctx) updateWidget(ctx, state.currentMode);
+	});
+
+	// Compatibility shim property
+	Object.defineProperty(state, "enabled", {
+		get() { return this.currentMode === "workflow"; },
+		set(val: boolean) { setMode(val ? "workflow" : "normal"); },
+		enumerable: true,
+		configurable: true,
 	});
 
 	return state;

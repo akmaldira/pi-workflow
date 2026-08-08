@@ -227,15 +227,17 @@ Before writing a new workflow script from scratch, check whether a matching one 
 
 The user can also save a workflow after the fact from the `/workflows` TUI navigator by selecting a run and pressing `s` — no need to have passed `saveWorkflow: true` up front. This only works for runs still live in the current session (the script is kept in memory, not journaled); it won't work for runs restored from a prior session's journal.
 
-## Workflow-Only Mode (`/workflow`)
+## Session Execution Modes (`/wf`)
 
-`/workflow on` locks the session into workflow-only delegation: `write`, `edit`, and `subagent` are removed from the active tool set, `bash` is restricted to read-only commands (mutation-shaped commands like `rm`, `mv`, `sed -i`, redirects, `git commit`/`push`, package installs are blocked), and a system-prompt directive is injected telling the model to use the `workflow` tool for any task that needs file changes or delegation. `read`, read-only `bash`, `grep`, `find`, `ls`, `workflow`, `workflow_status`, `list_agents`, and `list_workflows` remain available for investigation and orchestration.
+You can switch the execution mode of the session using the `/wf` command to enforce specific tool and behavioral restrictions on the agent. The active mode is displayed in the status widget below the editor.
+
+* **`/wf normal`** (or `/wf build`, `/workflow off`): The default mode. All tools are enabled, and the agent can write files directly or delegate.
+* **`/wf plan`**: Read-only mode. Blocks all write tools (`write`, `edit`) and delegation tools (`subagent`, `workflow`). Restricts `bash` to read-only commands (e.g. `cat`, `grep`, `ls`, `git diff`). Use this for safe, modification-free planning and codebase research.
+* **`/wf workflow`** (or `/wf on`, `/workflow on`): Enforced delegation mode. Blocks direct writes (`write`, `edit`) and direct subagents (`subagent`). Forces the agent to write a graph script and execute it via the `workflow` tool for any file changes or task delegation. `read`, read-only `bash`, `grep`, `find`, `ls`, `workflow`, `workflow_status`, `list_agents`, and `list_workflows` remain available.
 
 Use the `list_workflows` tool to discover available pre-built and saved workflows (such as "tdd" and "review_loop") that you can run instantly via the `loadWorkflow` parameter. Use the `list_agents` tool to discover available subagents and their roles.
 
-`/workflow off` restores the exact tool set active before the mode was entered. `/workflow` or `/workflow status` reports current state without changing anything.
-
-If you are the agent and workflow mode is active (you'll see it in the injected system-prompt directive, or a blocked-tool error message), do not try to work around it — write a workflow script and call the `workflow` tool instead of attempting write/edit/subagent or a mutating bash command.
+If you are the agent and a restricted mode is active (you'll see it in the injected system-prompt directive, or a blocked-tool error message), do not try to work around it — respect the boundaries of the mode (e.g., plan/research only in plan mode, or write a workflow script in workflow mode).
 
 ## Creating Agents
 
