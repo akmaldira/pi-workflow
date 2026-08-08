@@ -38,6 +38,7 @@ import { executeGraphRun, type GraphRunReport } from "./graph-run.ts";
 import { stageRunReport } from "./result-delivery.ts";
 import { loadSavedWorkflowScript } from "./workflow-library.ts";
 import type { WorkflowManager } from "./workflow-manager.ts";
+import type { RequestBroker } from "./request-broker.ts";
 import type { ForkContextOptions } from "./types.ts";
 import { runSingleAgent } from "./execution.ts";
 
@@ -126,6 +127,8 @@ export interface GraphToolOptions {
 	 * happens through the manager's completion events instead.
 	 */
 	onRunDetached?: (info: { runId: string; done: Promise<GraphRunReport | undefined> }) => void;
+	/** The broker for judgement requests from child processes. */
+	broker?: RequestBroker;
 }
 
 export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDefinition {
@@ -317,6 +320,7 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 						ctx.sessionManager?.getSessionId() ?? process.env.PI_SUBAGENT_PARENT_SESSION,
 					artifactsDir: context.artifactsDir,
 					artifactConfig: context.artifactConfig,
+					extraEnv: context.extraEnv,
 					spawnAgent: spawnAgent as never,
 					// Built from ctx so human() actually asks. It degrades to the
 					// node's default when the run has no UI.
@@ -346,6 +350,7 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 				resume: superstepResume,
 				makeRunNode,
 				display,
+				broker: options.broker,
 				onNodeStart: options.onNodeStart,
 				onNodeComplete: options.onNodeComplete,
 				onRunComplete: options.onRunComplete,

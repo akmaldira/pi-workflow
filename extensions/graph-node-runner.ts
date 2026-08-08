@@ -256,6 +256,8 @@ export interface AgentSpawnOptions {
 	agentScope?: "user" | "project" | "both";
 	availableModels?: Array<{ provider: string; id: string; fullId: string }>;
 	preferredModelProvider?: string;
+	/** Extra environment variables injected into each spawned child. */
+	extraEnv?: Record<string, string>;
 }
 
 export type SpawnAgentFn = (
@@ -464,6 +466,7 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 				turnBudget: resolved.agent.turnBudget,
 				toolBudget: resolved.agent.toolBudget,
 				timeoutMs: resolved.agent.timeoutMs,
+				extraEnv: options.extraEnv,
 				maxSubagentDepth: resolveChildMaxSubagentDepth(
 					resolveCurrentMaxSubagentDepth(),
 					resolved.agent.maxSubagentDepth,

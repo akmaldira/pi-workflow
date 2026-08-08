@@ -510,6 +510,8 @@ export interface RunSyncOptions {
 	controlConfig?: ControlConfig;
 	onControlEvent?: (event: ControlEvent) => void;
 	agentContract?: { version: 1 };
+	/** Extra environment variables injected into the child process. */
+	extraEnv?: Record<string, string>;
 	acceptance?: AcceptanceInput;
 	acceptanceContext?: {
 		mode?: "single" | "parallel" | "chain";

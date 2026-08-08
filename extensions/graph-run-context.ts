@@ -209,6 +209,8 @@ export interface GraphRunContextOptions {
 	artifacts?: ArtifactOptions;
 	useWorktree?: boolean;
 	onWarning?: (warning: BudgetWarning) => void;
+	/** Extra env vars to inject into every spawned child. */
+	extraEnv?: Record<string, string>;
 }
 
 /**
@@ -225,6 +227,8 @@ export class GraphRunContext {
 	/** Project directory, regardless of isolation. */
 	readonly projectCwd: string;
 	readonly warnings: BudgetWarning[] = [];
+	/** Extra env vars to inject into every spawned child. */
+	readonly extraEnv: Record<string, string>;
 
 	private readonly onWarning?: (warning: BudgetWarning) => void;
 
@@ -243,6 +247,7 @@ export class GraphRunContext {
 		});
 		this.cwd = this.worktree.cwd;
 		this.onWarning = options.onWarning;
+		this.extraEnv = options.extraEnv ?? {};
 	}
 
 	/** Feeds a completed node execution into budget tracking. */

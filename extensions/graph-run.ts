@@ -22,6 +22,8 @@ import {
 } from "./graph-executor.ts";
 import type { GraphScriptResult } from "./graph-validator.ts";
 import { GraphJournal } from "./graph-journal.ts";
+import type { RequestBroker } from "./request-broker.ts";
+import { ChannelPoller, cleanupChannel, ensureChannel, PI_WORKFLOW_CHANNEL_DIR_ENV, PI_WORKFLOW_RUN_ID_ENV } from "./channel.ts";
 import type { GraphDisplayBridge } from "./graph-display-bridge.ts";
 import { GraphRunContext } from "./graph-run-context.ts";
 import type { NodeRunner } from "./graph-executor.ts";
@@ -66,6 +68,8 @@ export interface GraphRunOptions {
 	 */
 	makeRunNode: (context: GraphRunContext) => NodeRunner;
 	display?: GraphDisplayBridge;
+	/** The broker carries judgement requests. Present when background runs need ask_human/ask_supervisor. */
+	broker?: RequestBroker;
 	onNodeStart?: (info: { step: number; nodeId: string; nodeType: string; round?: number }) => void;
 	onNodeComplete?: (execution: NodeExecution) => void;
 	onRunComplete?: (result: GraphRunResult) => void;
@@ -131,14 +135,57 @@ export function formatEscalations(state: GraphState): string {
  * caller decides how to surface it.
  */
 export async function executeGraphRun(options: GraphRunOptions): Promise<GraphRunReport> {
-	const { runId, meta, graph, journalDir, scriptHash, display } = options;
+	const { runId, meta, graph, journalDir, scriptHash, display, broker } = options;
 	const nodeIds = [...graph.nodes.keys()];
+
+	// Set up the filesystem channel so child processes can reach the broker.
+	const chDir = `${options.cwd}/.pi-workflow/channels/${runId}`;
+	ensureChannel(chDir);
+
+	const channelEnv: Record<string, string> = {
+		[PI_WORKFLOW_CHANNEL_DIR_ENV]: chDir,
+		[PI_WORKFLOW_RUN_ID_ENV]: runId,
+	};
+
+	let poller: ChannelPoller | undefined;
+	if (broker) {
+		poller = new ChannelPoller(chDir, {
+			onRequest: (request) => {
+				// Bridge: channel request → broker request → broker answer → channel reply.
+				void broker
+					.ask({
+						runId: request.runId,
+						nodeId: request.nodeId,
+						agent: request.agent,
+						kind: request.kind,
+						questions: [
+							{
+								question: request.question,
+								header: request.agent ?? "Workflow Agent",
+								options: request.options,
+							},
+						],
+						default: request.default,
+						expectsReply: request.expectsReply,
+					})
+					.then((result) => {
+						poller!.reply(request.id, {
+							source: result.source,
+							answer: result.text,
+							reason: result.reason,
+						});
+					});
+			},
+		});
+		poller.start();
+	}
 
 	const context = new GraphRunContext({
 		cwd: options.cwd,
 		runId,
 		tokenBudget: options.tokenBudget,
 		useWorktree: options.useWorktree,
+		extraEnv: channelEnv,
 	});
 	const runNode = options.makeRunNode(context);
 
@@ -197,6 +244,8 @@ export async function executeGraphRun(options: GraphRunOptions): Promise<GraphRu
 		result = superstepResult;
 	} finally {
 		context.cleanup();
+		poller?.stop();
+		cleanupChannel(chDir);
 	}
 
 	journal.recordResult({

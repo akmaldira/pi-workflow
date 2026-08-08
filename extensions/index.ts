@@ -18,6 +18,7 @@ import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { buildAgentCatalogGuideline, createListAgentsTool } from "./agent-catalog.ts";
 import { createGraphWorkflowTool } from "./graph-tool.ts";
 import { installResultDelivery } from "./result-delivery.ts";
+import { sweepOrphanedChannels } from "./channel.ts";
 import { RequestBroker } from "./request-broker.ts";
 import { installBrokerSinks, setBrokerContext } from "./broker-sinks.ts";
 import { runSingleAgent } from "./execution.ts";
@@ -496,10 +497,18 @@ export default function (pi: ExtensionAPI) {
 	// Graph-based coordination: nodes are agents, edges decide where each
 	// result goes next. Replaces the imperative agent()/parallel() script.
 	//
+	// The broker carries judgement requests between processes. ask_human,
+	// ask_supervisor, and (after re-routing) the human() node all pass through
+	// here. The sinks route each request to whoever can answer it: the user's
+	// TUI for human questions, the main agent's conversation for supervisor ones.
+	const globalBroker = new RequestBroker();
+	installBrokerSinks({ pi, broker: globalBroker });
+	globalBroker.start();
+
 	// The manager is passed in so runs appear in /workflows, the task panel,
 	// and workflow_status. Without it the tool still runs, but every one of
 	// those surfaces reports an empty run list.
-	const workflowTool = createGraphWorkflowTool({ workflowManager: globalWorkflowManager });
+	const workflowTool = createGraphWorkflowTool({ workflowManager: globalWorkflowManager, broker: globalBroker });
 	pi.registerTool(workflowTool);
 	registerWorkflowStatusTool(pi, globalWorkflowManager);
 
@@ -508,14 +517,6 @@ export default function (pi: ExtensionAPI) {
 	// finished run would be visible only in /workflows and the model would never
 	// learn what it produced.
 	installResultDelivery(pi, globalWorkflowManager);
-
-	// The broker carries judgement requests between processes. ask_human,
-	// ask_supervisor, and (after re-routing) the human() node all pass through
-	// here. The sinks route each request to whoever can answer it: the user's
-	// TUI for human questions, the main agent's conversation for supervisor ones.
-	const globalBroker = new RequestBroker();
-	installBrokerSinks({ pi, broker: globalBroker });
-	globalBroker.start();
 
 	// --- Agent Catalog ---
 	pi.registerTool(createListAgentsTool());
@@ -655,6 +656,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (ctx?.cwd) {
 			refreshAgentCatalogGuidelines(ctx.cwd);
+			sweepOrphanedChannels(ctx.cwd);
 		}
 		if (ctx && ctx.ui) {
 			registerTaskPanel(pi, globalWorkflowManager, ctx.ui);

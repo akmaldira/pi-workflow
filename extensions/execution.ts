@@ -347,6 +347,7 @@ async function runSingleAttempt(
 		...sharedEnv,
 		...getSubagentDepthEnv(options.maxSubagentDepth),
 		...(shared.forkParentSessionFile ? { PI_FORK_PARENT_SESSION_FILE: shared.forkParentSessionFile } : {}),
+		...(options.extraEnv ?? {}),
 	};
 
 	const spawnSpec = getPiSpawnCommand(args);
