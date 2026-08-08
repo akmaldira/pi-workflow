@@ -76,7 +76,7 @@ g.run();`;
 			{ name: "workflow_b", description: "second one", whenToUse: "when doing b things" },
 		);
 
-		const saved = listSavedWorkflows(tempDir);
+		const saved = listSavedWorkflows(tempDir).filter((w) => w.source !== "builtin");
 		expect(saved.length).toBe(2);
 		expect(saved[0].name).toBe("workflow_b");
 		expect(saved[0].whenToUse).toBe("when doing b things");
@@ -86,7 +86,7 @@ g.run();`;
 	});
 
 	it("returns an empty list when no workflows have been saved", () => {
-		expect(listSavedWorkflows(tempDir)).toEqual([]);
+		expect(listSavedWorkflows(tempDir).filter((w) => w.source !== "builtin")).toEqual([]);
 	});
 
 	it("skips unparsable files when listing instead of throwing", () => {
@@ -96,7 +96,7 @@ g.run();`;
 		const scriptGood = `export const meta = { name: 'good_workflow', description: 'fine' };\nconst g = graph();\ng.node('a', agent('scout', () => 'do it'));\ng.edge('a', END);\ng.run();`;
 		saveWorkflowScript(tempDir, scriptGood, { name: "good_workflow", description: "fine" });
 
-		const saved = listSavedWorkflows(tempDir);
+		const saved = listSavedWorkflows(tempDir).filter((w) => w.source !== "builtin");
 		expect(saved.length).toBe(1);
 		expect(saved[0].name).toBe("good_workflow");
 	});
@@ -122,5 +122,55 @@ g.run();`;
 		const libraryDir = getWorkflowLibraryDir(tempDir);
 		expect(path.dirname(filePath)).toBe(libraryDir);
 		expect(filePath.startsWith(libraryDir)).toBe(true);
+	});
+
+	describe("three-tier loading and list merging (builtin, user, project)", () => {
+		it("loads built-in workflows from bundled-workflows/", () => {
+			const loaded = loadSavedWorkflowScript(tempDir, "tdd");
+			expect(loaded).toBeDefined();
+			expect(loaded).toContain("name: \"tdd\"");
+			expect(loaded).toContain("const g = graph();");
+		});
+
+		it("listSavedWorkflows merges built-ins, and project overrides/shadows them", () => {
+			// List initially contains built-ins
+			const initial = listSavedWorkflows(tempDir);
+			expect(initial.map(w => w.name)).toContain("tdd");
+			expect(initial.map(w => w.name)).toContain("review_loop");
+			const tddBuiltin = initial.find(w => w.name === "tdd")!;
+			expect(tddBuiltin.source).toBe("builtin");
+
+			// Shadow/overwrite tdd in the project scope
+			const projectScript = `export const meta = { name: 'tdd', description: 'project-level custom tdd' };\nconst g = graph();\ng.node('x', agent('worker', () => 'do x'));\ng.edge('x', END);\ng.run();`;
+			saveWorkflowScript(tempDir, projectScript, { name: "tdd", description: "project-level custom tdd" });
+
+			// Listing now shows the project tier is active and shadows the builtin
+			const updated = listSavedWorkflows(tempDir);
+			const tddProject = updated.find(w => w.name === "tdd")!;
+			expect(tddProject.source).toBe("project");
+			expect(tddProject.description).toBe("project-level custom tdd");
+
+			// Loading returns the project-level version
+			const loaded = loadSavedWorkflowScript(tempDir, "tdd");
+			expect(loaded).toContain("project-level custom tdd");
+			expect(loaded).not.toContain("Design the contract and interfaces");
+		});
+	});
+
+	describe("list_workflows tool", () => {
+		it("lists workflows programmatically", async () => {
+			const { createListWorkflowsTool } = await import("../extensions/workflow-library.ts");
+			const tool = createListWorkflowsTool();
+
+			// Simple execution
+			const res = await tool.execute("id", {}, undefined, undefined, { cwd: tempDir });
+			expect(res.content[0].text).toContain("tdd (builtin)");
+			expect(res.content[0].text).toContain("review_loop (builtin)");
+			expect(res.details.count).toBeGreaterThanOrEqual(2);
+
+			// Detailed execution
+			const resDetailed = await tool.execute("id", { detailed: true }, undefined, undefined, { cwd: tempDir });
+			expect(resDetailed.content[0].text).toContain("When to use:");
+		});
 	});
 });

@@ -10,6 +10,7 @@
   "files": [
     "extensions/",
     "bundled-agents/",
+    "bundled-workflows/",
     "skills/",
     "README.md"
   ],

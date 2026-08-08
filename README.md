@@ -373,6 +373,10 @@ Single or parallel delegation, unchanged. Use it when there is no coordination t
 Lists available agents. The roster is also injected into `workflow`'s guidelines, so the model
 knows what exists without asking.
 
+### `list_workflows`
+
+Lists all available workflows across all three scopes (built-in, user-global, and project-saved).
+
 ### `workflow_status`
 
 Inspects a run's progress or investigates a failure.

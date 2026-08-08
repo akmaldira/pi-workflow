@@ -29,7 +29,7 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 
 /** Tools that remain (or become) active while workflow mode is on. */
-const WORKFLOW_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "workflow", "workflow_status"];
+const WORKFLOW_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "workflow", "workflow_status", "list_agents", "list_workflows"];
 
 /** Tools explicitly removed from the active set while workflow mode is on. */
 const WORKFLOW_MODE_DISABLED_TOOLS = new Set<string>(["write", "edit", "subagent"]);
@@ -135,7 +135,8 @@ For any task that requires changing files or delegating to an agent:
      * \`human(prompt | promptFn, { options, default })\` to ask the user.
      * \`mainAgent(prompt | promptFn)\` to pause for your own judgment mid-run.
    - Route between them with \`g.edge(from, to)\` or conditional \`g.edge(from, (state, result) => target)\`.
-5. Use \`workflow_status\` to inspect a run's progress or investigate a failure.
+5. Use the \`list_workflows\` tool to see available pre-built and saved workflows (such as "tdd" and "review_loop") that you can run instantly via the \`loadWorkflow\` parameter.
+6. Use \`workflow_status\` to inspect a run's progress or investigate a failure.
 
 If the user's request is purely conversational or a question that needs no file changes or delegation,
 just answer directly — workflow mode does not force you to call the \`workflow\` tool for every message,

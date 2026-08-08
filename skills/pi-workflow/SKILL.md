@@ -229,7 +229,9 @@ The user can also save a workflow after the fact from the `/workflows` TUI navig
 
 ## Workflow-Only Mode (`/workflow`)
 
-`/workflow on` locks the session into workflow-only delegation: `write`, `edit`, and `subagent` are removed from the active tool set, `bash` is restricted to read-only commands (mutation-shaped commands like `rm`, `mv`, `sed -i`, redirects, `git commit`/`push`, package installs are blocked), and a system-prompt directive is injected telling the model to use the `workflow` tool for any task that needs file changes or delegation. `read`, read-only `bash`, `grep`, `find`, `ls`, `workflow`, and `workflow_status` remain available for investigation and orchestration.
+`/workflow on` locks the session into workflow-only delegation: `write`, `edit`, and `subagent` are removed from the active tool set, `bash` is restricted to read-only commands (mutation-shaped commands like `rm`, `mv`, `sed -i`, redirects, `git commit`/`push`, package installs are blocked), and a system-prompt directive is injected telling the model to use the `workflow` tool for any task that needs file changes or delegation. `read`, read-only `bash`, `grep`, `find`, `ls`, `workflow`, `workflow_status`, `list_agents`, and `list_workflows` remain available for investigation and orchestration.
+
+Use the `list_workflows` tool to discover available pre-built and saved workflows (such as "tdd" and "review_loop") that you can run instantly via the `loadWorkflow` parameter. Use the `list_agents` tool to discover available subagents and their roles.
 
 `/workflow off` restores the exact tool set active before the mode was entered. `/workflow` or `/workflow status` reports current state without changing anything.
 

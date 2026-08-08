@@ -10,7 +10,10 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { parse } from "acorn";
+import { Type } from "typebox";
 import { extractGraphMeta } from "./graph-validator.ts";
 import type { WorkflowMeta } from "./workflow-display-types.ts";
 
@@ -22,6 +25,17 @@ export interface SavedWorkflowInfo {
 	filePath: string;
 	savedAt: number;
 	sizeBytes: number;
+	source: "builtin" | "user" | "project";
+}
+
+export const BUILTIN_WORKFLOWS_DIR = path.resolve(
+	path.dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"bundled-workflows",
+);
+
+export function getUserWorkflowsDir(): string {
+	return path.join(getAgentDir(), "workflows");
 }
 
 export function getWorkflowLibraryDir(cwd: string): string {
@@ -70,63 +84,153 @@ export function saveWorkflowScript(cwd: string, script: string, meta: WorkflowMe
 }
 
 /**
- * Load a previously saved workflow script by name. Returns undefined if not
- * found (caller should list available names for a helpful error message).
+ * Load a previously saved workflow script by name. Searches in order of precedence:
+ * project-local (.pi-workflow/workflows/), user-global (~/.pi/agent/workflows/),
+ * and bundled/built-in workflows (bundled-workflows/).
  */
 export function loadSavedWorkflowScript(cwd: string, name: string): string | undefined {
-	const filePath = getWorkflowFilePath(cwd, name);
-	if (!fs.existsSync(filePath)) return undefined;
-	try {
-		return fs.readFileSync(filePath, "utf-8");
-	} catch {
-		return undefined;
+	const sanitizedName = `${sanitizeWorkflowName(name)}.js`;
+
+	// 1. Project-local
+	const projectPath = path.join(getWorkflowLibraryDir(cwd), sanitizedName);
+	if (fs.existsSync(projectPath)) {
+		try { return fs.readFileSync(projectPath, "utf-8"); } catch {}
 	}
+
+	// 2. User-global
+	const userPath = path.join(getUserWorkflowsDir(), sanitizedName);
+	if (fs.existsSync(userPath)) {
+		try { return fs.readFileSync(userPath, "utf-8"); } catch {}
+	}
+
+	// 3. Bundled/built-in
+	const builtinPath = path.join(BUILTIN_WORKFLOWS_DIR, sanitizedName);
+	if (fs.existsSync(builtinPath)) {
+		try { return fs.readFileSync(builtinPath, "utf-8"); } catch {}
+	}
+
+	return undefined;
 }
 
 /**
- * List all workflows saved in the project-local library, parsing each
- * file's `meta` so callers get name/description/whenToUse without having to
- * re-parse themselves. Corrupt/unparsable files are skipped silently.
+ * Helper to scan a specific directory and parse the workflow scripts inside.
+ */
+function scanWorkflowDir(dir: string, source: "builtin" | "user" | "project"): SavedWorkflowInfo[] {
+	if (!fs.existsSync(dir)) return [];
+	const results: SavedWorkflowInfo[] = [];
+	try {
+		for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+			if (!entry.isFile() || !entry.name.endsWith(".js")) continue;
+			const filePath = path.join(dir, entry.name);
+			try {
+				const content = fs.readFileSync(filePath, "utf-8");
+				const meta = extractGraphMeta(
+					parse(content, { ecmaVersion: "latest", sourceType: "module" }) as never,
+				);
+				const stat = fs.statSync(filePath);
+				results.push({
+					name: meta.name,
+					description: meta.description,
+					whenToUse: meta.whenToUse,
+					filePath,
+					savedAt: stat.mtimeMs,
+					sizeBytes: stat.size,
+					source,
+				});
+			} catch {
+				// Skip files that fail to parse (e.g. hand-edited, corrupted).
+			}
+		}
+	} catch {}
+	return results;
+}
+
+/**
+ * List all workflows available across all three tiers: project, user, and built-in.
+ * Later tiers (project > user > built-in) shadow earlier ones if they share the same name.
  */
 export function listSavedWorkflows(cwd: string): SavedWorkflowInfo[] {
-	const dir = getWorkflowLibraryDir(cwd);
-	if (!fs.existsSync(dir)) return [];
+	const projectWfs = scanWorkflowDir(getWorkflowLibraryDir(cwd), "project");
+	const userWfs = scanWorkflowDir(getUserWorkflowsDir(), "user");
+	const builtinWfs = scanWorkflowDir(BUILTIN_WORKFLOWS_DIR, "builtin");
 
-	const results: SavedWorkflowInfo[] = [];
-	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-		if (!entry.isFile() || !entry.name.endsWith(".js")) continue;
-		const filePath = path.join(dir, entry.name);
-		try {
-			const content = fs.readFileSync(filePath, "utf-8");
-			// Only the meta header is needed to list a workflow, so parse rather
-			// than fully build: a graph that fails validation for an unrelated
-			// reason should still be visible and deletable.
-			const meta = extractGraphMeta(
-				parse(content, { ecmaVersion: "latest", sourceType: "module" }) as never,
-			);
-			const stat = fs.statSync(filePath);
-			results.push({
-				name: meta.name,
-				description: meta.description,
-				whenToUse: meta.whenToUse,
-				filePath,
-				savedAt: stat.mtimeMs,
-				sizeBytes: stat.size,
-			});
-		} catch {
-			// Skip files that fail to parse (e.g. hand-edited, corrupted).
-		}
-	}
+	const merged = new Map<string, SavedWorkflowInfo>();
 
-	return results.sort((a, b) => b.savedAt - a.savedAt);
+	// Add in order of ascending precedence so shadowing happens naturally
+	for (const wf of builtinWfs) merged.set(wf.name, wf);
+	for (const wf of userWfs) merged.set(wf.name, wf);
+	for (const wf of projectWfs) merged.set(wf.name, wf);
+
+	return Array.from(merged.values()).sort((a, b) => b.savedAt - a.savedAt);
 }
 
 /**
- * Delete a saved workflow by name. Returns true if a file was removed.
+ * Delete a saved workflow by name from the project or user scopes.
+ * Built-in workflows are read-only and cannot be deleted.
  */
 export function deleteSavedWorkflow(cwd: string, name: string): boolean {
-	const filePath = getWorkflowFilePath(cwd, name);
-	if (!fs.existsSync(filePath)) return false;
-	fs.unlinkSync(filePath);
-	return true;
+	const sanitizedName = `${sanitizeWorkflowName(name)}.js`;
+
+	const projectPath = path.join(getWorkflowLibraryDir(cwd), sanitizedName);
+	if (fs.existsSync(projectPath)) {
+		try {
+			fs.unlinkSync(projectPath);
+			return true;
+		} catch {}
+	}
+
+	const userPath = path.join(getUserWorkflowsDir(), sanitizedName);
+	if (fs.existsSync(userPath)) {
+		try {
+			fs.unlinkSync(userPath);
+			return true;
+		} catch {}
+	}
+
+	return false;
+}
+
+const ListWorkflowsParams = Type.Object({
+	detailed: Type.Optional(
+		Type.Boolean({
+			description: "If true, return the full details of each workflow including size and whenToUse. Default: false.",
+		}),
+	),
+});
+
+export function createListWorkflowsTool() {
+	return {
+		name: "list_workflows",
+		label: "List Workflows",
+		description: "List the workflows available for execution, including built-in, user-global, and project-saved scripts.",
+		parameters: ListWorkflowsParams,
+		async execute(_toolCallId: string, params: { detailed?: boolean }, _signal: any, _onUpdate: any, ctx: any) {
+			const saved = listSavedWorkflows(ctx.cwd);
+			if (saved.length === 0) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: "No workflows available. Save a workflow by calling workflow with saveWorkflow: true.",
+						},
+					],
+					details: { count: 0, workflows: [] },
+				};
+			}
+
+			const body = params.detailed
+				? saved.map((w) => `• ${w.name} (${w.source}):\n  Description: ${w.description}\n  When to use: ${w.whenToUse ?? "N/A"}\n  Saved: ${new Date(w.savedAt).toISOString()}`).join("\n\n")
+				: saved.map((w) => `- ${w.name} (${w.source}): ${w.description}`).join("\n");
+
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `${saved.length} workflow${saved.length === 1 ? "" : "s"} available:\n\n${body}`,
+					},
+				],
+				details: { count: saved.length, workflows: saved },
+			};
+		},
+	};
 }

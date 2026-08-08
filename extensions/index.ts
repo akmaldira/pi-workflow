@@ -25,7 +25,7 @@ import {
 	resolveChildMaxSubagentDepth,
 	resolveCurrentMaxSubagentDepth,
 } from "./types.ts";
-import { listSavedWorkflows, deleteSavedWorkflow } from "./workflow-library.ts";
+import { listSavedWorkflows, deleteSavedWorkflow, createListWorkflowsTool } from "./workflow-library.ts";
 import { getFinalOutput } from "./utils.ts";
 import { TechnicalFailureError, type FailureClassification } from "./failure-classifier.ts";
 import { WorkflowManager } from "./workflow-manager.ts";
@@ -502,6 +502,9 @@ export default function (pi: ExtensionAPI) {
 
 	// --- Agent Catalog ---
 	pi.registerTool(createListAgentsTool());
+
+	// --- Workflow Catalog ---
+	pi.registerTool(createListWorkflowsTool());
 
 	/**
 	 * Injects the live agent roster into the delegation tools' guidelines.
