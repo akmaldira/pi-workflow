@@ -18,6 +18,8 @@ import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { buildAgentCatalogGuideline, createListAgentsTool } from "./agent-catalog.ts";
 import { createGraphWorkflowTool } from "./graph-tool.ts";
 import { installResultDelivery } from "./result-delivery.ts";
+import { RequestBroker } from "./request-broker.ts";
+import { installBrokerSinks, setBrokerContext } from "./broker-sinks.ts";
 import { runSingleAgent } from "./execution.ts";
 import {
 	type SingleResult,
@@ -507,6 +509,14 @@ export default function (pi: ExtensionAPI) {
 	// learn what it produced.
 	installResultDelivery(pi, globalWorkflowManager);
 
+	// The broker carries judgement requests between processes. ask_human,
+	// ask_supervisor, and (after re-routing) the human() node all pass through
+	// here. The sinks route each request to whoever can answer it: the user's
+	// TUI for human questions, the main agent's conversation for supervisor ones.
+	const globalBroker = new RequestBroker();
+	installBrokerSinks({ pi, broker: globalBroker });
+	globalBroker.start();
+
 	// --- Agent Catalog ---
 	pi.registerTool(createListAgentsTool());
 
@@ -638,6 +648,7 @@ export default function (pi: ExtensionAPI) {
 
 	// --- Session start: activate workflow tool & task panel ---
 	pi.on("session_start", (_event, ctx) => {
+		setBrokerContext(ctx);
 		const active = pi.getActiveTools();
 		if (!active.includes(workflowTool.name)) {
 			pi.setActiveTools([...active, workflowTool.name]);

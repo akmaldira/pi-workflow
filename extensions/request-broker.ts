@@ -261,6 +261,28 @@ export class RequestBroker {
 			.map((e) => e.request);
 	}
 
+	private intervalId: ReturnType<typeof setInterval> | null = null;
+
+	/**
+	 * Starts the tick loop that drives coalescing windows and expiry checks.
+	 *
+	 * `unref`ed so it never keeps the process alive on its own. The interval is
+	 * fast enough (200ms) to close a 300ms coalescing window within the same
+	 * human-perceptible moment, but slow enough to be invisible.
+	 */
+	start(intervalMs = 200): void {
+		if (this.intervalId) return;
+		this.intervalId = setInterval(() => this.tick(), intervalMs);
+		this.intervalId.unref?.();
+	}
+
+	stop(): void {
+		if (this.intervalId) {
+			clearInterval(this.intervalId);
+			this.intervalId = null;
+		}
+	}
+
 	/** For tests: whether the broker has no outstanding requests. */
 	isIdle(): boolean {
 		return this.pending.size === 0 && this.currentBatch === null;
