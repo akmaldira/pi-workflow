@@ -31,8 +31,16 @@ message bus, no dispatcher. Routing plus shared state is the entire mechanism.
 
 ## Install
 
+From NPM (stable release):
+
 ```bash
 pi install npm:pi-workflow
+```
+
+From GitHub (latest main branch):
+
+```bash
+pi install git:github.com/bejorock/pi-workflow
 ```
 
 Nine agents ship with it and are available immediately — no scaffolding step.
