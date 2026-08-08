@@ -58,8 +58,8 @@ g.run({ target: args.target });", args={ target: "auth module" })
 **Building a graph:**
 - `graph()` — create the graph (exactly one per script)
 - `g.node(id, agent(name, (state) => prompt))` — an agent node
-- `g.node(id, mainAgent(prompt))` — pause for your own judgement mid-run
-- `g.node(id, human(prompt, { options, default }))` — ask the user; always give a `default`
+- `g.node(id, mainAgent(prompt | promptFn))` — pause for your own judgement mid-run
+- `g.node(id, human(prompt | promptFn, { options, default }))` — ask the user; always give a `default`
 - `g.edge(from, to)` / `g.edge(from, END)` — direct routing
 - `g.edge(from, (state, result) => target)` — conditional routing
 - `g.run(initialState)` — start it
