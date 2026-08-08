@@ -126,11 +126,16 @@ delegation are unavailable in this mode:
 
 For any task that requires changing files or delegating to an agent:
 1. Use \`read\`/\`bash\` (read-only) first if you need to investigate the codebase.
-2. Write a graph script and call the \`workflow\` tool — its nodes are subagents that DO have full
-   tool access (including write/edit), scoped to their own isolated run. Define nodes with
-   \`g.node(id, agent(name, promptFn))\` and route between them with \`g.edge(from, to)\` or a
-   conditional \`g.edge(from, (state, result) => target)\`.
-3. Use \`workflow_status\` to inspect a run's progress or investigate a failure.
+2. Use the \`list_agents\` tool to discover available subagents and their capabilities.
+3. Consult the \`pi-workflow\` skill (or load it) for complete syntax, API reference, closed escalation vocabulary (like \`contract\`, \`tests\`, \`environment\`, \`requirements\`, \`information\`, \`conflict\`), and advanced coordination patterns.
+4. Write a graph script and call the \`workflow\` tool — its nodes are subagents that DO have full
+   tool access (including write/edit), scoped to their own isolated run. 
+   - Define nodes using:
+     * \`agent(name, promptFn)\` for subagents.
+     * \`human(prompt | promptFn, { options, default })\` to ask the user.
+     * \`mainAgent(prompt | promptFn)\` to pause for your own judgment mid-run.
+   - Route between them with \`g.edge(from, to)\` or conditional \`g.edge(from, (state, result) => target)\`.
+5. Use \`workflow_status\` to inspect a run's progress or investigate a failure.
 
 If the user's request is purely conversational or a question that needs no file changes or delegation,
 just answer directly — workflow mode does not force you to call the \`workflow\` tool for every message,
