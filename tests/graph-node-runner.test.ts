@@ -472,22 +472,6 @@ describe("createNodeRunner: agent nodes", () => {
 describe("createNodeRunner: interactive nodes", () => {
 	const cwd = "/nonexistent-project";
 
-	it("calls the human handler and returns the answer", async () => {
-		const onHuman = vi.fn().mockResolvedValue("yes");
-		const runner = createNodeRunner({
-			cwd,
-			runId: "r1",
-			spawnAgent: vi.fn() as never,
-			handlers: { onHuman },
-		});
-
-		const node = { id: "ask", def: human("Approve?", { options: ["yes", "no"] }) };
-		const outcome = await runner(node, {}, { step: 1, runId: "r1" });
-
-		expect(onHuman).toHaveBeenCalledOnce();
-		expect(outcome.result).toMatchObject({ status: "ok", answer: "yes" });
-	});
-
 	it("uses the declared default when there is no UI", async () => {
 		// Headless must not hang. This is the property that matters most.
 		const runner = createNodeRunner({ cwd, runId: "r1", spawnAgent: vi.fn() as never });
@@ -515,16 +499,29 @@ describe("createNodeRunner: interactive nodes", () => {
 	// results were given a toString(). Confirmed against a real model via
 	// the workflow tool's input.md artifact before this fix existed.
 	it("a human node's result interpolates to its answer, not [object Object]", async () => {
-		const onHuman = vi.fn().mockResolvedValue("fast");
+		const broker = new RequestBroker({ coalesceMs: 0 });
 		const runner = createNodeRunner({
 			cwd,
 			runId: "r1",
 			spawnAgent: vi.fn() as never,
-			handlers: { onHuman },
+			broker,
+		});
+
+		broker.onBatch((batch) => {
+			broker.resolve(batch[0].id, {
+				source: "human",
+				text: "fast",
+				answers: {
+					questions: [{ questionIndex: 0, kind: "option", answer: "fast" }],
+					cancelled: false,
+				},
+			});
 		});
 
 		const node = { id: "ask", def: human("Pick a mode", { options: ["fast", "thorough"], default: "fast" }) };
-		const outcome = await runner(node, {}, { step: 1, runId: "r1" });
+		const outcomePromise = runner(node, {}, { step: 1, runId: "r1" });
+		broker.tick();
+		const outcome = await outcomePromise;
 
 		expect(`${outcome.result}`).toBe("fast");
 		expect(`Chosen mode: "${outcome.result}"`).toBe('Chosen mode: "fast"');
@@ -552,15 +549,29 @@ describe("createNodeRunner: interactive nodes", () => {
 		// rehydrateState() re-attaches toString() after journal replay, where
 		// JSON.parse has stripped it. Only kicks in for values with a `text`
 		// field — verifies human results qualify now too.
-		const onHuman = vi.fn().mockResolvedValue("fast");
+		const broker = new RequestBroker({ coalesceMs: 0 });
 		const runner = createNodeRunner({
 			cwd,
 			runId: "r1",
 			spawnAgent: vi.fn() as never,
-			handlers: { onHuman },
+			broker,
 		});
+
+		broker.onBatch((batch) => {
+			broker.resolve(batch[0].id, {
+				source: "human",
+				text: "fast",
+				answers: {
+					questions: [{ questionIndex: 0, kind: "option", answer: "fast" }],
+					cancelled: false,
+				},
+			});
+		});
+
 		const node = { id: "ask", def: human("Pick a mode", { options: ["fast", "thorough"], default: "fast" }) };
-		const outcome = await runner(node, {}, { step: 1, runId: "r1" });
+		const outcomePromise = runner(node, {}, { step: 1, runId: "r1" });
+		broker.tick();
+		const outcome = await outcomePromise;
 
 		const roundTripped = JSON.parse(JSON.stringify({ ask: outcome.result }));
 		expect(`${roundTripped.ask}`).toBe("[object Object]"); // proves toString() was lost by JSON

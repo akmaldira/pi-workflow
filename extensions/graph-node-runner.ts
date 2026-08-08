@@ -276,12 +276,6 @@ export type SpawnAgentFn = (
 ) => Promise<SingleResult>;
 
 /**
- * Handler for the node type that pauses the graph.
- *
- * Supplied by the tool layer, which owns the UI and the parent session.
- * Absent handlers degrade rather than hang: see task #16/#17.
- */
-/**
  * What a human node produced, and how.
  *
  * `source` is not decoration: an edge that cannot tell "the human chose
@@ -295,16 +289,8 @@ export interface HumanHandlerResult {
 	source: "human" | "default" | "none";
 }
 
-export interface InteractiveHandlers {
-	onHuman?: (
-		node: { prompt: string; options?: string[]; default?: string },
-		state: GraphState,
-	) => Promise<string | HumanHandlerResult>;
-}
-
 export interface CreateNodeRunnerOptions extends AgentSpawnOptions {
 	spawnAgent: SpawnAgentFn;
-	handlers?: InteractiveHandlers;
 	broker?: RequestBroker;
 }
 
@@ -380,60 +366,23 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 					};
 				}
 
-				if (!options.handlers?.onHuman) {
-					const answer = def.default;
-					return {
-						result: withResultText({
-							status: def.default !== undefined ? "default" : "skipped",
-							// `text` mirrors `answer` so interpolating a human node's
-							// result into a downstream prompt (`${state.ask}`) yields
-							// the chosen value instead of "[object Object]" — the same
-							// contract agent() results carry. `answer` stays for callers
-							// that want the structured field by name.
-							text: answer ?? "",
-							answer,
-							reason:
-								def.default !== undefined
-									? "No UI available; used the node's default answer."
-									: "No UI available and no default was set.",
-							prompt,
-						}),
-					};
-				}
-				const raw = await options.handlers.onHuman(
-					{ prompt, options: def.options, default: def.default },
-					state,
-				);
-
-				// A bare string is accepted for convenience, but cannot say how it
-				// was obtained, so it is inferred conservatively: only a non-empty
-				// value that differs from the default counts as a real answer.
-				const reported: HumanHandlerResult =
-					typeof raw === "string"
-						? {
-								answer: raw,
-								source: raw === "" ? "none" : raw === def.default ? "default" : "human",
-							}
-						: raw;
-
-				const status =
-					reported.source === "human" ? "ok" : reported.source === "default" ? "default" : "skipped";
-				const answer = reported.answer || def.default;
-
+				// Headless fallback when no broker is available.
+				const answer = def.default;
 				return {
 					result: withResultText({
-						status,
+						status: def.default !== undefined ? "default" : "skipped",
+						// `text` mirrors `answer` so interpolating a human node's
+						// result into a downstream prompt (`${state.ask}`) yields
+						// the chosen value instead of "[object Object]" — the same
+						// contract agent() results carry. `answer` stays for callers
+						// that want the structured field by name.
 						text: answer ?? "",
 						answer,
+						reason:
+							def.default !== undefined
+								? "No UI available; used the node's default answer."
+								: "No UI available and no default was set.",
 						prompt,
-						...(status === "ok"
-							? {}
-							: {
-									reason:
-										status === "default"
-											? "No answer was given; fell back to the node's default."
-											: "No answer was given and no default was set.",
-								}),
 					}),
 				};
 			}

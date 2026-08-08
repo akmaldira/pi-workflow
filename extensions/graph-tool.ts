@@ -29,8 +29,7 @@ import {
 	loadGraphSuperstepResumeState,
 } from "./graph-journal.ts";
 import type { SuperstepResumeInput } from "./graph-executor.ts";
-import { createNodeRunner, type InteractiveHandlers } from "./graph-node-runner.ts";
-import { createInteractiveHandlers } from "./graph-interactive.ts";
+import { createNodeRunner } from "./graph-node-runner.ts";
 import { buildGraphFromScript, GraphValidationError } from "./graph-validator.ts";
 import { GraphDisplayBridge } from "./graph-display-bridge.ts";
 import type { GraphRunContext } from "./graph-run-context.ts";
@@ -110,11 +109,6 @@ export interface GraphToolOptions {
 	 * Optional so the tool stays usable headless and in tests.
 	 */
 	workflowManager?: WorkflowManager;
-	/**
-	 * Overrides the ctx-derived interactive handlers. Tests inject stubs;
-	 * production leaves it unset so human() reaches the real UI.
-	 */
-	handlers?: InteractiveHandlers;
 	onRunStart?: (info: { runId: string; name: string; nodeIds: string[] }) => void;
 	onNodeStart?: (info: { step: number; nodeId: string; nodeType: string }) => void;
 	onNodeComplete?: (execution: NodeExecution) => void;
@@ -323,14 +317,6 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 					extraEnv: context.extraEnv,
 					spawnAgent: spawnAgent as never,
 					broker: options.broker,
-					// Built from ctx so human() actually asks. It degrades to the
-					// node's default when the run has no UI.
-					handlers:
-						options.handlers ??
-						createInteractiveHandlers({
-							ctx,
-							onEvent: (message) => display?.log(message),
-						}),
 				});
 
 			// Detach. Everything below this line happens after the tool has

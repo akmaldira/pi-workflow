@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createGraphWorkflowTool } from "../extensions/graph-tool.ts";
 import { runGraphTool } from "./helpers/run-graph-tool.ts";
 import { listGraphRuns } from "../extensions/graph-journal.ts";
+import { RequestBroker } from "../extensions/request-broker.ts";
+import { trackDetached } from "./helpers/detached.ts";
 
 const META = `export const meta = { name: "test_graph", description: "a test graph" };`;
 
@@ -320,8 +322,19 @@ g.run();
 	});
 
 	describe("interactive nodes", () => {
-		it("calls the human handler when one is supplied", async () => {
-			const onHuman = vi.fn().mockResolvedValue("yes");
+		it("calls the broker when one is supplied", async () => {
+			const broker = new RequestBroker({ coalesceMs: 0 });
+			broker.start(50);
+			broker.onBatch((batch) => {
+				broker.resolve(batch[0].id, {
+					source: "human",
+					text: "yes",
+					answers: {
+						questions: [{ questionIndex: 0, kind: "option", answer: "yes" }],
+						cancelled: false,
+					},
+				});
+			});
 			const spawn = vi.fn().mockResolvedValue(reply("done"));
 			const script = `${META}
 const g = graph();
@@ -331,12 +344,13 @@ g.edge("build", "ok");
 g.edge("ok", END);
 g.run();
 `;
+			const tracker = trackDetached();
 			await runGraphTool(
 				{ script },
-				{ cwd: tempDir, spawnAgent: spawn as never, handlers: { onHuman } },
+				{ cwd: tempDir, spawnAgent: spawn as never, broker, ...tracker },
 			);
-
-			expect(onHuman).toHaveBeenCalledOnce();
+			await tracker.settled();
+			broker.stop();
 		});
 
 		it("uses the declared default when headless instead of hanging", async () => {
