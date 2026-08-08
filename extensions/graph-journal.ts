@@ -105,11 +105,36 @@ export interface GraphJournalResultRecord {
 	error?: string;
 }
 
+/** Recorded when a judgement question is submitted to the broker. */
+export interface GraphJournalBrokerRequestRecord {
+	type: "broker_request";
+	requestId: string;
+	runId: string;
+	nodeId?: string;
+	agent?: string;
+	kind: "human" | "supervisor";
+	question: string;
+	timestamp: number;
+}
+
+/** Recorded when the broker resolves a request. */
+export interface GraphJournalBrokerAnswerRecord {
+	type: "broker_answer";
+	requestId: string;
+	runId: string;
+	source: string;
+	answer?: string;
+	reason?: string;
+	timestamp: number;
+}
+
 export type GraphJournalRecord =
 	| GraphJournalRunRecord
 	| GraphJournalNodeRecord
 	| GraphJournalRoundRecord
-	| GraphJournalResultRecord;
+	| GraphJournalResultRecord
+	| GraphJournalBrokerRequestRecord
+	| GraphJournalBrokerAnswerRecord;
 
 export interface GraphResumeState {
 	/** Node executions already recorded, in order. */
@@ -252,6 +277,44 @@ export class GraphJournal {
 			totalTokens: this.totalTokens,
 			durationMs: result.durationMs,
 			error: result.error,
+		});
+	}
+
+	recordBrokerRequest(info: {
+		requestId: string;
+		runId: string;
+		nodeId?: string;
+		agent?: string;
+		kind: "human" | "supervisor";
+		question: string;
+	}): void {
+		this.append({
+			type: "broker_request",
+			requestId: info.requestId,
+			runId: info.runId,
+			nodeId: info.nodeId,
+			agent: info.agent,
+			kind: info.kind,
+			question: info.question,
+			timestamp: Date.now(),
+		});
+	}
+
+	recordBrokerAnswer(info: {
+		requestId: string;
+		runId: string;
+		source: string;
+		answer?: string;
+		reason?: string;
+	}): void {
+		this.append({
+			type: "broker_answer",
+			requestId: info.requestId,
+			runId: info.runId,
+			source: info.source,
+			answer: info.answer,
+			reason: info.reason,
+			timestamp: Date.now(),
 		});
 	}
 
