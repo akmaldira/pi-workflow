@@ -52,6 +52,28 @@ export function extractToolArgsPreview(event: { args?: unknown }): string {
 	return "";
 }
 
+/**
+ * One-line "what is this subagent doing right now" summary, built from an
+ * AgentProgress snapshot. Used to show live status in the main agent's chat
+ * panel while a subagent tool call is still running — the same information
+ * /workflows shows in full, condensed to a single line.
+ */
+export function formatProgressLine(progress: {
+	currentTool?: string;
+	currentToolArgs?: string;
+	turnCount?: number;
+	toolCount: number;
+	tokens: number;
+}): string {
+	if (progress.currentTool) {
+		const rawArgs = progress.currentToolArgs ?? "";
+		const args = rawArgs.length > 60 ? `${rawArgs.slice(0, 60)}…` : rawArgs;
+		return `→ ${progress.currentTool}${args ? ` ${args}` : ""}`;
+	}
+	if (progress.toolCount > 0) return `thinking… (${progress.toolCount} tool call${progress.toolCount === 1 ? "" : "s"} so far)`;
+	return "starting…";
+}
+
 export function extractTextFromContent(message: Message): string[] {
 	if (!message.content) return [];
 	if (typeof message.content === "string") return [message.content];

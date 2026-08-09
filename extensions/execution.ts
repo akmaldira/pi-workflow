@@ -378,6 +378,7 @@ async function runSingleAttempt(
 					result.usage = event.message?.usage || result.usage;
 					result.stopReason = event.message?.stopReason || "end";
 					if (event.turnCount !== undefined) progress.turnCount = event.turnCount;
+					progress.tokens = (result.usage?.input ?? 0) + (result.usage?.output ?? 0);
 				}
 				if (event.type === "agent_end") {
 					if (event.messages && event.messages.length > 0) {
@@ -390,12 +391,22 @@ async function runSingleAttempt(
 				}
 				if (event.type === "tool_execution_start") {
 					progress.toolCount++;
+					const toolName: string = event.toolName || event.tool || "unknown";
+					const toolArgs: string = extractToolArgsPreview(event);
+					progress.currentTool = toolName;
+					progress.currentToolArgs = toolArgs;
+					progress.currentToolStartedAt = Date.now();
 					progress.recentTools.push({
-						tool: event.toolName || event.tool || "unknown",
-						args: extractToolArgsPreview(event),
+						tool: toolName,
+						args: toolArgs,
 						endMs: Date.now(),
 					});
 					progress.recentTools = progress.recentTools.slice(-20);
+				}
+				if (event.type === "tool_execution_end") {
+					progress.currentTool = undefined;
+					progress.currentToolArgs = undefined;
+					progress.currentToolStartedAt = undefined;
 				}
 				if (event.type === "agent_end" || event.type === "agent_settled") {
 					const action = projectChildLifecycle(event);
@@ -405,6 +416,17 @@ async function runSingleAttempt(
 				}
 				shared.transcriptWriter?.writeChildEvent(event);
 				shared.jsonlWriter?.write({ type: "child_event", event, ts: Date.now() });
+				if (
+					options.onProgress &&
+					(event.type === "tool_execution_start" ||
+						event.type === "tool_execution_end" ||
+						event.type === "turn_end" ||
+						event.type === "message_end")
+				) {
+					progress.durationMs = Date.now() - startTime;
+					progress.lastActivityAt = Date.now();
+					options.onProgress(snapshotProgress(progress));
+				}
 			} catch {
 				// Non-JSON lines are ignored
 			}

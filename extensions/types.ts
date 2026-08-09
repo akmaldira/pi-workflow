@@ -459,6 +459,13 @@ export interface ControlEvent {
 export interface RunSyncOptions {
 	parentSessionId?: string;
 	onEvent?: (event: Record<string, unknown>) => void;
+	/**
+	 * Fired on meaningful lifecycle events (tool start, turn end, message end)
+	 * with a snapshot of the current AgentProgress. Lets a caller show a live
+	 * "what is this subagent doing right now" status line while it runs —
+	 * without needing to poll the .jsonl session file or /workflows.
+	 */
+	onProgress?: (progress: AgentProgress) => void;
 	context?: "fresh" | "fork";
 	/** Read-only handles for resolving `context: "fork"` via compaction-style summary. */
 	forkContext?: ForkContextOptions;

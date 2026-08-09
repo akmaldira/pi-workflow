@@ -151,4 +151,72 @@ describe("subagent tool integration", () => {
 		expect(runs[0].agents[0].label).toBe("stub (delegate)");
 		expect(runs[0].agents[0].status).toBe("done");
 	});
+
+	it("streams live status via onUpdate while the subagent runs (single mode)", async () => {
+		// runSingleAgent is mocked wholesale in this suite, so simulate what the
+		// real implementation does: call options.onProgress a couple of times
+		// before resolving — the tool must forward each of those to its own
+		// onUpdate callback so the chat panel shows live status, not just the
+		// final result.
+		vi.mocked(runSingleAgent).mockImplementation(async (_cwd, _agent, _task, options: any) => {
+			options.onProgress?.({
+				index: 0,
+				agent: "stub",
+				status: "running",
+				task: "do work",
+				recentTools: [],
+				recentOutput: [],
+				toolCount: 1,
+				tokens: 0,
+				durationMs: 5,
+				currentTool: "bash",
+				currentToolArgs: '{"command":"npm test"}',
+			});
+			return {
+				agent: "stub",
+				task: "do work",
+				exitCode: 0,
+				messages: [],
+				usage: { input: 10, output: 20 },
+			} as any;
+		});
+
+		const ctx = {
+			cwd: tempDir,
+			sessionManager: { getSessionId: () => "session-1" },
+			modelRegistry: undefined,
+			model: "test-model",
+		} as unknown as ExtensionContext;
+
+		const updates: any[] = [];
+		const onUpdate = (partial: any) => updates.push(partial);
+
+		await registeredTool.execute("call-1", { agent: "stub", task: "do work", cwd: tempDir }, undefined, onUpdate, ctx);
+
+		expect(updates.length).toBeGreaterThan(0);
+		const text = updates[0].content[0].text as string;
+		expect(text).toContain("stub:");
+		expect(text).toContain("→ bash");
+	});
+
+	it("does not throw when no onUpdate is supplied", async () => {
+		vi.mocked(runSingleAgent).mockImplementation(async (_cwd, _agent, _task, options: any) => {
+			// Real runSingleAgent guards onProgress with `?.()`; a mock that calls
+			// it unconditionally would crash here if the tool ever passed
+			// undefined through incorrectly instead of omitting the option.
+			options.onProgress?.({ toolCount: 0, tokens: 0, durationMs: 0, recentTools: [], recentOutput: [], index: 0, agent: "stub", status: "running", task: "t" });
+			return { agent: "stub", task: "do work", exitCode: 0, messages: [], usage: { input: 0, output: 0 } } as any;
+		});
+
+		const ctx = {
+			cwd: tempDir,
+			sessionManager: { getSessionId: () => "session-1" },
+			modelRegistry: undefined,
+			model: "test-model",
+		} as unknown as ExtensionContext;
+
+		await expect(
+			registeredTool.execute("call-1", { agent: "stub", task: "do work", cwd: tempDir }, undefined, undefined, ctx),
+		).resolves.toBeDefined();
+	});
 });

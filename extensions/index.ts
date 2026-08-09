@@ -41,7 +41,7 @@ import {
 	resolveCurrentMaxSubagentDepth,
 } from "./types.ts";
 import { listSavedWorkflows, deleteSavedWorkflow, createListWorkflowsTool } from "./workflow-library.ts";
-import { getFinalOutput } from "./utils.ts";
+import { getFinalOutput, formatProgressLine } from "./utils.ts";
 import { TechnicalFailureError, type FailureClassification } from "./failure-classifier.ts";
 import { WorkflowManager } from "./workflow-manager.ts";
 import { openWorkflowNavigator } from "./workflow-ui.ts";
@@ -330,7 +330,7 @@ export default function (pi: ExtensionAPI) {
 		].join(" "),
 		parameters: SubagentParams,
 
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const agentScope: AgentScope = params.agentScope ?? "both";
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
@@ -443,6 +443,22 @@ export default function (pi: ExtensionAPI) {
 					phases: [{ title: "execution" }],
 				});
 
+				const liveResults: Array<{ agent: string; task: string; status: "running" | "done" | "error"; line?: string }> =
+					params.tasks.map((t) => ({ agent: t.agent, task: t.task, status: "running" }));
+				const emitParallelUpdate = () => {
+					if (!onUpdate) return;
+					const running = liveResults.filter((r) => r.status === "running").length;
+					const done = liveResults.length - running;
+					const lines = liveResults.map((r) => {
+						const icon = r.status === "running" ? "⏳" : r.status === "error" ? "✗" : "✓";
+						return `${icon} ${r.agent}${r.status === "running" && r.line ? `: ${r.line}` : ""}`;
+					});
+					onUpdate({
+						content: [{ type: "text", text: `Parallel: ${done}/${liveResults.length} done\n${lines.join("\n")}` }],
+						details: makeDetails("parallel")([]),
+					});
+				};
+
 				let results: SingleResult[];
 				try {
 					results = await mapWithConcurrencyLimit(
@@ -476,6 +492,8 @@ export default function (pi: ExtensionAPI) {
 							globalWorkflowManager.watchSession(runId, taskId, sessionFile);
 
 							const taskStartTime = Date.now();
+							liveResults[_index] = { agent: t.agent, task: t.task, status: "running" };
+							emitParallelUpdate();
 							const r = await runSingleAgent(
 								ctx.cwd,
 								agent,
@@ -493,8 +511,18 @@ export default function (pi: ExtensionAPI) {
 										[PI_WORKFLOW_RUN_ID_ENV]: runId,
 									},
 									maxSubagentDepth: resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agent.maxSubagentDepth),
+									onProgress: (progress) => {
+										liveResults[_index] = { agent: t.agent, task: t.task, status: "running", line: formatProgressLine(progress) };
+										emitParallelUpdate();
+									},
 								},
 							);
+							liveResults[_index] = {
+								agent: t.agent,
+								task: t.task,
+								status: isFailedResult(r) ? "error" : "done",
+							};
+							emitParallelUpdate();
 
 							const isErr = isFailedResult(r);
 							globalWorkflowManager.markAgentEnd(
@@ -620,6 +648,14 @@ export default function (pi: ExtensionAPI) {
 								[PI_WORKFLOW_RUN_ID_ENV]: runId,
 							},
 							maxSubagentDepth: resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agent.maxSubagentDepth),
+							onProgress: onUpdate
+								? (progress) => {
+										onUpdate({
+											content: [{ type: "text", text: `${agent.name}: ${formatProgressLine(progress)}` }],
+											details: makeDetails("single")([]),
+										});
+									}
+								: undefined,
 						},
 					);
 				} finally {
