@@ -428,6 +428,7 @@ export default function (pi: ExtensionAPI) {
 						}
 
 						void globalBroker.ask({
+							id: request.id,
 							runId: request.runId,
 							nodeId: request.nodeId,
 							agent: request.agent,
@@ -621,6 +622,7 @@ export default function (pi: ExtensionAPI) {
 						}
 
 						void globalBroker.ask({
+							id: request.id,
 							runId: request.runId,
 							nodeId: request.nodeId,
 							agent: request.agent,

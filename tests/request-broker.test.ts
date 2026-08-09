@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { RequestBroker, type BrokerQuestion, type BrokerResult } from "../extensions/request-broker.ts";
+import { RequestBroker, type BrokerQuestion, type BrokerResult, type PendingRequest } from "../extensions/request-broker.ts";
 
 function question(text = "Proceed?", header = "Q"): BrokerQuestion {
 	return { question: text, header, options: [{ label: "yes" }, { label: "no" }] };
@@ -237,14 +237,23 @@ describe("RequestBroker", () => {
 		expect(updated.inlineDelivered).toBe(true);
 	});
 
+	it("caller-supplied id is used by the broker and is findable via markInlineDelivered", () => {
+		const broker = new RequestBroker({ coalesceMs: 0 });
+		const channelUUID = "df100626-83f2-4be9-ad7a-77791ee1e4f0";
+		broker.ask({ id: channelUUID, runId: "r1", kind: "supervisor", questions: [], expectsReply: true, agent: "w" });
+
+		const [req] = broker.listPendingForRun("r1");
+		expect(req.id).toBe(channelUUID);
+
+		// markInlineDelivered finds it by the same UUID the channel wrote
+		broker.markInlineDelivered(channelUUID);
+		const [updated] = broker.listPendingForRun("r1");
+		expect(updated.inlineDelivered).toBe(true);
+	});
+
 	it("markInlineDelivered on unknown id is a no-op", () => {
 		const broker = new RequestBroker({ coalesceMs: 0 });
 		expect(() => broker.markInlineDelivered("nonexistent")).not.toThrow();
 	});
 });
 
-type PendingRequest = Parameters<RequestBroker["ask"]>[0] extends infer T
-	? T extends Omit<infer R, "id" | "createdAt" | "expiresAt">
-		? R
-		: never
-	: never;

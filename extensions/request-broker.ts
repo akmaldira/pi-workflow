@@ -133,8 +133,8 @@ export class RequestBroker {
 	 * asked by the thing that needs the answer, and it should not proceed
 	 * until it has one.
 	 */
-	ask(request: Omit<PendingRequest, "id" | "createdAt" | "expiresAt">): Promise<BrokerResult> {
-		const id = `req-${++this.nextId}`;
+	ask(request: Omit<PendingRequest, "id" | "createdAt" | "expiresAt"> & { id?: string }): Promise<BrokerResult> {
+		const id = request.id ?? `req-${++this.nextId}`;
 		const createdAt = Date.now();
 		const expiresAt =
 			request.kind === "supervisor" && request.expectsReply

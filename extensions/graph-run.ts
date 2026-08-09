@@ -152,8 +152,11 @@ export async function executeGraphRun(options: GraphRunOptions): Promise<GraphRu
 		poller = new ChannelPoller(chDir, {
 			onRequest: (request) => {
 				// Bridge: channel request → broker request → broker answer → channel reply.
+				// Pass request.id through so the broker uses the same UUID the child
+				// wrote, keeping the id consistent for markInlineDelivered lookups.
 				void broker
 					.ask({
+						id: request.id,
 						runId: request.runId,
 						nodeId: request.nodeId,
 						agent: request.agent,
