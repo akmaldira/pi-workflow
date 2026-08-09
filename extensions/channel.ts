@@ -126,8 +126,13 @@ export class ChannelClient {
 	/**
 	 * Sends a question and waits for a reply. Blocks the calling tool.
 	 *
-	 * `pollMs` and `timeoutMs` are tuneable for tests; in production the
-	 * supervisor-side expiry (10 min) is the real bound.
+	 * For `kind: "supervisor"` the default timeout is 11 minutes (slightly past
+	 * the broker-side supervisor expiry). For `kind: "human"` there is NO
+	 * timeout — the child polls indefinitely until the parent writes a reply
+	 * (user answered) or the process is killed (abort / run cancelled). This
+	 * prevents the subagent from self-cancelling while the user is simply slow.
+	 *
+	 * `pollMs` and `timeoutMs` are tuneable for tests.
 	 */
 	async ask(
 		request: Omit<ChannelRequest, "type" | "id" | "createdAt" | "runId">,
@@ -145,8 +150,12 @@ export class ChannelClient {
 		writeAtomicJson(path.join(requestsDir(this.dir), `${id}.json`), full);
 
 		const pollMs = options.pollMs ?? 500;
-		const timeoutMs = options.timeoutMs ?? 11 * 60 * 1000; // slightly past supervisor expiry
-		const deadline = Date.now() + timeoutMs;
+		// Human questions wait indefinitely — only a reply file or process kill
+		// unblocks the child. Supervisor questions expire slightly past the
+		// broker-side 10-minute timeout so the broker always fires first.
+		const isHuman = request.kind === "human";
+		const timeoutMs = options.timeoutMs ?? (isHuman ? Infinity : 11 * 60 * 1000);
+		const deadline = isHuman ? Infinity : Date.now() + timeoutMs;
 
 		while (Date.now() < deadline) {
 			const replyFile = path.join(repliesDir(this.dir), `${id}.json`);
@@ -184,6 +193,11 @@ export interface ParentPollerOptions {
 /**
  * Parent-side poller. Scans the requests directory, calls the handler for
  * each new file, and deletes it so it is not re-processed.
+ *
+ * Tracks every request ID it has dispatched but not yet replied to.
+ * stop(reason) writes a cancelled reply for each outstanding request so
+ * children that are polling indefinitely (e.g. human questions) unblock
+ * cleanly before the channel directory is deleted.
  */
 export class ChannelPoller {
 	private readonly dir: string;
@@ -191,6 +205,8 @@ export class ChannelPoller {
 	private readonly pollMs: number;
 	private interval: ReturnType<typeof setInterval> | null = null;
 	private seen = new Set<string>();
+	/** Request IDs dispatched via onRequest but not yet replied to. */
+	private pending = new Set<string>();
 
 	constructor(dir: string, options: ParentPollerOptions) {
 		this.dir = dir;
@@ -204,11 +220,23 @@ export class ChannelPoller {
 		this.interval.unref?.();
 	}
 
-	stop(): void {
+	/**
+	 * Stops the polling interval and writes a cancelled reply for every
+	 * outstanding request that was dispatched but never replied to.
+	 * This unblocks children that are waiting for a reply (e.g. human
+	 * questions polling indefinitely) before the channel dir is deleted.
+	 */
+	stop(reason = "run ended"): void {
 		if (this.interval) {
 			clearInterval(this.interval);
 			this.interval = null;
 		}
+		// Write a cancelled reply for every unresolved request so the child
+		// poll loop unblocks instead of spinning against a deleted directory.
+		for (const requestId of this.pending) {
+			this.reply(requestId, { source: "cancelled", reason });
+		}
+		this.pending.clear();
 	}
 
 	/** Exposed for tests: run one poll cycle synchronously. */
@@ -230,6 +258,7 @@ export class ChannelPoller {
 			if (!request) continue;
 
 			this.seen.add(entry.name);
+			this.pending.add(request.id);
 			try {
 				fs.unlinkSync(filePath);
 			} catch {
@@ -241,6 +270,8 @@ export class ChannelPoller {
 
 	/**
 	 * Writes a reply for a request. The child polls for this file.
+	 * Best-effort: if the channel directory has already been cleaned up,
+	 * the write fails silently rather than crashing the process.
 	 */
 	reply(requestId: string, reply: Omit<ChannelReply, "type" | "requestId" | "createdAt">): void {
 		const full: ChannelReply = {
@@ -249,7 +280,14 @@ export class ChannelPoller {
 			createdAt: Date.now(),
 			...reply,
 		};
-		writeAtomicJson(path.join(repliesDir(this.dir), `${requestId}.json`), full);
+		try {
+			writeAtomicJson(path.join(repliesDir(this.dir), `${requestId}.json`), full);
+		} catch {
+			// Channel dir was already cleaned up (run ended). The child process
+			// has either already exited or will exit when it can't find the reply.
+			// Never let a stale reply attempt crash the parent process.
+		}
+		this.pending.delete(requestId);
 	}
 }
 

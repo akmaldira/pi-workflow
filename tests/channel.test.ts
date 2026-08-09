@@ -143,13 +143,75 @@ describe("parent poller + child client round-trip", () => {
 		expect(received).toHaveLength(1);
 	});
 
-	it("client times out when no reply arrives", async () => {
+	it("client times out when no reply arrives (supervisor)", async () => {
 		const client = new ChannelClient(chDir, "run-1");
 		const reply = await client.ask(
 			{ kind: "supervisor", question: "Q", expectsReply: true },
 			{ pollMs: 10, timeoutMs: 50 },
 		);
 		expect(reply.source).toBe("timeout");
+	});
+
+	it("human client does NOT time out — polls until a reply is written", async () => {
+		const poller = new ChannelPoller(chDir, {
+			onRequest: (_req) => { /* do nothing — simulate sleeping user */ },
+		});
+
+		const client = new ChannelClient(chDir, "run-1");
+		// Start asking — this should block indefinitely (no timeout)
+		const askPromise = client.ask(
+			{ kind: "human", question: "Q", expectsReply: true },
+			{ pollMs: 10 },
+		);
+
+		// Wait well past any old 11-minute equivalent for a test (50ms)
+		await sleep(50);
+		poller.poll(); // picks up request
+
+		// Still no reply written — askPromise should still be pending
+		let settled = false;
+		askPromise.then(() => { settled = true; });
+		await sleep(20);
+		expect(settled).toBe(false);
+
+		// Now write the reply — child should unblock
+		const [requestId] = [...(poller as any).pending];
+		poller.reply(requestId, { source: "human", answer: "yes" });
+		const reply = await askPromise;
+		expect(reply.source).toBe("human");
+		expect(reply.answer).toBe("yes");
+	});
+
+	it("poller.stop() writes cancelled replies for all unresolved requests", async () => {
+		const received: string[] = [];
+		const poller = new ChannelPoller(chDir, {
+			onRequest: (req) => received.push(req.id),
+		});
+
+		const client = new ChannelClient(chDir, "run-1");
+		const askPromise = client.ask(
+			{ kind: "human", question: "Q", expectsReply: true },
+			{ pollMs: 10 },
+		);
+
+		await sleep(20);
+		poller.poll(); // dispatches the request
+		expect(received).toHaveLength(1);
+
+		// Stop without replying — should write a cancelled reply
+		poller.stop("run ended");
+
+		const reply = await askPromise;
+		expect(reply.source).toBe("cancelled");
+		expect(reply.reason).toBe("run ended");
+	});
+
+	it("poller.reply() is best-effort and does not crash if dir is gone", () => {
+		const poller = new ChannelPoller(chDir, { onRequest: () => {} });
+		// Delete the channel dir to simulate cleanup
+		fs.rmSync(chDir, { recursive: true, force: true });
+		// Should not throw
+		expect(() => poller.reply("any-id", { source: "cancelled", reason: "gone" })).not.toThrow();
 	});
 
 	it("client deletes the reply file after reading it", async () => {
