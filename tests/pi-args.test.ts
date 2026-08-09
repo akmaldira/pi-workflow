@@ -267,6 +267,20 @@ describe("pi-args", () => {
 			expect(result.args).toContain("--no-extensions");
 		});
 
+		it("should inject index.ts/index.js as a runtime extension", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			const indexExt = result.args.some(
+				(arg) => arg.endsWith("index.ts") || arg.endsWith("index.js"),
+			);
+			expect(indexExt).toBe(true);
+		});
+
 		it("should write system prompt to temp file", () => {
 			const result = buildPiArgs({
 				baseArgs: ["--mode", "json", "-p"],

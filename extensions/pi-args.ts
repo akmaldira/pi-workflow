@@ -19,6 +19,10 @@ import { SUBAGENT_CAPABILITY_CEILING_ENV, decodeSubagentCapabilityCeiling, encod
 
 const TASK_ARG_LIMIT = 8000;
 const PROMPT_RUNTIME_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-prompt-runtime.ts");
+const CURRENT_EXTENSION_DIR = path.dirname(fileURLToPath(import.meta.url));
+const CURRENT_EXTENSION_PATH = fs.existsSync(path.join(CURRENT_EXTENSION_DIR, "index.ts"))
+	? path.join(CURRENT_EXTENSION_DIR, "index.ts")
+	: path.join(CURRENT_EXTENSION_DIR, "index.js");
 
 export const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 export const SUBAGENT_ORCHESTRATOR_TARGET_ENV = "PI_SUBAGENT_ORCHESTRATOR_TARGET";
@@ -165,9 +169,10 @@ export function resolvePiLaunchToolPlan(input: ResolvePiLaunchToolPlanInput): Pi
 		...(input.mcpDirectTools?.length ? effectiveMcpTools : []),
 		...internalTools,
 	])] : [];
-	const runtimeExtensions = fanoutAuthorized
-		? [PROMPT_RUNTIME_EXTENSION_PATH]
-		: [PROMPT_RUNTIME_EXTENSION_PATH];
+	const runtimeExtensions = [
+		PROMPT_RUNTIME_EXTENSION_PATH,
+		CURRENT_EXTENSION_PATH,
+	];
 	const disableAmbientExtensions = capabilityCeiling?.denyExtensions === true || input.extensions !== undefined;
 	const configuredExtensions = capabilityCeiling?.denyExtensions ? [] : [...toolExtensionPaths, ...(input.extensions ?? []), ...(input.subagentOnlyExtensions ?? [])];
 	const extensionArgs = disableAmbientExtensions
