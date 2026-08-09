@@ -381,6 +381,7 @@ async function runSingleAttempt(
 			receipt.detached = true;
 			receipt.detachedReason = "supervisor request";
 			receipt.supervisorQuestion = payload.question;
+			receipt.supervisorRequestId = payload.requestId;
 			receipt.finalOutput = "Detached for supervisor coordination before task completion.";
 			receipt.outputMode = options.outputMode ?? "inline";
 			receipt.progressSummary = {

@@ -337,6 +337,8 @@ export interface SingleResult {
 	 * rather than waiting for a separate workflow-agent-question message
 	 * that may not arrive before the model acts on the tool result. */
 	supervisorQuestion?: string;
+	/** The requestId of the supervisor question, for the workflow_reply tool. */
+	supervisorRequestId?: string;
 	interrupted?: boolean;
 	timedOut?: boolean;
 	stopped?: boolean;

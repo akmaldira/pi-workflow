@@ -739,7 +739,8 @@ export default function (pi: ExtensionAPI) {
 					return {
 						content: [{
 							type: "text",
-							text: `Agent "${agent.name}" is waiting for your answer:\n\n${result.supervisorQuestion}\n\nCall workflow_reply with the requestId from the [workflow-agent-question] message that follows.`,
+							text: `[workflow-agent-question · agent: "${agent.name}" · requestId: "${result.supervisorRequestId}" · run: ${runId}]
+\n## Action Required\n\nYou MUST call \`workflow_reply\` with the requestId and your answer. Do NOT reply in plain text — the subagent is blocked and will time out after 10 minutes.\n\n## How to reply\n\n\`\`\`\nworkflow_reply({\n  requestId: "${result.supervisorRequestId}",\n  answer: "<your answer here>"\n})\n\`\`\`\n\n## Question\n\n${result.supervisorQuestion}`,
 						}],
 						details: makeDetails("single")([result]),
 					};
