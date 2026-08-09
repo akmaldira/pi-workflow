@@ -423,6 +423,7 @@ export default function (pi: ExtensionAPI) {
 								runId: request.runId,
 								agent: request.agent,
 								childIndex: request.nodeId ? parseInt(request.nodeId, 10) : 0,
+								question: request.questions?.[0]?.question ?? request.question ?? "",
 							});
 						}
 
@@ -615,6 +616,7 @@ export default function (pi: ExtensionAPI) {
 								runId: request.runId,
 								agent: request.agent,
 								childIndex: request.nodeId ? parseInt(request.nodeId, 10) : 0,
+								question: request.questions?.[0]?.question ?? request.question ?? "",
 							});
 						}
 
@@ -727,11 +729,24 @@ export default function (pi: ExtensionAPI) {
 					}
 				}
 
-				// Detached: the child is still running. Return a receipt
-				// indicating the task was handed off, not failed.
+				// Detached: the child is still running. Return a receipt that
+				// includes the actual question text so the main agent can answer
+				// immediately via workflow_reply — the separate
+				// workflow-agent-question message from the broker may not arrive
+				// before the model sees this tool result, which caused hesitation
+				// ("reply or not?").
+				if (result.detached && result.supervisorQuestion) {
+					return {
+						content: [{
+							type: "text",
+							text: `Agent "${agent.name}" is waiting for your answer:\n\n${result.supervisorQuestion}\n\nCall workflow_reply with the requestId from the [workflow-agent-question] message that follows.`,
+						}],
+						details: makeDetails("single")([result]),
+					};
+				}
 				if (result.detached) {
 					return {
-						content: [{ type: "text", text: `Agent "${agent.name}" detached for supervisor coordination. The question has been forwarded — reply with workflow_reply when ready.` }],
+						content: [{ type: "text", text: `Agent "${agent.name}" detached for supervisor coordination. Reply with workflow_reply when ready.` }],
 						details: makeDetails("single")([result]),
 					};
 				}

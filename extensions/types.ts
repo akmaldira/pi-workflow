@@ -332,6 +332,11 @@ export interface SingleResult {
 	exitCode: number;
 	detached?: boolean;
 	detachedReason?: string;
+	/** The supervisor question that caused the detach, if any. Included so
+	 * the caller (e.g., the subagent tool result) can present it inline
+	 * rather than waiting for a separate workflow-agent-question message
+	 * that may not arrive before the model acts on the tool result. */
+	supervisorQuestion?: string;
 	interrupted?: boolean;
 	timedOut?: boolean;
 	stopped?: boolean;
