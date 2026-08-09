@@ -39,6 +39,7 @@ import {
 	type AgentHistoryEntry,
 	resolveChildMaxSubagentDepth,
 	resolveCurrentMaxSubagentDepth,
+	INTERCOM_DETACH_REQUEST_EVENT,
 } from "./types.ts";
 import { listSavedWorkflows, deleteSavedWorkflow, createListWorkflowsTool } from "./workflow-library.ts";
 import { getFinalOutput, formatProgressLine } from "./utils.ts";
@@ -411,6 +412,20 @@ export default function (pi: ExtensionAPI) {
 
 				const poller = new ChannelPoller(chDir, {
 					onRequest: (request) => {
+						// A supervisor request that expects a reply cannot be answered
+						// while this tool call is still blocking the main agent's turn —
+						// the reply would queue behind this very call. Emit the detach
+						// signal so runSingleAgent returns early (the child process keeps
+						// running and polling; only the parent's await unblocks).
+						if (request.kind === "supervisor" && request.expectsReply) {
+							intercomDetachEmitter.emit(INTERCOM_DETACH_REQUEST_EVENT, {
+								requestId: request.id,
+								runId: request.runId,
+								agent: request.agent,
+								childIndex: request.nodeId ? parseInt(request.nodeId, 10) : 0,
+							});
+						}
+
 						void globalBroker.ask({
 							runId: request.runId,
 							nodeId: request.nodeId,
@@ -500,6 +515,7 @@ export default function (pi: ExtensionAPI) {
 								t.task,
 								{
 									runId: `${runId}-${taskId}`,
+									index: taskId,
 									cwd: t.cwd,
 									signal,
 									parentSessionId: ctx.sessionManager.getSessionId(),
@@ -508,9 +524,14 @@ export default function (pi: ExtensionAPI) {
 									sessionFile,
 									extraEnv: {
 										[PI_WORKFLOW_CHANNEL_DIR_ENV]: chDir,
-										[PI_WORKFLOW_RUN_ID_ENV]: runId,
+										// Each task's own runId (not the shared batch runId) so the
+										// detach match in execution.ts (payload.runId === options.runId)
+										// lines up: this child's requests report `${runId}-${taskId}`.
+										[PI_WORKFLOW_RUN_ID_ENV]: `${runId}-${taskId}`,
 									},
 									maxSubagentDepth: resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agent.maxSubagentDepth),
+									allowIntercomDetach: true,
+									intercomEvents: intercomDetachEmitter,
 									onProgress: (progress) => {
 										liveResults[_index] = { agent: t.agent, task: t.task, status: "running", line: formatProgressLine(progress) };
 										emitParallelUpdate();
@@ -583,6 +604,20 @@ export default function (pi: ExtensionAPI) {
 
 				const poller = new ChannelPoller(chDir, {
 					onRequest: (request) => {
+						// A supervisor request that expects a reply cannot be answered
+						// while this tool call is still blocking the main agent's turn —
+						// the reply would queue behind this very call. Emit the detach
+						// signal so runSingleAgent returns early (the child process keeps
+						// running and polling; only the parent's await unblocks).
+						if (request.kind === "supervisor" && request.expectsReply) {
+							intercomDetachEmitter.emit(INTERCOM_DETACH_REQUEST_EVENT, {
+								requestId: request.id,
+								runId: request.runId,
+								agent: request.agent,
+								childIndex: request.nodeId ? parseInt(request.nodeId, 10) : 0,
+							});
+						}
+
 						void globalBroker.ask({
 							runId: request.runId,
 							nodeId: request.nodeId,
@@ -648,6 +683,8 @@ export default function (pi: ExtensionAPI) {
 								[PI_WORKFLOW_RUN_ID_ENV]: runId,
 							},
 							maxSubagentDepth: resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agent.maxSubagentDepth),
+							allowIntercomDetach: true,
+							intercomEvents: intercomDetachEmitter,
 							onProgress: onUpdate
 								? (progress) => {
 										onUpdate({
@@ -708,6 +745,12 @@ export default function (pi: ExtensionAPI) {
 	const globalBroker = new RequestBroker();
 	installBrokerSinks({ pi, broker: globalBroker });
 	globalBroker.start();
+
+	// Event emitter for cross-component intercom detach signals.
+	// When a child calls ask_supervisor (expectsReply: true), the ChannelPoller
+	// emits INTERCOM_DETACH_REQUEST_EVENT here; execution.ts listens and returns
+	// a detached receipt early, unblocking the parent while the child keeps running.
+	const intercomDetachEmitter = new (require("node:events").EventEmitter)();
 
 	// The manager is passed in so runs appear in /workflows, the task panel,
 	// and workflow_status. Without it the tool still runs, but every one of

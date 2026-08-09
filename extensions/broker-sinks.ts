@@ -235,6 +235,11 @@ function registerWorkflowReplyTool(pi: ExtensionAPI, broker: RequestBroker): voi
 					description: "Your answer to the subagent's question.",
 				}),
 			}),
+			promptGuidelines: [
+				"When you receive a message with customType 'workflow-agent-question' (it will show as [workflow-agent-question ...] in the conversation), " +
+					"you MUST answer by calling the workflow_reply tool with the requestId from that message and your answer. " +
+					"Do NOT reply in plain text — the subagent is blocked waiting for your tool call response.",
+			],
 			async execute(_id, params) {
 				broker.resolve(params.requestId as string, {
 					source: "supervisor",

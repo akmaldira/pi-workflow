@@ -219,4 +219,95 @@ describe("subagent tool integration", () => {
 			registeredTool.execute("call-1", { agent: "stub", task: "do work", cwd: tempDir }, undefined, undefined, ctx),
 		).resolves.toBeDefined();
 	});
+
+	it("detaches instead of deadlocking when the child asks the supervisor a question", async () => {
+		// Regression test for the ask_supervisor deadlock: a prior fix landed the
+		// intercom-emitter wiring in execution.ts but a git-checkout accident during
+		// cleanup silently reverted the index.ts half (the poller never emitted
+		// INTERCOM_DETACH_REQUEST_EVENT), so the deadlock was never actually fixed
+		// even though tests passed. This exercises the real poller → real channel
+		// filesystem → real event emitter path end to end, so a similar accidental
+		// revert of index.ts's wiring cannot pass silently again.
+		//
+		// runSingleAgent is scripted to behave like the real implementation would
+		// under detach: it writes a request file to the channel dir it was given,
+		// then races process completion against the detach signal. Since nothing
+		// ever answers the request file directly (no reply is written), the *only*
+		// way this resolves quickly is via detach — without it, the mock's own
+		// timeout below would fire and the test would see the slow path.
+		const SLOW_MS = 5000;
+
+		vi.mocked(runSingleAgent).mockImplementation(async (_cwd, _agent, _task, options: any) => {
+			const channelDir = options.extraEnv?.PI_WORKFLOW_CHANNEL_DIR;
+			expect(channelDir).toBeTruthy();
+
+			// Simulate the child writing a supervisor request (what ask_supervisor's
+			// ChannelClient.ask() does), and simulate execution.ts's real behavior:
+			// race the (mocked, slow) process exit against the detach signal that
+			// options.intercomEvents fires when the poller sees the request.
+			const requestsDir = path.join(channelDir, "requests");
+			fs.mkdirSync(requestsDir, { recursive: true });
+			fs.writeFileSync(
+				path.join(requestsDir, "req-test.json"),
+				JSON.stringify({
+					type: "channel.request",
+					id: "req-test",
+					createdAt: Date.now(),
+					runId: options.runId,
+					agent: "stub",
+					kind: "supervisor",
+					question: "Should I proceed?",
+					expectsReply: true,
+				}),
+			);
+
+			const fullUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+			return new Promise((resolve) => {
+				const slowTimer = setTimeout(() => {
+					resolve({ agent: "stub", task: "do work", exitCode: 0, messages: [], usage: fullUsage });
+				}, SLOW_MS);
+
+				if (options.allowIntercomDetach && options.intercomEvents) {
+					options.intercomEvents.on("pi-intercom:detach-request", (payload: any) => {
+						if (payload.runId !== options.runId) return;
+						clearTimeout(slowTimer);
+						resolve({
+							agent: "stub",
+							task: "do work",
+							exitCode: -2,
+							detached: true,
+							detachedReason: "supervisor request",
+							messages: [],
+							usage: fullUsage,
+						});
+					});
+				}
+			});
+		});
+
+		const ctx = {
+			cwd: tempDir,
+			sessionManager: { getSessionId: () => "session-1" },
+			modelRegistry: undefined,
+			model: "test-model",
+		} as unknown as ExtensionContext;
+
+		const started = Date.now();
+		const result = await registeredTool.execute(
+			"call-1",
+			{ agent: "stub", task: "call ask_supervisor", cwd: tempDir },
+			undefined,
+			undefined,
+			ctx,
+		);
+		const elapsed = Date.now() - started;
+
+		// The whole point: this must not take anywhere near SLOW_MS. If index.ts's
+		// poller-to-emitter wiring regresses (e.g. an accidental revert), the mock
+		// never sees a detach-request event and falls through to the slow timer.
+		expect(elapsed).toBeLessThan(SLOW_MS - 500);
+
+		const details = result.details as { results: Array<{ detached?: boolean }> };
+		expect(details.results[0]?.detached).toBe(true);
+	});
 });
