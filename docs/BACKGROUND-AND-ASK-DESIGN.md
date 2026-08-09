@@ -178,11 +178,14 @@ picks a default while they are reading the question is hostile. Escape hatches a
 dismissing the dialog (Esc) makes a `human()` node fall to its `default` and makes
 `ask_human` return `cancelled: true`. The run remains abortable from `/workflows`.
 
-**Supervisor requests expire (default 10 min).** The failure mode is different: the main
-agent may answer in prose without calling `workflow_reply`, and no human is even aware a
-child is waiting. On expiry the child receives *"No supervisor answer within Xs; proceed on
-your best judgement or emit BLOCKED_ON."* Pending supervisor requests appear in the `/wf`
-status widget so a stuck one is visible rather than silent.
+**Supervisor requests expire (default 10 min).** The main agent receives the question via
+a `workflow-agent-question` message and MUST answer using the `workflow_reply` tool — replying
+in prose does not reach the child. To make this unambiguous:
+
+- The message text uses `**Mandatory action required:**` and explicitly says `You MUST call the workflow_reply tool`.
+- The `workflow_reply` tool has `promptSnippet` and `promptGuidelines` in its definition, and is activated via `setActiveTools` on `session_start` so those guidelines are included in the system prompt.
+
+On expiry the child receives *"No supervisor answer within Xs; proceed on your best judgement or emit BLOCKED_ON."* Pending supervisor requests appear in the `/wf` status widget so a stuck one is visible rather than silent.
 
 ---
 
