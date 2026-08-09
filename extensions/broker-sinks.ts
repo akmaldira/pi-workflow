@@ -178,6 +178,11 @@ async function handleSupervisorBatch(
 			continue;
 		}
 
+		// Already embedded inline in the subagent tool result — the main agent
+		// already has the question and will call workflow_reply. Sending a second
+		// sendMessage would trigger a duplicate turn for the same request.
+		if (request.inlineDelivered) continue;
+
 		const message = formatSupervisorQuestion(request);
 		try {
 			pi.sendMessage(

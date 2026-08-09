@@ -744,6 +744,11 @@ export default function (pi: ExtensionAPI) {
 				// before the model sees this tool result, which caused hesitation
 				// ("reply or not?").
 				if (result.detached && result.supervisorQuestion) {
+					// Mark the broker entry as already delivered so handleSupervisorBatch
+					// does not fire a duplicate sendMessage for the same question.
+					if (result.supervisorRequestId) {
+						globalBroker.markInlineDelivered(result.supervisorRequestId);
+					}
 					return {
 						content: [{
 							type: "text",

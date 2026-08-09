@@ -224,6 +224,23 @@ describe("RequestBroker", () => {
 		expect(broker.listPendingForRun("r2")).toHaveLength(1);
 		expect(broker.listPendingForRun("r2")[0].kind).toBe("supervisor");
 	});
+
+	it("markInlineDelivered sets inlineDelivered on the pending request", () => {
+		const broker = new RequestBroker({ coalesceMs: 0 });
+		broker.ask({ runId: "r1", kind: "supervisor", questions: [], expectsReply: true, agent: "w" });
+
+		const [req] = broker.listPendingForRun("r1");
+		expect(req.inlineDelivered).toBeUndefined();
+
+		broker.markInlineDelivered(req.id);
+		const [updated] = broker.listPendingForRun("r1");
+		expect(updated.inlineDelivered).toBe(true);
+	});
+
+	it("markInlineDelivered on unknown id is a no-op", () => {
+		const broker = new RequestBroker({ coalesceMs: 0 });
+		expect(() => broker.markInlineDelivered("nonexistent")).not.toThrow();
+	});
 });
 
 type PendingRequest = Parameters<RequestBroker["ask"]>[0] extends infer T

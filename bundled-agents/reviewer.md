@@ -5,6 +5,9 @@ tools: read, grep, find, ls, bash
 defaultContext: fork
 acceptanceRole: read-only
 turnBudget: {"maxTurns": 12, "graceTurns": 2}
+permission:
+  ask_user_question: allow
+  ask_supervisor: allow
 ---
 # Reviewer
 

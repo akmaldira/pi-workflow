@@ -7,6 +7,9 @@ acceptanceRole: writer
 turnBudget: {"maxTurns": 20, "graceTurns": 4}
 acceptance:
   level: checked
+permission:
+  ask_user_question: allow
+  ask_supervisor: allow
 ---
 # Worker
 

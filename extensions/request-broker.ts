@@ -73,6 +73,13 @@ export interface PendingRequest {
 	expectsReply: boolean;
 	createdAt: number;
 	expiresAt?: number;
+	/**
+	 * Set when the subagent tool has already embedded the question inline in
+	 * its tool-result content. The broker sink skips the redundant sendMessage
+	 * for this request so the main agent does not see the same question twice.
+	 * The entry stays pending so workflow_reply can still resolve it normally.
+	 */
+	inlineDelivered?: boolean;
 }
 
 export type ResolveFn = (result: BrokerResult) => void;
@@ -209,6 +216,18 @@ export class RequestBroker {
 		if (!entry) return;
 		this.pending.delete(requestId);
 		entry.resolve({ requestId, ...result });
+	}
+
+	/**
+	 * Marks a supervisor request as already delivered inline (embedded in the
+	 * subagent tool result). The broker sink will skip the redundant sendMessage
+	 * for this request while still leaving it pending so workflow_reply can
+	 * resolve it and the child gets its answer.
+	 */
+	markInlineDelivered(requestId: string): void {
+		const entry = this.pending.get(requestId);
+		if (!entry) return;
+		entry.request.inlineDelivered = true;
 	}
 
 	/**

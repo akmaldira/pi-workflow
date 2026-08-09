@@ -5,6 +5,9 @@ tools: read, grep, find, ls
 defaultContext: fresh
 acceptanceRole: read-only
 turnBudget: {"maxTurns": 8, "graceTurns": 1}
+permission:
+  ask_user_question: allow
+  ask_supervisor: allow
 ---
 # Scout
 
