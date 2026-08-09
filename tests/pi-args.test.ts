@@ -204,10 +204,14 @@ describe("pi-args", () => {
 				inheritSkills: true,
 			});
 			expect(result.args).toContain("--tools");
-			expect(result.args).toContain("read,write");
+			const toolsIndex = result.args.indexOf("--tools");
+			expect(result.args[toolsIndex + 1]).toContain("read");
+			expect(result.args[toolsIndex + 1]).toContain("write");
+			expect(result.args[toolsIndex + 1]).toContain("ask_user_question");
+			expect(result.args[toolsIndex + 1]).toContain("ask_supervisor");
 		});
 
-		it("should add --no-tools when tools array is empty", () => {
+		it("should add only internal tools when tools array is empty", () => {
 			const result = buildPiArgs({
 				baseArgs: ["--mode", "json", "-p"],
 				task: "test",
@@ -216,7 +220,9 @@ describe("pi-args", () => {
 				inheritProjectContext: true,
 				inheritSkills: true,
 			});
-			expect(result.args).toContain("--no-tools");
+			expect(result.args).toContain("--tools");
+			const toolsIndex = result.args.indexOf("--tools");
+			expect(result.args[toolsIndex + 1]).toBe("ask_user_question,ask_supervisor");
 		});
 
 		it("should add --no-skills when inheritSkills is false", () => {

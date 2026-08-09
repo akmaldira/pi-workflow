@@ -162,14 +162,16 @@ export function resolvePiLaunchToolPlan(input: ResolvePiLaunchToolPlanInput): Pi
 	const effectiveMcpSelections = resolvedMcpSelections.filter((selection) => !allowedToolSet || allowedToolSet.has(selection.name));
 	const effectiveMcpTools = effectiveMcpSelections.map((selection) => selection.name);
 	const explicitToolAllowlist = input.tools !== undefined || (input.mcpDirectTools?.length ?? 0) > 0 || allowedToolSet !== undefined;
-	const internalTools = input.structuredOutput ? ["structured_output"] : [];
+	const internalTools = [
+		"ask_user_question",
+		"ask_supervisor",
+		...(input.structuredOutput ? ["structured_output"] : []),
+	];
 	const effectiveToolAllowlist = [...new Set([...declaredBuiltinTools, ...effectiveMcpTools, ...internalTools])];
 	const requiredChildTools = explicitToolAllowlist ? [...new Set([
 		...(input.tools !== undefined ? declaredBuiltinTools : []),
 		...(input.mcpDirectTools?.length ? effectiveMcpTools : []),
 		...internalTools,
-		"ask_user_question",
-		"ask_supervisor",
 	])] : [];
 	const runtimeExtensions = [
 		PROMPT_RUNTIME_EXTENSION_PATH,
