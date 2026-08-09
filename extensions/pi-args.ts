@@ -168,6 +168,8 @@ export function resolvePiLaunchToolPlan(input: ResolvePiLaunchToolPlanInput): Pi
 		...(input.tools !== undefined ? declaredBuiltinTools : []),
 		...(input.mcpDirectTools?.length ? effectiveMcpTools : []),
 		...internalTools,
+		"ask_user_question",
+		"ask_supervisor",
 	])] : [];
 	const runtimeExtensions = [
 		PROMPT_RUNTIME_EXTENSION_PATH,

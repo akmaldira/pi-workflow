@@ -281,6 +281,22 @@ describe("pi-args", () => {
 			expect(indexExt).toBe(true);
 		});
 
+		it("should inject ask_user_question and ask_supervisor into REQUIRED_CHILD_TOOLS env", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				tools: ["read", "write"],
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			const envVal = result.env.PI_SUBAGENT_REQUIRED_CHILD_TOOLS;
+			expect(envVal).toBeDefined();
+			const parsed = JSON.parse(envVal!);
+			expect(parsed).toContain("ask_user_question");
+			expect(parsed).toContain("ask_supervisor");
+		});
+
 		it("should write system prompt to temp file", () => {
 			const result = buildPiArgs({
 				baseArgs: ["--mode", "json", "-p"],
