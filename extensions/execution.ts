@@ -512,32 +512,75 @@ async function runSingleAttempt(
 	let exitCode: number | null = null;
 	let exitSignal: string | null = null;
 
+	// Shared process-close promise so both the race and the background
+	// completion monitor can listen without double-registering.
+	const procClosePromise = new Promise<number | null>((resolve) => {
+		proc.on("close", (code, signal) => {
+			resolve(code);
+			exitSignal = signal;
+		});
+		proc.on("error", () => {
+			resolve(1);
+		});
+	});
+
 	try {
 		// Race between process exit and intercom detach.
 		// If detach wins, we return the detached receipt immediately while
 		// the child keeps running in the background.
 		const raceResult = await Promise.race([
-			new Promise<number | null>((resolve) => {
-				proc.on("close", (code, signal) => {
-					resolve(code);
-					exitSignal = signal;
-				});
-				proc.on("error", () => {
-					resolve(1);
-				});
-			}),
+			procClosePromise,
 			detachPromise.then((detachedReceipt) => {
-				// Detached: clean up and return the detached receipt
+				// Detached: clean up timeout/abort handlers but DON'T kill the child.
+				// The child keeps running and will poll for the supervisor reply.
 				if (timeoutHandle) clearTimeout(timeoutHandle);
 				options.signal?.removeEventListener("abort", abortHandler);
 				options.interruptSignal?.removeEventListener("abort", abortHandler);
-				// Don't kill the child — it keeps running and will poll for the supervisor reply
+
+				// Start background completion monitoring for the detached child.
+				// The child process is still alive; stdout/stderr listeners are still
+				// accumulating events into `result`. When the child finally exits,
+				// we process its final output and fire onDetachedExit so the caller
+				// can do bookkeeping (mark the agent done, clean up the channel, etc).
+				void (async () => {
+					try {
+						const childExitCode = await procClosePromise;
+
+						// Build a final result from the accumulated state
+						progress.status = "completed";
+						progress.durationMs = Date.now() - startTime;
+						result.exitCode = childExitCode ?? 1;
+						result.exitSignal = exitSignal;
+						result.finalOutput = getFinalOutput(result.messages ?? []);
+
+						// Truncate
+						const mo: Required<MaxOutputConfig> = {
+							bytes: options.maxOutput?.bytes ?? DEFAULT_MAX_OUTPUT.bytes,
+							lines: options.maxOutput?.lines ?? DEFAULT_MAX_OUTPUT.lines,
+						};
+						const trunc = truncateOutput(result.finalOutput || "", { bytes: mo.bytes, lines: mo.lines }, shared.artifactPaths?.outputPath);
+						result.finalOutput = trunc.text;
+
+						shared.transcriptWriter?.close();
+
+						// Snapshot for the callback — the caller gets the real final result
+						const finalResult = snapshotResult(result, snapshotProgress(progress));
+						finalResult.detached = undefined;
+						finalResult.detachedReason = "supervisor request";
+						options.onDetachedExit?.(finalResult);
+					} catch {
+						// Background completion is best-effort; the detached receipt
+						// was already delivered to the caller.
+					}
+				})();
+
 				return detachedReceipt;
 			}),
 		]);
 
 		if (raceResult && typeof raceResult === "object" && "detached" in raceResult) {
-			// Detached receipt returned — return it immediately
+			// Detached receipt returned — return it immediately to unblock the parent.
+			// The child continues running in the background; onDetachedExit will fire later.
 			return raceResult as SingleResult;
 		}
 
@@ -548,6 +591,7 @@ async function runSingleAttempt(
 		options.interruptSignal?.removeEventListener("abort", abortHandler);
 	}
 
+	// Attached completion path (child exited before detach fired)
 	progress.status = "completed";
 	progress.durationMs = Date.now() - startTime;
 	result.exitCode = exitCode ?? 1;

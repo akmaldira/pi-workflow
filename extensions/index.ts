@@ -664,7 +664,7 @@ export default function (pi: ExtensionAPI) {
 				globalWorkflowManager.watchSession(runId, 1, sessionFile);
 
 				const taskStartTime = Date.now();
-				let result: SingleResult;
+				let result: SingleResult | undefined;
 				try {
 					result = await runSingleAgent(
 						ctx.cwd,
@@ -685,6 +685,28 @@ export default function (pi: ExtensionAPI) {
 							maxSubagentDepth: resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agent.maxSubagentDepth),
 							allowIntercomDetach: true,
 							intercomEvents: intercomDetachEmitter,
+							onDetachedExit: (finalResult) => {
+								// Background completion: the child finally exited after
+								// we returned a detached receipt. Clean up and report.
+								poller.stop();
+								cleanupChannel(chDir);
+
+								const isErr = isFailedResult(finalResult);
+								globalWorkflowManager.markAgentEnd(
+									runId,
+									1,
+									isErr ? "error" : "done",
+									isErr ? undefined : getResultOutput(finalResult),
+									finalResult.error,
+									(finalResult.usage?.input ?? 0) + (finalResult.usage?.output ?? 0),
+									Date.now() - taskStartTime
+								);
+								globalWorkflowManager.completeRun(
+									runId,
+									isErr ? undefined : getResultOutput(finalResult),
+									finalResult.error,
+								);
+							},
 							onProgress: onUpdate
 								? (progress) => {
 										onUpdate({
@@ -696,8 +718,22 @@ export default function (pi: ExtensionAPI) {
 						},
 					);
 				} finally {
-					poller.stop();
-					cleanupChannel(chDir);
+					// Only clean up if the child was NOT detached. When detached,
+					// the child is still alive and needs the channel; cleanup
+					// happens in onDetachedExit instead.
+					if (!result?.detached) {
+						poller.stop();
+						cleanupChannel(chDir);
+					}
+				}
+
+				// Detached: the child is still running. Return a receipt
+				// indicating the task was handed off, not failed.
+				if (result.detached) {
+					return {
+						content: [{ type: "text", text: `Agent "${agent.name}" detached for supervisor coordination. The question has been forwarded — reply with workflow_reply when ready.` }],
+						details: makeDetails("single")([result]),
+					};
 				}
 
 				const isError = isFailedResult(result);

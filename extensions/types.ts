@@ -519,6 +519,17 @@ export interface RunSyncOptions {
 	/** Control-event policy. Defaults to DEFAULT_CONTROL_CONFIG when unset. */
 	controlConfig?: ControlConfig;
 	onControlEvent?: (event: ControlEvent) => void;
+	/**
+	 * Called when a detached child process finally exits.
+	 *
+	 * When `allowIntercomDetach` is true and the child calls `ask_supervisor`,
+	 * `runSingleAttempt` returns a detached receipt immediately (so the parent's
+	 * turn unblocks) while the child keeps running. This callback fires when
+	 * that child process eventually exits — whether it gets a supervisor reply,
+	 * times out, or errors. The caller should do final bookkeeping here:
+	 * mark the agent as done, deliver the final result, clean up channels, etc.
+	 */
+	onDetachedExit?: (result: SingleResult) => void;
 	agentContract?: { version: 1 };
 	/** Extra environment variables injected into the child process. */
 	extraEnv?: Record<string, string>;
