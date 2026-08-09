@@ -18,7 +18,14 @@ import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { buildAgentCatalogGuideline, createListAgentsTool } from "./agent-catalog.ts";
 import { createGraphWorkflowTool } from "./graph-tool.ts";
 import { installResultDelivery } from "./result-delivery.ts";
-import { sweepOrphanedChannels } from "./channel.ts";
+import {
+	sweepOrphanedChannels,
+	ensureChannel,
+	cleanupChannel,
+	ChannelPoller,
+	PI_WORKFLOW_CHANNEL_DIR_ENV,
+	PI_WORKFLOW_RUN_ID_ENV,
+} from "./channel.ts";
 import { RequestBroker } from "./request-broker.ts";
 import {
 	createAskUserQuestionTool,
@@ -398,37 +405,118 @@ export default function (pi: ExtensionAPI) {
 					};
 				}
 
-				const results = await mapWithConcurrencyLimit(
-					params.tasks,
-					MAX_CONCURRENCY,
-					async (t, _index) => {
-						const agent = agents.find((a) => a.name === t.agent);
-						if (!agent) {
-							return {
-								agent: t.agent,
-								task: t.task,
-								exitCode: 1,
-								messages: [],
-								usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-								error: `Unknown agent: ${t.agent}`,
-							} as SingleResult;
-						}
-						return await runSingleAgent(
-							ctx.cwd,
-							agent,
-							t.task,
-							{
-								runId: `parallel-${Date.now()}-${_index}`,
-								cwd: t.cwd,
-								signal,
-								parentSessionId: ctx.sessionManager.getSessionId(),
-								context: t.context,
-								forkContext,
-								maxSubagentDepth: resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agent.maxSubagentDepth),
-							},
-						);
+				const runId = `subagent-parallel-${Date.now()}`;
+				const chDir = path.join(ctx.cwd, ".pi-workflow", "channels", runId);
+				ensureChannel(chDir);
+
+				const poller = new ChannelPoller(chDir, {
+					onRequest: (request) => {
+						void globalBroker.ask({
+							runId: request.runId,
+							nodeId: request.nodeId,
+							agent: request.agent,
+							kind: request.kind,
+							questions: request.questions ?? [
+								{
+									question: request.question,
+									header: request.agent ?? "Subagent",
+									options: request.options,
+								},
+							],
+							default: request.default,
+							expectsReply: request.expectsReply,
+						}).then((result) => {
+							poller.reply(request.id, {
+								source: result.source,
+								answer: result.text,
+								reason: result.reason,
+								answers: result.answers?.questions,
+							});
+						});
 					},
-				);
+				});
+				poller.start();
+
+				globalWorkflowManager.registerRun(runId, {
+					name: "subagent (parallel)",
+					description: `${params.tasks.length} tasks`,
+					phases: [{ title: "execution" }],
+				});
+
+				let results: SingleResult[];
+				try {
+					results = await mapWithConcurrencyLimit(
+						params.tasks,
+						MAX_CONCURRENCY,
+						async (t, _index) => {
+							const agent = agents.find((a) => a.name === t.agent);
+							if (!agent) {
+								return {
+									agent: t.agent,
+									task: t.task,
+									exitCode: 1,
+									messages: [],
+									usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+									error: `Unknown agent: ${t.agent}`,
+								} as SingleResult;
+							}
+
+							const taskId = _index + 1;
+							const sessionDir = path.join(ctx.cwd, ".pi-workflow", "sessions", runId);
+							fs.mkdirSync(sessionDir, { recursive: true });
+							const sessionFile = path.join(sessionDir, `task-${taskId}.jsonl`);
+
+							const agentSnap = {
+								id: taskId,
+								label: `${t.agent} (task ${taskId})`,
+								status: "running" as const,
+								prompt: t.task,
+							};
+							globalWorkflowManager.markAgentStart(runId, 0, agentSnap);
+							globalWorkflowManager.watchSession(runId, taskId, sessionFile);
+
+							const taskStartTime = Date.now();
+							const r = await runSingleAgent(
+								ctx.cwd,
+								agent,
+								t.task,
+								{
+									runId: `${runId}-${taskId}`,
+									cwd: t.cwd,
+									signal,
+									parentSessionId: ctx.sessionManager.getSessionId(),
+									context: t.context,
+									forkContext,
+									sessionFile,
+									extraEnv: {
+										[PI_WORKFLOW_CHANNEL_DIR_ENV]: chDir,
+										[PI_WORKFLOW_RUN_ID_ENV]: runId,
+									},
+									maxSubagentDepth: resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agent.maxSubagentDepth),
+								},
+							);
+
+							const isErr = isFailedResult(r);
+							globalWorkflowManager.markAgentEnd(
+								runId,
+								taskId,
+								isErr ? "error" : "done",
+								isErr ? undefined : getResultOutput(r),
+								r.error,
+								(r.usage?.input ?? 0) + (r.usage?.output ?? 0),
+								Date.now() - taskStartTime
+							);
+
+							return r;
+						},
+					);
+				} finally {
+					poller.stop();
+					cleanupChannel(chDir);
+				}
+
+				const firstError = results.find((r) => isFailedResult(r))?.error;
+				globalWorkflowManager.completeRun(runId, undefined, firstError);
 
 				const successCount = results.filter((r) => !isFailedResult(r)).length;
 				const summaries = results.map((r) => {
@@ -460,21 +548,97 @@ export default function (pi: ExtensionAPI) {
 						details: makeDetails("single")([]),
 					};
 				}
-				const result = await runSingleAgent(
-					ctx.cwd,
-					agent,
-					params.task,
-					{
-						runId: `single-${Date.now()}`,
-						cwd: params.cwd,
-						signal,
-						parentSessionId: ctx.sessionManager.getSessionId(),
-						context: params.context,
-						forkContext,
-						maxSubagentDepth: resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agent.maxSubagentDepth),
+
+				const runId = `subagent-${Date.now()}`;
+				const chDir = path.join(ctx.cwd, ".pi-workflow", "channels", runId);
+				ensureChannel(chDir);
+
+				const poller = new ChannelPoller(chDir, {
+					onRequest: (request) => {
+						void globalBroker.ask({
+							runId: request.runId,
+							nodeId: request.nodeId,
+							agent: request.agent,
+							kind: request.kind,
+							questions: request.questions ?? [
+								{
+									question: request.question,
+									header: request.agent ?? "Subagent",
+									options: request.options,
+								},
+							],
+							default: request.default,
+							expectsReply: request.expectsReply,
+						}).then((result) => {
+							poller.reply(request.id, {
+								source: result.source,
+								answer: result.text,
+								reason: result.reason,
+								answers: result.answers?.questions,
+							});
+						});
 					},
-				);
+				});
+				poller.start();
+
+				globalWorkflowManager.registerRun(runId, {
+					name: `subagent: ${agent.name}`,
+					description: params.task,
+					phases: [{ title: "execution" }],
+				});
+
+				const sessionDir = path.join(ctx.cwd, ".pi-workflow", "sessions", runId);
+				fs.mkdirSync(sessionDir, { recursive: true });
+				const sessionFile = path.join(sessionDir, `${agent.name}.jsonl`);
+
+				const agentSnap = {
+					id: 1,
+					label: `${agent.name} (delegate)`,
+					status: "running" as const,
+					prompt: params.task,
+				};
+				globalWorkflowManager.markAgentStart(runId, 0, agentSnap);
+				globalWorkflowManager.watchSession(runId, 1, sessionFile);
+
+				const taskStartTime = Date.now();
+				let result: SingleResult;
+				try {
+					result = await runSingleAgent(
+						ctx.cwd,
+						agent,
+						params.task,
+						{
+							runId,
+							cwd: params.cwd,
+							signal,
+							parentSessionId: ctx.sessionManager.getSessionId(),
+							context: params.context,
+							forkContext,
+							sessionFile,
+							extraEnv: {
+								[PI_WORKFLOW_CHANNEL_DIR_ENV]: chDir,
+								[PI_WORKFLOW_RUN_ID_ENV]: runId,
+							},
+							maxSubagentDepth: resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agent.maxSubagentDepth),
+						},
+					);
+				} finally {
+					poller.stop();
+					cleanupChannel(chDir);
+				}
+
 				const isError = isFailedResult(result);
+				globalWorkflowManager.markAgentEnd(
+					runId,
+					1,
+					isError ? "error" : "done",
+					isError ? undefined : getResultOutput(result),
+					result.error,
+					(result.usage?.input ?? 0) + (result.usage?.output ?? 0),
+					Date.now() - taskStartTime
+				);
+				globalWorkflowManager.completeRun(runId, isError ? undefined : getResultOutput(result), result.error);
+
 				if (isError) {
 					const errorMsg = getResultOutput(result);
 					return {
