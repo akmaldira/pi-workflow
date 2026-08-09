@@ -88,6 +88,8 @@ import { initialToolBudgetState, toolBudgetState } from "./tool-budget.ts";
 import { agentDefinitionDigest, launchBindingDigest } from "./launch-contract.ts";
 import { createBoundedByteTail, createBoundedLineReader, formatProtocolOutputLimit, MAX_CHILD_STDERR_BYTES, projectChildLifecycle, type ChildLifecycleAction, type ProtocolOutputLimit as ProtocolOutputLimitType } from "./child-protocol.ts";
 
+import type { EventEmitter } from "node:events";
+
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
 
@@ -350,6 +352,56 @@ async function runSingleAttempt(
 		...(options.extraEnv ?? {}),
 	};
 
+	// Intercom events for conditional detach-on-ask.
+	// When a child calls ask_supervisor (expectsReply: true), the parent's
+	// ChannelPoller emits INTERCOM_DETACH_REQUEST_EVENT; we listen for it
+	// and trigger an early return (detach) so the parent's await unblocks
+	// while the child keeps running. Only enabled when allowIntercomDetach is true.
+	const intercomEvents = options.intercomEvents ?? new (require("node:events").EventEmitter)();
+	let detachedByIntercom = false;
+	let detachResolve: ((receipt: SingleResult) => void) | null = null;
+	const detachPromise = new Promise<SingleResult>((resolve) => {
+		detachResolve = resolve;
+	});
+
+	if (options.allowIntercomDetach) {
+		intercomEvents.on(INTERCOM_DETACH_REQUEST_EVENT, (payload: any) => {
+			if (detachedByIntercom) return;
+			// Verify this detach request is for our run/agent/index
+			if (payload.runId !== options.runId) return;
+			// Agent check: allow if payload.agent is not provided (backward compat)
+			if (payload.agent !== undefined && payload.agent !== agent.name) return;
+			if (typeof payload.childIndex === "number" && payload.childIndex !== (options.index ?? 0)) return;
+
+			const receiptProgress = snapshotProgress(progress);
+			receiptProgress.status = "detached";
+			receiptProgress.durationMs = Date.now() - startTime;
+			const receipt = snapshotResult(result, receiptProgress);
+			receipt.exitCode = -2;
+			receipt.detached = true;
+			receipt.detachedReason = "supervisor request";
+			receipt.finalOutput = "Detached for supervisor coordination before task completion.";
+			receipt.outputMode = options.outputMode ?? "inline";
+			receipt.progressSummary = {
+				toolCount: receiptProgress.toolCount,
+				tokens: receiptProgress.tokens,
+				durationMs: receiptProgress.durationMs,
+			};
+
+			detachedByIntercom = true;
+			detachResolve?.(receipt);
+
+			// Emit response so the poller knows we accepted
+			intercomEvents.emit(INTERCOM_DETACH_RESPONSE_EVENT, {
+				requestId: payload.requestId,
+				accepted: true,
+				runId: options.runId,
+				agent: agent.name,
+				childIndex: options.index ?? 0,
+			});
+		});
+	}
+
 	const spawnSpec = getPiSpawnCommand(args);
 	const proc = spawn(spawnSpec.command, spawnSpec.args, {
 		cwd: options.cwd ?? runtimeCwd,
@@ -461,15 +513,35 @@ async function runSingleAttempt(
 	let exitSignal: string | null = null;
 
 	try {
-		exitCode = await new Promise<number | null>((resolve) => {
-			proc.on("close", (code, signal) => {
-				resolve(code);
-				exitSignal = signal;
-			});
-			proc.on("error", () => {
-				resolve(1);
-			});
-		});
+		// Race between process exit and intercom detach.
+		// If detach wins, we return the detached receipt immediately while
+		// the child keeps running in the background.
+		const raceResult = await Promise.race([
+			new Promise<number | null>((resolve) => {
+				proc.on("close", (code, signal) => {
+					resolve(code);
+					exitSignal = signal;
+				});
+				proc.on("error", () => {
+					resolve(1);
+				});
+			}),
+			detachPromise.then((detachedReceipt) => {
+				// Detached: clean up and return the detached receipt
+				if (timeoutHandle) clearTimeout(timeoutHandle);
+				options.signal?.removeEventListener("abort", abortHandler);
+				options.interruptSignal?.removeEventListener("abort", abortHandler);
+				// Don't kill the child — it keeps running and will poll for the supervisor reply
+				return detachedReceipt;
+			}),
+		]);
+
+		if (raceResult && typeof raceResult === "object" && "detached" in raceResult) {
+			// Detached receipt returned — return it immediately
+			return raceResult as SingleResult;
+		}
+
+		exitCode = raceResult as number | null;
 	} finally {
 		if (timeoutHandle) clearTimeout(timeoutHandle);
 		options.signal?.removeEventListener("abort", abortHandler);

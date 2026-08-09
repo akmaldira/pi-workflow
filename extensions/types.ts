@@ -4,6 +4,7 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
+import type { EventEmitter } from "node:events";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -513,6 +514,8 @@ export interface RunSyncOptions {
 	 */
 	intercomSessionName?: string;
 	orchestratorIntercomTarget?: string;
+	/** Event emitter for intercom detach signals (conditional detach-on-ask). */
+	intercomEvents?: EventEmitter;
 	/** Control-event policy. Defaults to DEFAULT_CONTROL_CONFIG when unset. */
 	controlConfig?: ControlConfig;
 	onControlEvent?: (event: ControlEvent) => void;

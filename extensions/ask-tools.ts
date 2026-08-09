@@ -230,11 +230,19 @@ export function createAskSupervisorTool(): ToolDefinition {
 			// 1. Child process check
 			const client = ChannelClient.fromEnv();
 			if (client) {
+				// Include agent identity so the parent can route the detach signal correctly
+				const childAgent = process.env["PI_SUBAGENT_CHILD_AGENT"];
+				const childIndex = process.env["PI_SUBAGENT_CHILD_INDEX"]
+					? parseInt(process.env["PI_SUBAGENT_CHILD_INDEX"]!, 10)
+					: 0;
+
 				const reply = await client.ask({
 					kind: "supervisor",
 					question: question as string,
 					expectsReply: shouldReply,
 					default: defVal as string | undefined,
+					agent: childAgent,
+					nodeId: childIndex > 0 ? String(childIndex) : undefined,
 				});
 
 				return {
