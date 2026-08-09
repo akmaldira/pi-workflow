@@ -236,9 +236,9 @@ function registerWorkflowReplyTool(pi: ExtensionAPI, broker: RequestBroker): voi
 				}),
 			}),
 			promptGuidelines: [
-				"When you receive a message with customType 'workflow-agent-question' (it will show as [workflow-agent-question ...] in the conversation), " +
-					"you MUST answer by calling the workflow_reply tool with the requestId from that message and your answer. " +
-					"Do NOT reply in plain text — the subagent is blocked waiting for your tool call response.",
+				"MANDATORY: When you receive a [workflow-agent-question] custom message in the conversation, you MUST answer it by calling the workflow_reply tool with the requestId from that message and your answer. " +
+					"Do NOT reply in plain text or in thinking — the subagent is blocked and will time out after 10 minutes if you do not call the tool. " +
+					"The answer should be a direct, actionable response to the subagent's question.",
 			],
 			async execute(_id, params) {
 				broker.resolve(params.requestId as string, {
@@ -292,11 +292,11 @@ function formatSupervisorQuestion(request: PendingRequest): string {
 	return [
 		`[workflow-agent-question · requestId: ${request.id} · run: ${shortId(request.runId)}]`,
 		"",
-		`${who} needs your decision:`,
+		`**Mandatory action required:** ${who} is blocked waiting for your answer via \`ask_supervisor\`.`,
 		"",
-		question,
+		`Question: ${question}`,
 		"",
-		`Reply with: workflow_reply({ requestId: "${request.id}", answer: "your answer" })`,
+		`You MUST call the \`workflow_reply\` tool with exactly:\n  requestId: "${request.id}"\n  answer: "<your answer>"\nDo NOT reply in plain text — the subagent is blocked and will time out after 10 minutes if you do not use the tool.`,
 	].join("\n");
 }
 

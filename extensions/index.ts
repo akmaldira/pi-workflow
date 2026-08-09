@@ -938,8 +938,17 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		setBrokerContext(ctx);
 		const active = pi.getActiveTools();
-		if (!active.includes(workflowTool.name)) {
-			pi.setActiveTools([...active, workflowTool.name]);
+		// Activate workflow_reply so its promptGuidelines (which tell the model
+		// it MUST call the tool when it sees a workflow-agent-question message)
+		// are included in the system prompt. Without this, the guidelines are
+		// invisible to the model even though the tool is registered/callable.
+		const toActivate = [workflowTool.name];
+		if (!active.includes("workflow_reply")) toActivate.push("workflow_reply");
+		if (!active.includes("subagent")) toActivate.push("subagent");
+		if (!active.includes("ask_user_question")) toActivate.push("ask_user_question");
+		if (!active.includes("ask_supervisor")) toActivate.push("ask_supervisor");
+		if (toActivate.some((t) => !active.includes(t))) {
+			pi.setActiveTools([...new Set([...active, ...toActivate])]);
 		}
 		if (ctx?.cwd) {
 			refreshAgentCatalogGuidelines(ctx.cwd);
