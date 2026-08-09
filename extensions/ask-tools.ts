@@ -46,6 +46,32 @@ const AskSupervisorParams = Type.Object({
 
 // ── Tool Definitions ────────────────────────────────────────────────────
 
+function formatToolResultText(
+	questions: TUIQuestion[],
+	answers: TUIAnswer[],
+	cancelled: boolean,
+): string {
+	if (cancelled) {
+		return "User cancelled the question.";
+	}
+	if (!answers || answers.length === 0) {
+		return "No answers provided.";
+	}
+
+	return (
+		"Questions answered successfully:\n" +
+		answers
+			.map((ans) => {
+				const q = questions[ans.questionIndex];
+				const header = q ? q.header : `Question ${ans.questionIndex + 1}`;
+				const value = ans.answer ?? "(no answer)";
+				const noteSuffix = ans.notes ? ` (Note: ${ans.notes})` : "";
+				return `- ${header}: ${value}${noteSuffix}`;
+			})
+			.join("\n")
+	);
+}
+
 /**
  * The `ask_user_question` tool.
  *
@@ -79,18 +105,19 @@ export function createAskUserQuestionTool(): ToolDefinition {
 					})),
 				});
 
+				const cancelled = reply.source === "cancelled" || reply.source === "timeout";
+				const replyAnswers = reply.answers ?? [];
+
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: reply.answer
-								? `User answered: ${reply.answer}`
-								: "User cancelled the question.",
+							text: formatToolResultText(questions, replyAnswers, cancelled),
 						},
 					],
 					details: {
-						answers: reply.answers ?? [],
-						cancelled: reply.source === "cancelled",
+						answers: replyAnswers,
+						cancelled,
 						error: reply.source === "timeout" ? "timeout" : undefined,
 					},
 				};
@@ -112,9 +139,7 @@ export function createAskUserQuestionTool(): ToolDefinition {
 					content: [
 						{
 							type: "text" as const,
-							text: result.cancelled
-								? "User cancelled the question."
-								: "Questions answered successfully.",
+							text: formatToolResultText(questions, result.answers, result.cancelled),
 						},
 					],
 					details: result,
@@ -152,7 +177,12 @@ export function createAskUserQuestionTool(): ToolDefinition {
 				}
 
 				return {
-					content: [{ type: "text" as const, text: "Questions answered successfully." }],
+					content: [
+						{
+							type: "text" as const,
+							text: formatToolResultText(questions, answers, false),
+						},
+					],
 					details: { answers, cancelled: false },
 				};
 			}
@@ -165,7 +195,12 @@ export function createAskUserQuestionTool(): ToolDefinition {
 			}));
 
 			return {
-				content: [{ type: "text" as const, text: "Headless mode; used default fallbacks." }],
+				content: [
+					{
+						type: "text" as const,
+						text: formatToolResultText(questions, answers, false),
+					},
+				],
 				details: { answers, cancelled: false },
 			};
 		},
