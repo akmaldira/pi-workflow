@@ -17,7 +17,7 @@ import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { buildAgentCatalogGuideline, createListAgentsTool } from "./agent-catalog.ts";
 import { createGraphWorkflowTool } from "./graph-tool.ts";
-import { installResultDelivery } from "./result-delivery.ts";
+import { installResultDelivery, stageRunReport } from "./result-delivery.ts";
 import {
 	sweepOrphanedChannels,
 	ensureChannel,
@@ -708,6 +708,14 @@ export default function (pi: ExtensionAPI) {
 									isErr ? undefined : getResultOutput(finalResult),
 									finalResult.error,
 								);
+								// Stage a report so the result-delivery listener can
+								// inject the child's final output back into the main
+								// agent's conversation as a follow-up message.
+								stageRunReport(globalWorkflowManager, {
+									runId,
+									name: `subagent: ${agent.name}`,
+									text: `Agent "${agent.name}" completed.\n\nResult: ${getResultOutput(finalResult)}`,
+								});
 							},
 							onProgress: onUpdate
 								? (progress) => {
