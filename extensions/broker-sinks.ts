@@ -16,6 +16,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { RequestBroker, PendingRequest, BrokerResult } from "./request-broker.ts";
+import { runAskUserQuestionTUI } from "./ask-user-question-tui.ts";
 
 export interface BrokerSinkOptions {
 	pi: ExtensionAPI;
@@ -59,40 +60,89 @@ async function handleHumanBatch(
 			continue;
 		}
 
-		try {
-			// For a single-question request with options, use select.
-			// For free-text, use input. Multi-question batching arrives in Phase D.
-			const q = request.questions[0];
-			let answer: string | undefined;
-
-			if (q?.options && q.options.length > 0) {
-				const labels = q.options.map((o) => o.label);
-				answer = await ctx.ui.select(`${q.question} [run: ${shortId(request.runId)}]`, labels);
-			} else {
-				answer = await ctx.ui.input(
-					`${q?.question ?? "Input required"} [run: ${shortId(request.runId)}]`,
-					"Type your answer",
+		// 1. TUI Mode: Renders custom batch questionnaire dialog
+		if (ctx.mode === "tui") {
+			try {
+				const result = await runAskUserQuestionTUI(ctx, request.questions);
+				if (result.cancelled) {
+					broker.cancel(request.id, "Dismissed by the user.");
+				} else {
+					broker.resolve(request.id, {
+						source: "human",
+						text: result.answers[0]?.answer ?? undefined,
+						answers: {
+							questions: result.answers,
+							cancelled: false,
+						},
+					});
+				}
+			} catch (error) {
+				broker.cancel(
+					request.id,
+					`Custom TUI dialog failed: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
-
-			if (answer === undefined || answer === "") {
-				broker.cancel(request.id, "Dismissed by the user.");
-			} else {
-				broker.resolve(request.id, {
-					source: "human",
-					text: answer,
-					answers: {
-						questions: [{ questionIndex: 0, kind: "option", answer }],
-						cancelled: false,
-					},
-				});
-			}
-		} catch (error) {
-			broker.cancel(
-				request.id,
-				`Dialog failed: ${error instanceof Error ? error.message : String(error)}`,
-			);
+			continue;
 		}
+
+		// 2. Non-TUI fallback (sequential select/input if UI exists)
+		if (ctx.hasUI && ctx.ui) {
+			try {
+				const answers: any[] = [];
+				let cancelled = false;
+
+				for (let i = 0; i < request.questions.length; i++) {
+					const q = request.questions[i];
+					let answer: string | undefined;
+
+					if (q.options && q.options.length > 0) {
+						const labels = q.options.map((o) => o.label);
+						answer = await ctx.ui.select(
+							`${q.question} (${i + 1}/${request.questions.length}) [run: ${shortId(request.runId)}]`,
+							labels,
+						);
+					} else {
+						answer = await ctx.ui.input(
+							`${q.question} (${i + 1}/${request.questions.length}) [run: ${shortId(request.runId)}]`,
+							"Type your answer",
+						);
+					}
+
+					if (answer === undefined || answer === "") {
+						cancelled = true;
+						break;
+					}
+
+					answers.push({
+						questionIndex: i,
+						kind: q.options ? "option" : "custom",
+						answer: answer || null,
+					});
+				}
+
+				if (cancelled) {
+					broker.cancel(request.id, "Dismissed by the user.");
+				} else {
+					broker.resolve(request.id, {
+						source: "human",
+						text: answers[0]?.answer ?? undefined,
+						answers: {
+							questions: answers,
+							cancelled: false,
+						},
+					});
+				}
+			} catch (error) {
+				broker.cancel(
+					request.id,
+					`Dialog fallback failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			continue;
+		}
+
+		// 3. Headless fallback (use default answers if available)
+		broker.cancel(request.id, "Headless fallback: no interactive TUI or CLI UI available.");
 	}
 }
 
