@@ -297,9 +297,9 @@ function formatSupervisorQuestion(request: PendingRequest): string {
 		"",
 		`**Mandatory action required:** ${who} is blocked waiting for your answer via \`ask_supervisor\`.`,
 		"",
-		`Question: ${question}`,
-		"",
 		`You MUST call the \`workflow_reply\` tool with exactly:\n  requestId: "${request.id}"\n  answer: "<your answer>"\nDo NOT reply in plain text — the subagent is blocked and will time out after 10 minutes if you do not use the tool.`,
+		"",
+		`Question: ${question}`,
 	].join("\n");
 }
 

@@ -31,15 +31,15 @@ describe("artifacts", () => {
 	});
 
 	describe("getProjectSubagentsDir", () => {
-		it("should return .pi-subagents in cwd", () => {
-			expect(getProjectSubagentsDir("/some/path")).toBe(path.join("/some/path", ".pi-subagents"));
+		it("should return .pi-workflow in cwd", () => {
+			expect(getProjectSubagentsDir("/some/path")).toBe(path.join("/some/path", ".pi-workflow"));
 		});
 	});
 
 	describe("getProjectArtifactsDir", () => {
-		it("should return artifacts dir in .pi-subagents", () => {
+		it("should return artifacts dir in .pi-workflow", () => {
 			expect(getProjectArtifactsDir("/some/path")).toBe(
-				path.join("/some/path", ".pi-subagents", "artifacts"),
+				path.join("/some/path", ".pi-workflow", "artifacts"),
 			);
 		});
 	});

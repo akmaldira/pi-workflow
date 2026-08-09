@@ -1,7 +1,7 @@
 /**
  * Core execution logic for running subagents as child pi processes.
  *
- * Based on pi-subagents' execution.ts, adapted for pi-workflow.
+ * Subagent execution — spawns child pi processes for single-agent delegation.
  */
 
 import { spawn } from "node:child_process";
@@ -742,7 +742,7 @@ export async function runSingleAgent(
 
 	const artifactPaths = options.artifactConfig?.enabled
 		? getArtifactPaths(
-			options.artifactsDir ?? path.join(runtimeCwd, ".pi-subagents", "artifacts"),
+			options.artifactsDir ?? path.join(runtimeCwd, ".pi-workflow", "artifacts"),
 			options.runId,
 			agent.name,
 			options.index,

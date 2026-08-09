@@ -12,7 +12,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir, type AgentToolResult, type ExtensionAPI, defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { buildAgentCatalogGuideline, createListAgentsTool } from "./agent-catalog.ts";
@@ -835,6 +835,111 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(createAskUserQuestionTool());
 	pi.registerTool(createAskSupervisorTool());
 
+	// --- Subagent Wait Tool ---
+	// Lets the main agent optionally wait for a detached subagent to finish,
+	// or check status of background runs.
+	pi.registerTool(defineTool({
+		name: "subagent_wait",
+		label: "Subagent Wait",
+		promptSnippet: "Wait for or check status of detached background subagents",
+		description: [
+			"Wait for a detached subagent to finish, or check status of background runs.",
+			"After a subagent detaches for ask_supervisor, the child keeps running in the background.",
+			"Use this tool to optionally block and wait for it to complete, or get its current status.",
+			"",
+			"- { id: \"runId\" } — wait for the specific subagent run to finish (returns its result)",
+			"- { timeoutMs: 300000 } — stop waiting after N ms (default: 600000, max: 3600000)",
+			"- { status: true } or no params — check status of all subagent runs without waiting",
+		].join("\n"),
+		parameters: Type.Object({
+			id: Type.Optional(Type.String({ description: "The runId of a detached subagent to wait for (from the subagent tool result)" })),
+			timeoutMs: Type.Optional(Type.Number({ description: "Maximum time to wait in ms (default: 600000, max: 3600000)" })),
+			status: Type.Optional(Type.Boolean({ description: "If true, just check status without waiting" })),
+		}),
+		async execute(_id, params, _signal, onUpdate) {
+			const runId: string | undefined = params.id;
+			const maxTimeout = 3600000;
+			const timeoutMs = Math.min(params.timeoutMs ?? 600000, maxTimeout);
+			const checkStatus = params.status === true;
+
+			if (checkStatus || !runId) {
+				// Status check mode
+				const runs = globalWorkflowManager.listRuns();
+				if (runs.length === 0) {
+					return {
+						content: [{ type: "text", text: "No subagent runs found." }],
+						details: { runs: [] },
+					};
+				}
+				const lines = runs.map((r) => {
+					const agents = r.agents?.map((a) => {
+						const statusIcon = a.status === "running" ? "⏳" : a.status === "done" ? "✓" : a.status === "error" ? "✗" : "·";
+						return `${statusIcon} ${a.label || a.id}`;
+					}).join(", ") || "(no agents)";
+					return `- ${r.runId}: [${r.status}] ${r.workflowName || ""}\n  agents: ${agents}`;
+				});
+				return {
+					content: [{ type: "text", text: `Background subagent runs:\n\n${lines.join("\n")}` }],
+					details: { runs: runs.map((r) => ({ runId: r.runId, status: r.status, name: r.workflowName })) },
+				};
+			}
+
+			// Wait mode: wait for the specific run to complete
+			const run = globalWorkflowManager.getRun(runId);
+			if (!run) {
+				return {
+					content: [{ type: "text", text: `No subagent run found with id "${runId}". Use subagent_wait({ status: true }) to list active runs.` }],
+					details: { error: "run_not_found" },
+					isError: true,
+				};
+			}
+
+			if (run.status === "completed" || run.status === "error") {
+				return {
+					content: [{ type: "text", text: `Subagent run ${runId} has already completed with status: ${run.status}.` }],
+					details: { runId, status: run.status, result: run.snapshot.result },
+				};
+			}
+
+			// Wait for the run to complete
+			return new Promise((resolve) => {
+				const startTime = Date.now();
+				const timeout = setTimeout(() => {
+					globalWorkflowManager.removeListener("complete", onComplete);
+					globalWorkflowManager.removeListener("error", onError);
+					onUpdate?.({ content: [{ type: "text", text: `Still waiting... (${Math.round((Date.now() - startTime) / 1000)}s)` }], details: undefined });
+					resolve({
+						content: [{ type: "text", text: `Subagent run ${runId} timed out after ${timeoutMs}ms. It may still be running in the background. Use subagent_wait({ status: true }) to check.` }],
+						details: { runId, timedOut: true, status: "running" },
+					});
+				}, timeoutMs);
+
+				const onComplete = (data: { runId: string }) => {
+					if (data.runId !== runId) return;
+					clearTimeout(timeout);
+					const updated = globalWorkflowManager.getRun(runId);
+					const output = updated?.snapshot.result || "completed";
+					resolve({
+						content: [{ type: "text", text: `Subagent run ${runId} completed.\n\nOutput: ${typeof output === "string" ? output : JSON.stringify(output)}` }],
+						details: { runId, status: "completed", result: updated?.snapshot.result },
+					});
+				};
+
+				const onError = (data: { runId: string; error?: string }) => {
+					if (data.runId !== runId) return;
+					clearTimeout(timeout);
+					resolve({
+						content: [{ type: "text", text: `Subagent run ${runId} failed: ${data.error || "unknown error"}` }],
+						details: { runId, status: "error", error: data.error },
+					} as AgentToolResult<unknown>);
+				};
+
+				globalWorkflowManager.on("complete", onComplete);
+				globalWorkflowManager.on("error", onError);
+			});
+		},
+	}));
+
 	/**
 	 * Injects the live agent roster into the delegation tools' guidelines.
 	 *
@@ -971,6 +1076,7 @@ export default function (pi: ExtensionAPI) {
 		if (!active.includes("subagent")) toActivate.push("subagent");
 		if (!active.includes("ask_user_question")) toActivate.push("ask_user_question");
 		if (!active.includes("ask_supervisor")) toActivate.push("ask_supervisor");
+		if (!active.includes("subagent_wait")) toActivate.push("subagent_wait");
 		if (toActivate.some((t) => !active.includes(t))) {
 			pi.setActiveTools([...new Set([...active, ...toActivate])]);
 		}

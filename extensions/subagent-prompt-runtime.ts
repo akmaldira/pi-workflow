@@ -11,7 +11,7 @@
  *   - Registering the child watchdog
  *   - Setting the session name for intercom routing
  *
- * Modelled directly on pi-subagents/src/runs/shared/subagent-prompt-runtime.ts
+ * Child-side prompt rewriting and tool registration runtime.
  */
 
 import * as fs from "node:fs";
@@ -60,7 +60,8 @@ const PARENT_ONLY_CUSTOM_MESSAGE_TYPES = new Set([
 	"subagent-control",
 	"subagent-control-notice",
 ]);
-const SUBAGENT_ORCHESTRATION_SKILL_NAME_PATTERN = /<name>\s*pi-subagents\s*<\/name>/;
+/** Matches any skill that would inject conflicting orchestration instructions into a child. */
+const CONFLICTING_ORCHESTRATION_SKILL_PATTERN = /<name>\s*pi-subagents\s*<\/name>/;
 const PROJECT_CONTEXT_HEADER = "\n\n# Project Context\n\nProject-specific instructions and guidelines:\n\n";
 const SKILLS_HEADER = "\n\nThe following skills provide specialized instructions for specific tasks.";
 const DATE_HEADER = "\nCurrent date:";
@@ -96,10 +97,18 @@ export function stripInheritedSkills(prompt: string): string {
 	return `${prompt.slice(0, startIndex)}${prompt.slice(endIndex)}`;
 }
 
-export function stripSubagentOrchestrationSkill(prompt: string): string {
+/**
+ * Strips any `pi-subagents` skill block from the inherited prompt.
+ *
+ * Safety net: if a user has the third-party `pi-subagents` package installed
+ * as a global skill, its orchestration instructions would conflict with
+ * pi-workflow's own subagent protocol. This strips it so children only see
+ * our escalation protocol.
+ */
+export function stripConflictingOrchestrationSkills(prompt: string): string {
 	return prompt
 		.replace(/\n{0,2}<skill\s+name=["']pi-subagents["'][^>]*>[\s\S]*?<\/skill>\n{0,2}/g, "\n\n")
-		.replace(/[ \t]*<skill>\s*[\s\S]*?<\/skill>\s*/g, (block) => SUBAGENT_ORCHESTRATION_SKILL_NAME_PATTERN.test(block) ? "" : block);
+		.replace(/[ \t]*<skill>\s*[\s\S]*?<\/skill>\s*/g, (block) => CONFLICTING_ORCHESTRATION_SKILL_PATTERN.test(block) ? "" : block);
 }
 
 function stripChildBoundaryInstructions(prompt: string): string {
@@ -121,7 +130,7 @@ export function rewriteSubagentPrompt(
 	if (!options.inheritSkills) {
 		rewritten = stripInheritedSkills(rewritten);
 	}
-	rewritten = stripSubagentOrchestrationSkill(rewritten);
+	rewritten = stripConflictingOrchestrationSkills(rewritten);
 	rewritten = stripChildBoundaryInstructions(rewritten);
 	const boundary = options.fanoutChild ? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS : CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS;
 	const structured = process.env[STRUCTURED_OUTPUT_CAPTURE_ENV] ? `\n\n${STRUCTURED_OUTPUT_INSTRUCTIONS}` : "";

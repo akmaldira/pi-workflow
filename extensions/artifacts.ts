@@ -8,7 +8,7 @@ import * as path from "node:path";
 import type { ArtifactConfig, ArtifactPaths } from "./types.ts";
 
 export function getProjectSubagentsDir(cwd: string): string {
-	return path.join(cwd, ".pi-subagents");
+	return path.join(cwd, ".pi-workflow");
 }
 
 export function getProjectArtifactsDir(cwd: string): string {

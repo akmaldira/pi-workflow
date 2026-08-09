@@ -17,10 +17,16 @@ export interface WorkflowModeState {
 }
 
 /** Tools explicitly blocked in Plan Mode. */
-const PLAN_MODE_DISABLED_TOOLS = new Set<string>(["write", "edit", "subagent", "workflow", "workflow_status"]);
+const PLAN_MODE_DISABLED_TOOLS = new Set<string>([
+	"write", "edit",
+	"subagent", "subagent_wait",
+	"workflow", "workflow_status", "workflow_reply",
+	"ask_supervisor",
+	"list_agents", "list_workflows",
+]);
 
 /** Tools explicitly blocked in Workflow Mode. */
-const WORKFLOW_MODE_DISABLED_TOOLS = new Set<string>(["write", "edit", "subagent"]);
+const WORKFLOW_MODE_DISABLED_TOOLS = new Set<string>(["write", "edit", "subagent", "subagent_wait"]);
 
 // Reuses the same destructive-bash-pattern approach as plan-mode:
 // a bash command is blocked in plan/workflow modes if it matches any mutating pattern below.
@@ -92,9 +98,10 @@ You are in **normal mode** — all tools are fully enabled.
 export const PLAN_MODE_SYSTEM_DIRECTIVE = `## PLAN MODE ACTIVE
 
 You are in **plan mode** — read-only planning and investigation.
-- Direct file mutations (\`write\`/\`edit\`) and delegation (\`subagent\`/\`workflow\`) are disabled.
+- Direct file mutations (\`write\`/\`edit\`) are disabled.
+- All subagent and workflow tools are disabled (\`subagent\`, \`subagent_wait\`, \`workflow\`, \`workflow_status\`, \`workflow_reply\`, \`ask_supervisor\`, \`list_agents\`, \`list_workflows\`).
 - Bash is restricted to read-only commands (e.g. \`cat\`, \`grep\`, \`ls\`, \`git status\`, \`git diff\`).
-- Focus on planning, discussing architectural designs, researching code, and answering questions. Do not attempt to write code.`;
+- Focus on planning, discussing architectural designs, researching code, and answering questions. Do not attempt to write code or delegate to agents.`;
 
 export const WORKFLOW_MODE_SYSTEM_DIRECTIVE = `[WORKFLOW MODE ACTIVE]
 You must delegate all work through the \`workflow\` tool. Direct filesystem mutation and direct subagent
@@ -154,7 +161,8 @@ export function registerWorkflowMode(
 			return [...new Set([...kept, "workflow", "workflow_status", "list_agents", "list_workflows"])];
 		}
 		if (mode === "plan") {
-			return [...new Set([...kept, "list_agents", "list_workflows"])];
+			// Plan mode: read-only investigation only, no subagent/workflow tools at all
+			return kept;
 		}
 		return [...new Set([...kept, "write", "edit", "subagent", "workflow", "workflow_status"])];
 	}
@@ -237,10 +245,16 @@ export function registerWorkflowMode(
 	});
 
 	// --- Hook: tool_call (block writes/mutations in plan/workflow modes) ---
-	const disabledInWorkflow = new Set<string>(["write", "edit", "subagent"]);
+	const disabledInWorkflow = new Set<string>(["write", "edit", "subagent", "subagent_wait"]);
 	if (options.subagentToolName) disabledInWorkflow.add(options.subagentToolName);
 
-	const disabledInPlan = new Set<string>(["write", "edit", "subagent", "workflow", "workflow_status"]);
+	const disabledInPlan = new Set<string>([
+		"write", "edit",
+		"subagent", "subagent_wait",
+		"workflow", "workflow_status", "workflow_reply",
+		"ask_supervisor",
+		"list_agents", "list_workflows",
+	]);
 	if (options.subagentToolName) disabledInPlan.add(options.subagentToolName);
 
 	pi.on("tool_call", async (event: { toolName: string; input: Record<string, unknown> }) => {

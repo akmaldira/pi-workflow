@@ -1,6 +1,6 @@
 /**
  * Agent discovery and configuration
- * Based on nicobailon/pi-subagents agent frontmatter spec
+ * Agent frontmatter parsing and discovery.
  */
 
 import * as fs from "node:fs";
@@ -14,7 +14,7 @@ export type AgentScope = "user" | "project" | "both";
 /**
  * Whether a parsed agent inherits the project's compiled context.
  *
- * Matches pi-subagents' default: only a `delegate` agent inherits; everything
+ * Only a `delegate` agent inherits project context; everything
  * else gets a fresh view. Bundled agents in this package are never delegates,
  * so the default is false for all of them.
  */

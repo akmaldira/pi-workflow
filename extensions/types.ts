@@ -516,8 +516,7 @@ export interface RunSyncOptions {
 	 * Intercom wiring, forwarded to the child process as environment.
 	 *
 	 * Read by execution.ts and consumed by pi-args.ts, but not currently set
-	 * by any caller in this package: the intercom surface was carried over
-	 * from pi-subagents and is inert until something opts into it.
+	 * by any caller in this package: reserved for future intercom routing.
 	 */
 	intercomSessionName?: string;
 	orchestratorIntercomTarget?: string;

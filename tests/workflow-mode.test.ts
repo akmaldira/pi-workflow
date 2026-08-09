@@ -157,8 +157,13 @@ describe("registerWorkflowMode /wf modes", () => {
 		expect(pi.activeTools).not.toContain("write");
 		expect(pi.activeTools).not.toContain("edit");
 		expect(pi.activeTools).not.toContain("subagent");
+		expect(pi.activeTools).not.toContain("subagent_wait");
 		expect(pi.activeTools).not.toContain("workflow");
 		expect(pi.activeTools).not.toContain("workflow_status");
+		expect(pi.activeTools).not.toContain("workflow_reply");
+		expect(pi.activeTools).not.toContain("ask_supervisor");
+		expect(pi.activeTools).not.toContain("list_agents");
+		expect(pi.activeTools).not.toContain("list_workflows");
 		expect(pi.activeTools).toContain("read");
 		expect(pi.activeTools).toContain("bash");
 		expect(ctx.notifications[0].message).toContain("PLAN");
@@ -174,6 +179,7 @@ describe("registerWorkflowMode /wf modes", () => {
 		expect(pi.activeTools).not.toContain("write");
 		expect(pi.activeTools).not.toContain("edit");
 		expect(pi.activeTools).not.toContain("subagent");
+		expect(pi.activeTools).not.toContain("subagent_wait");
 		expect(pi.activeTools).toContain("workflow");
 		expect(pi.activeTools).toContain("workflow_status");
 		expect(pi.activeTools).toContain("read");
@@ -213,19 +219,31 @@ describe("registerWorkflowMode /wf modes", () => {
 		expect(result?.block).toBe(true);
 	});
 
-	it("blocks workflow and workflow_status tool calls in plan mode, but allows them in workflow mode", async () => {
+	it("blocks all subagent/workflow tools in plan mode, but allows workflow tools in workflow mode", async () => {
 		registerWorkflowMode(asExtensionAPI(pi));
 		const ctx = makeMockCtx();
 
-		// Plan mode blocks them
+		// Plan mode blocks all subagent/workflow-related tools
 		await pi.commands.wf.handler("plan", ctx);
 		let res = await pi.fireToolCall({ toolName: "workflow", input: { script: "" } });
 		expect(res?.block).toBe(true);
+		res = await pi.fireToolCall({ toolName: "workflow_reply", input: { requestId: "x", answer: "y" } });
+		expect(res?.block).toBe(true);
+		res = await pi.fireToolCall({ toolName: "ask_supervisor", input: { question: "q" } });
+		expect(res?.block).toBe(true);
+		res = await pi.fireToolCall({ toolName: "subagent_wait", input: { status: true } });
+		expect(res?.block).toBe(true);
+		res = await pi.fireToolCall({ toolName: "list_agents", input: {} });
+		expect(res?.block).toBe(true);
+		res = await pi.fireToolCall({ toolName: "list_workflows", input: {} });
+		expect(res?.block).toBe(true);
 
-		// Workflow mode allows them
+		// Workflow mode allows workflow/workflow_status but blocks subagent_wait
 		await pi.commands.wf.handler("workflow", ctx);
 		res = await pi.fireToolCall({ toolName: "workflow", input: { script: "" } });
 		expect(res).toBeUndefined();
+		res = await pi.fireToolCall({ toolName: "subagent_wait", input: { status: true } });
+		expect(res?.block).toBe(true);
 	});
 
 	it("blocks write-shaped bash commands but allows read-only bash in both plan and workflow modes", async () => {
