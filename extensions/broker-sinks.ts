@@ -223,10 +223,13 @@ function registerWorkflowReplyTool(pi: ExtensionAPI, broker: RequestBroker): voi
 		defineTool({
 			name: "workflow_reply",
 			label: "Workflow Reply",
+			promptSnippet:
+				"Answer a workflow-agent-question message from a subagent. Call this tool to reply to a subagent's ask_supervisor question.",
 			description:
-				"Answer a question that a workflow subagent asked you via ask_supervisor. " +
+				"MANDATORY: Answer a question that a workflow subagent asked you via ask_supervisor. " +
 				"You will see the question as a [workflow-agent-question] message with a requestId; " +
-				"call this tool with that requestId and your answer.",
+				"call this tool with that requestId and your answer. " +
+				"Do NOT reply in plain text — the subagent is blocked waiting for this tool call.",
 			parameters: Type.Object({
 				requestId: Type.String({
 					description: "The requestId from the [workflow-agent-question] message.",
