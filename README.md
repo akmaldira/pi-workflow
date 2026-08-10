@@ -109,7 +109,7 @@ g.run(initialState);        // required, once
 
 Workflows support two ways to bring external judgment/preferences into a run:
 - **Interactive Nodes (`human(...)`)**: Structural gates defined explicitly in the graph script. The workflow walk pauses at this node and prompts the user.
-- **In-Flight Tools (`ask_user_question`, `ask_supervisor`)**: Tools called by subagents during their execution. `ask_user_question` prompts the user, while `ask_supervisor` lets child subagents ask the main agent for a decision. Subagents must not use these tools to debug errors; those must be escalated via `STATUS: blocked`.
+- **In-Flight Tools (`ask_user_question`, `ask_supervisor`)**: Tools called by subagents during their execution. `ask_user_question` prompts the user directly (blocks the subagent indefinitely until the user answers — no timeout). `ask_supervisor` lets child subagents ask the main agent for a decision (10-minute timeout, then proceeds autonomously). Subagents must not use these tools to debug errors; those must be escalated via `STATUS: blocked`.
 
 ### Edges
 
@@ -214,8 +214,8 @@ real failure.**
 
 | Agent | Role | Writes files |
 |---|---|---|
-| `planner` | Decomposes a task into a verifiable plan | no |
-| `architect` | Owns the contract: interfaces, invariants, error cases | no |
+| `planner` | Decomposes a task into a verifiable plan; saves it with the `plan` tool | no |
+| `architect` | Owns the contract: interfaces, invariants, error cases; saves it with the `contract` tool | no |
 | `monitor` | Independent plan-feasibility gate | no |
 | `red` | Writes failing tests that encode the contract | yes |
 | `green` | Implements until tests pass | yes |
@@ -365,6 +365,8 @@ Two principles that make a custom agent safe in a graph, borrowed from the bundl
 
 ## Tools
 
+All tools are available to every agent and subagent automatically — no frontmatter declaration needed for the tools marked *always injected* below.
+
 ### `workflow`
 
 | Parameter | Purpose |
@@ -381,6 +383,37 @@ Two principles that make a custom agent safe in a graph, borrowed from the bundl
 
 Single or parallel delegation, unchanged. Use it when there is no coordination to do.
 
+### `workflow_reply`
+
+Answers a pending `ask_supervisor` question from a subagent. Called automatically when the main
+agent receives a `workflow-agent-question` message — the question and a receipt appear inline so
+the main agent can respond immediately via this tool.
+
+### `ask_user_question` *(always injected)*
+
+Called by a subagent or workflow node to ask the user a question directly. The question appears as
+a TUI dialog; the subagent blocks indefinitely until the user answers (no timeout). Use for
+decisions only the user can make. Do not use to report errors — escalate via `STATUS: blocked`.
+
+### `ask_supervisor` *(always injected)*
+
+Called by a subagent or workflow node to ask the main agent a question. The main agent detaches
+from the child's tool call and receives the question inline. If unanswered within 10 minutes the
+child proceeds autonomously. Use for architectural decisions or clarifications. Do not use to
+debug errors — escalate via `STATUS: blocked`.
+
+### `subagent_wait`
+
+Lets the main agent wait for or check on a detached subagent. When a subagent calls
+`ask_supervisor`, it detaches and runs in the background; `subagent_wait` lets the main agent
+rejoin its completion after answering.
+
+| Parameter | Purpose |
+|---|---|
+| `id` | Run id of the detached subagent |
+| `timeoutMs` | How long to wait (default: no timeout) |
+| `status` | If `true`, lists all active runs instead of waiting |
+
 ### `list_agents`
 
 Lists available agents. The roster is also injected into `workflow`'s guidelines, so the model
@@ -394,14 +427,63 @@ Lists all available workflows across all three scopes (built-in, user-global, an
 
 Inspects a run's progress or investigates a failure.
 
+### `plan` *(always injected)*
+
+Creates and manages Markdown plans stored in `.pi-workflow/plans/`. Available in **all modes**
+including plan mode (where `write`/`edit` are blocked). Typically produced by the `planner` agent;
+any agent can read.
+
+| Action | Description |
+|---|---|
+| `create` | Write a new plan; returns the assigned id |
+| `get` | Read a plan by id |
+| `list` | List all plans with name and last-updated |
+| `edit` | Precision find-and-replace (`oldText` must match exactly once) |
+| `delete` | Remove a plan |
+
+### `contract` *(always injected)*
+
+Creates and manages versioned contracts stored in `.pi-workflow/contracts/`. Available in all
+modes. Typically produced by the `architect` agent; any agent can read.
+
+| Action | Description |
+|---|---|
+| `create` | Write a new `draft` contract (type: `api`\|`interface`\|`task`\|`data`\|`other`) |
+| `get` | Read a contract by id (includes frontmatter: status, version, producer, consumer) |
+| `list` | List all contracts with type, status, title |
+| `edit` | Precision find-and-replace — **draft contracts only** |
+| `propose` | Move `draft` → `proposed`; signals the contract is final for consumers |
+| `supersede` | Create v+1 draft from an existing contract; marks old as `superseded` |
+
+**Lifecycle:** `draft` → `propose` → `proposed` → `supersede` → `superseded` (old) + new `draft`
+
+**Discipline:** always call `propose` when done writing. Consumers should only act on `proposed`
+contracts — a `draft` may still be changing.
+
+## Skills
+
+Three skills ship with the package and appear in `pi config`:
+
+| Skill | Loaded by | Purpose |
+|---|---|---|
+| `pi-workflow` | normal + workflow modes | Complete reference for the `subagent` and `workflow` tools, graph DSL, escalation vocabulary |
+| `pi-plans` | all modes | Reference for the `plan` tool — format, actions, edit precision, plan id slugs |
+| `pi-contracts` | all modes | Reference for the `contract` tool — types, lifecycle, discipline rules, full coordination example |
+
+Skills are discoverable via `/skill:pi-workflow`, `/skill:pi-plans`, `/skill:pi-contracts`.
+Compact hints are injected into every turn automatically so the agent knows these skills exist
+without being forced to read them.
+
 ## Commands
 
 | Command | Purpose |
 |---|---|
-| `/workflows` | Interactive navigator: runs → nodes → detail |
+| `/workflows` | Interactive TUI navigator: runs → phases → nodes → detail |
+| `/plans` | Interactive TUI navigator: browse and read plans in `.pi-workflow/plans/` |
+| `/contracts` | Interactive TUI navigator: browse contracts with type/status colour coding |
 | `/wf normal\|plan\|workflow` | Switch execution mode (Normal, Plan, or Workflow) |
-| `/agents` | Show the discovered roster |
-| `/saved-workflows` | List or delete saved graphs |
+| `/agents` | Show the discovered agent roster |
+| `/saved-workflows` | List or delete saved workflow scripts |
 
 `/workflows` shows the walk with routing inline, so an escalation loop is legible at a glance:
 
@@ -421,13 +503,21 @@ During a run the status line names the node currently working:
 
 ### Execution modes (`/wf`)
 
-You can switch the execution mode of the session using the `/wf` command to enforce specific tool and behavioral restrictions on the agent. The current mode is displayed as a sticky status widget below the editor.
+You can switch the execution mode of the session using the `/wf` command to enforce specific tool
+and behavioral restrictions on the agent. The current mode is displayed as a sticky status widget
+below the editor.
 
-* **`/wf normal`** (or `/wf build`): The default mode. All tools are enabled, and the agent can write files directly or delegate.
-* **`/wf plan`**: Read-only mode. Blocks all write tools (`write`, `edit`) and delegation tools (`subagent`, `workflow`). Restricts `bash` to read-only commands (e.g. `cat`, `grep`, `ls`, `git diff`). Use this for safe, modification-free architecture planning and codebase research.
-* **`/wf workflow`** (or `/wf on`): Enforced delegation mode. Blocks direct writes (`write`, `edit`) and direct subagents (`subagent`). Forces the agent to write a graph script and execute it via the `workflow` tool for any file changes or task delegation.
+* **`/wf normal`** (or `/wf build`): The default mode. All tools are enabled, and the agent can
+  write files directly or delegate.
+* **`/wf plan`**: Read-only mode. Blocks `write`, `edit`, all subagent and workflow tools, and
+  restricts `bash` to read-only commands (e.g. `cat`, `grep`, `ls`, `git diff`). The `plan` tool
+  remains available — use it to record plans and research findings without touching the codebase.
+* **`/wf workflow`** (or `/wf on`): Enforced delegation mode. Blocks direct writes (`write`,
+  `edit`) and direct subagents (`subagent`). Forces the agent to write a graph script and execute
+  it via the `workflow` tool for any file changes or task delegation.
 
-The active mode prompt is continuously injected into the agent's system prompt along with a high-salience banner to prevent model confusion.
+The active mode prompt is continuously injected into the agent's system prompt along with a
+high-salience banner to prevent model confusion.
 
 ## Production behaviour
 
@@ -459,6 +549,11 @@ did; without one it is marked `skipped` — never `approved`. Silence is not con
 **Worktree isolation** degrades to the project directory when the cwd is not a git repo, rather
 than refusing to run.
 
+**Human questions never time out.** `ask_user_question` blocks the subagent indefinitely — the
+user can take as long as needed. If the subagent run ends before the user answers, the dialog
+closes cleanly. `ask_supervisor` has a 10-minute timeout after which the child proceeds
+autonomously.
+
 ## Compatibility
 
 Works alongside [`@gotgenes/pi-permission-system`](https://www.npmjs.com/package/@gotgenes/pi-permission-system).
@@ -481,8 +576,6 @@ deliberately excluded.
 
 ## Not included
 
-- **Parallel fan-out edges.** Sequential nodes with conditional routing cover coordination; join
-  semantics and partial-failure handling are a later phase.
 - **Persistent agents.** Agents are spawned per node execution and run to completion.
 - **External notification.** Human-in-the-loop is pi-native (`ctx.ui`) only.
 - **Frameworks.** No LangGraph, LangChain, CrewAI, or XState. The executor is a few hundred lines
