@@ -165,6 +165,7 @@ export function resolvePiLaunchToolPlan(input: ResolvePiLaunchToolPlanInput): Pi
 	const internalTools = [
 		"ask_user_question",
 		"ask_supervisor",
+		"plan",
 		...(input.structuredOutput ? ["structured_output"] : []),
 	];
 	const effectiveToolAllowlist = [...new Set([...declaredBuiltinTools, ...effectiveMcpTools, ...internalTools])];
