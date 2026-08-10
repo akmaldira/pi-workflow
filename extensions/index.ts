@@ -48,6 +48,8 @@ import { WorkflowManager } from "./workflow-manager.ts";
 import { openWorkflowNavigator } from "./workflow-ui.ts";
 import { registerTaskPanel } from "./task-panel.ts";
 import { registerWorkflowMode } from "./workflow-mode.ts";
+import { planCreate, planGet, planList, planEdit, planDelete } from "./plan-tool.ts";
+import { openPlansNavigator } from "./plan-ui.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -813,6 +815,9 @@ export default function (pi: ExtensionAPI) {
 	installBrokerSinks({ pi, broker: globalBroker });
 	globalBroker.start();
 
+	// Captured at session_start; used by tools/commands that need the working dir.
+	let sessionCwd: string | undefined;
+
 	// Event emitter for cross-component intercom detach signals.
 	// When a child calls ask_supervisor (expectsReply: true), the ChannelPoller
 	// emits INTERCOM_DETACH_REQUEST_EVENT here; execution.ts listens and returns
@@ -841,6 +846,79 @@ export default function (pi: ExtensionAPI) {
 	// --- Ask Tools (User & Supervisor communication) ---
 	pi.registerTool(createAskUserQuestionTool());
 	pi.registerTool(createAskSupervisorTool());
+
+	// --- Plan Tool ---
+	pi.registerTool({
+		name: "plan",
+		label: "Plan",
+		description:
+			"Create, read, edit, list, or delete plans stored as Markdown files in " +
+			".pi-workflow/plans/. Available in all modes including plan mode. " +
+			"Actions: create | get | edit | list | delete. " +
+			"Use `list` first to discover existing plan ids.",
+		parameters: {
+			type: "object",
+			properties: {
+				action: {
+					type: "string",
+					enum: ["create", "get", "edit", "list", "delete"],
+					description:
+						"create: write a new plan. get: read plan content. " +
+						"edit: precision find-and-replace (oldText must be unique in the file). " +
+						"list: enumerate all plans. delete: remove a plan.",
+				},
+				name: { type: "string", description: "Human-readable plan title (required for create). Used to derive the plan id slug." },
+				id: { type: "string", description: "Plan id slug (returned by create/list). Required for get, edit, delete." },
+				content: { type: "string", description: "Full Markdown content (required for create)." },
+				oldText: { type: "string", description: "Exact text to replace (required for edit). Must match exactly once in the plan." },
+				newText: { type: "string", description: "Replacement text (required for edit)." },
+			},
+			required: ["action"],
+		},
+		async execute(_toolCallId: string, params: Record<string, unknown>) {
+			const reply = (text: string): { content: { type: "text"; text: string }[]; details: Record<string, unknown> } =>
+				({ content: [{ type: "text" as const, text }], details: {} });
+
+			const cwd = sessionCwd;
+			if (!cwd) return reply("Error: no working directory available.");
+
+			const action = String(params.action ?? "");
+			const name = String(params.name ?? "");
+			const id = String(params.id ?? "");
+			const content = String(params.content ?? "");
+			const oldText = String(params.oldText ?? "");
+			const newText = String(params.newText ?? "");
+
+			let result;
+			switch (action) {
+				case "create": result = planCreate(cwd, name, content); break;
+				case "get":    result = planGet(cwd, id); break;
+				case "list":   result = planList(cwd); break;
+				case "edit":   result = planEdit(cwd, id, oldText, newText); break;
+				case "delete": result = planDelete(cwd, id); break;
+				default:       result = { ok: false as const, error: `Unknown action "${action}". Use: create | get | edit | list | delete.` };
+			}
+
+			if (!result.ok) return reply(`Error: ${result.error}`);
+
+			const parts: string[] = [result.message];
+			if (result.id) parts.push(`id: ${result.id}`);
+			if (result.content !== undefined) parts.push("", result.content);
+			if (result.plans !== undefined) {
+				if (result.plans.length === 0) {
+					parts.push('No plans yet. Use action: "create" to create the first one.');
+				} else {
+					parts.push("");
+					for (const p of result.plans) {
+						parts.push(`• ${p.id}  —  ${p.name}`);
+						parts.push(`  updated: ${p.updatedAt}  size: ${p.sizeBytes}B`);
+					}
+				}
+			}
+
+			return reply(parts.join("\n"));
+		},
+	});
 
 	// --- Subagent Wait Tool ---
 	// Lets the main agent optionally wait for a detached subagent to finish,
@@ -993,6 +1071,22 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("plans", {
+		description: "Open the interactive /plans navigator — browse and read plans in .pi-workflow/plans/",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("The /plans navigator requires an interactive TUI session.", "warning");
+				return;
+			}
+			const cwd = ctx.cwd ?? sessionCwd;
+			if (!cwd) {
+				ctx.ui.notify("No working directory available.", "warning");
+				return;
+			}
+			await openPlansNavigator(pi, cwd, ctx.ui);
+		},
+	});
+
 	pi.registerCommand("saved-workflows", {
 		description: "List saved workflows (or `/saved-workflows delete <name>` to remove one)",
 		handler: async (args, ctx) => {
@@ -1073,6 +1167,7 @@ export default function (pi: ExtensionAPI) {
 	// --- Session start: activate workflow tool & task panel ---
 	pi.on("session_start", (_event, ctx) => {
 		setBrokerContext(ctx);
+		if (ctx?.cwd) sessionCwd = ctx.cwd;
 		const active = pi.getActiveTools();
 		// Activate workflow_reply so its promptGuidelines (which tell the model
 		// it MUST call the tool when it sees a workflow-agent-question message)
@@ -1084,6 +1179,7 @@ export default function (pi: ExtensionAPI) {
 		if (!active.includes("ask_user_question")) toActivate.push("ask_user_question");
 		if (!active.includes("ask_supervisor")) toActivate.push("ask_supervisor");
 		if (!active.includes("subagent_wait")) toActivate.push("subagent_wait");
+		if (!active.includes("plan")) toActivate.push("plan");
 		if (toActivate.some((t) => !active.includes(t))) {
 			pi.setActiveTools([...new Set([...active, ...toActivate])]);
 		}
