@@ -318,7 +318,7 @@ export function registerWorkflowMode(
 		hints.push("Skill available: `pi-plans` — use the `plan` tool to create/edit/list/get/delete plans in .pi-workflow/plans/ (works in all modes, including plan mode). Type `/plans` to browse.");
 
 		// pi-contracts: always injected (contract tool works in all modes)
-		hints.push("Skill available: `pi-contracts` — use the `contract` tool to document formal agreements (API, interface, task, data contracts) in .pi-workflow/contracts/. Lifecycle: draft → proposed → superseded. Type `/contracts` to browse.");
+		hints.push("Skill available: `pi-contracts` — use the `contract` tool to document formal agreements (API, interface, task, data contracts) in .pi-workflow/contracts/. Lifecycle: draft → proposed → superseded. Always call `propose` when done writing a draft — consumers should only act on proposed contracts. Type `/contracts` to browse.");
 
 		// pi-workflow: only in normal and workflow modes (not needed in plan mode)
 		if (state.currentMode === "normal" || state.currentMode === "workflow") {
