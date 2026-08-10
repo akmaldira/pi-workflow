@@ -1,11 +1,14 @@
 ---
 name: pi-contracts
-description: Document formal agreements between agents using the contract tool. Contracts are versioned Markdown files with frontmatter stored in .pi-workflow/contracts/. Types: api, interface, task, data, other. Lifecycle: draft → proposed → superseded.
+description: Document formal agreements between agents using the contract tool. Contracts are versioned Markdown files with frontmatter stored in .pi-workflow/contracts/. Types: api, interface, task, data, other. Lifecycle: draft → proposed → superseded. Typically produced by the architect agent.
 ---
 
 # Pi Contracts Skill
 
 The `contract` tool lets agents formally document agreements — what one party will produce and what another will consume. Contracts are stored in `.pi-workflow/contracts/` and available to all agents automatically.
+
+> **Typical producer:** the `architect` agent — it designs interfaces, types, and contracts before implementation begins, and owns them when implementers raise blockers.
+> **Any agent** can read contracts. Any agent can create one if needed, but contracts are most naturally an architect artefact.
 
 ## ⚠️ Core Discipline Rules
 
@@ -31,7 +34,7 @@ These rules prevent coordination failures:
 
 ```
 contract(action: "list")
-contract(action: "create", name: "...", type: "api", producer: "planner", consumer: "worker", content: "...")
+contract(action: "create", name: "...", type: "api", producer: "architect", consumer: "worker", content: "...")
 contract(action: "get", id: "auth-api")
 contract(action: "edit", id: "auth-api", oldText: "...", newText: "...")
 contract(action: "propose", id: "auth-api")
@@ -83,18 +86,18 @@ create → draft → edit (repeat) → propose → proposed
 
 ## Full Coordination Example
 
-This is the typical pattern across agents in a workflow:
+This is the typical pattern in a workflow where architect designs before implementation:
 
-### Step 1 — Planner creates and proposes the contract
+### Step 1 — Architect creates and proposes the contract
 
 ```
-# Planner agent
+# Architect agent — designs the interface before implementation
 
 contract(action: "create",
   name: "Auth API",
   type: "api",
-  producer: "worker",
-  consumer: "reviewer",
+  producer: "architect",
+  consumer: "worker",
   content: """
 # Auth API Contract
 
@@ -105,59 +108,66 @@ contract(action: "create",
 - Response 200: { token: string, expiresAt: string }
 - Response 401: { error: "invalid_credentials" }
 
-## Constraints
-- JWT HS256, 1-hour TTL
-- Passwords never logged
+## Invariants
+- Tokens use JWT HS256, 1-hour TTL
+- Passwords must never appear in logs
+
+## Error cases
+- Missing fields → 400 Bad Request
+- Unknown email → 401 (do not distinguish from wrong password)
 """)
 → id: auth-api
 
-# Done writing — signal it is final
+# Done designing — signal it is final so worker can start
 contract(action: "propose", id: "auth-api")
 → Contract "auth-api" is now proposed.
 ```
 
-### Step 2 — Worker reads the contract before starting
+### Step 2 — Worker reads the contract before implementing
 
 ```
-# Worker agent
+# Worker agent — reads the proposed contract before writing any code
 
 contract(action: "list")
 → [api] [proposed] auth-api — Auth API Contract
 
 # Status is proposed — safe to act on
 contract(action: "get", id: "auth-api")
-→ full spec
+→ full spec including invariants and error cases
 
 # Now implement exactly what the contract says
 ```
 
-### Step 3 — Reviewer verifies against the same contract
+### Step 3 — Reviewer / Green verifies against the same contract
 
 ```
-# Reviewer agent
+# Reviewer or green agent — checks implementation against the contract
 
 contract(action: "get", id: "auth-api")
-→ same spec the worker read
+→ same spec the worker implemented against
 
-# Check worker output against this spec
+# Verify: does the implementation satisfy the invariants and error cases?
 ```
 
-### Step 4 — If the spec needs to change
+### Step 4 — Worker hits a blocker and routes back to architect
 
 ```
-# Producer discovers spec was wrong after proposing
+# Worker discovers the contract can't be satisfied as written
+# It emits BLOCKED_ON: contract in its output
 
+# Architect is re-invoked and sees the blocker in state
 contract(action: "supersede",
   id: "auth-api",
   name: "Auth API v2",
-  content: "# Auth API v2\n\n...revised...")
+  content: "# Auth API v2\n\n...revised spec...")
 → Contract "auth-api" superseded. New contract: auth-api-v2.md (v2)
 
-# auth-api.md is now superseded (kept for history)
-# auth-api-v2.md is a fresh draft
+# auth-api.md is now superseded (kept for audit history)
+# auth-api-v2.md is a fresh draft at version 2
 
 contract(action: "edit", id: "auth-api-v2", oldText: "...", newText: "...")
 contract(action: "propose", id: "auth-api-v2")
+# Worker retries against the revised contract
 ```
 
 ---

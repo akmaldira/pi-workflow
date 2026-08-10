@@ -1,11 +1,14 @@
 ---
 name: pi-plans
-description: Create and manage structured plans using the plan tool. Plans are Markdown files stored in .pi-workflow/plans/ and are available in all modes including plan mode.
+description: Create and manage structured plans using the plan tool. Plans are Markdown files stored in .pi-workflow/plans/ and are available in all modes including plan mode. Typically produced by the planner agent.
 ---
 
 # Pi Plans Skill
 
-The `plan` tool lets you create, read, edit, list, and delete Markdown plans stored in `.pi-workflow/plans/`. It works in **all modes** — including plan mode where `write`/`edit` are blocked.
+The `plan` tool lets any agent create, read, edit, list, and delete Markdown plans stored in `.pi-workflow/plans/`. It works in **all modes** — including plan mode where `write`/`edit` are blocked.
+
+> **Typical producer:** the `planner` agent — it investigates the codebase and writes the implementation plan here so other agents and the human can read it.
+> **Any agent** can read plans. Any agent can create one if needed, but plans are most naturally a planner artefact.
 
 ## Quick Reference
 
@@ -37,16 +40,20 @@ Plans are plain Markdown. Start with an `# H1` heading as the title — the tool
 ## Goal
 Replace the legacy session cookie approach with JWT tokens.
 
-## Approach
-1. Audit current session handling in `auth/session.ts`
-2. Design the JWT payload schema
-3. Implement token issuing and validation
-4. Update all protected routes
+## Steps
+1. Audit current session handling in `auth/session.ts` — files: auth/session.ts
+2. Design the JWT payload schema — files: auth/types.ts
+3. Implement token issuing and validation — files: auth/jwt.ts
+4. Update all protected routes — files: middleware/auth.ts
+
+## Risks
+- Token expiry strategy not yet decided (sliding window vs fixed TTL)
 
 ## Open Questions
-- Token expiry strategy: sliding window or fixed TTL?
 - Where to store the refresh token?
 ```
+
+> This example is written by the **planner** agent — it investigates the codebase, identifies the files, and records the ordered steps here before any implementation begins.
 
 ## Edit Precision
 
