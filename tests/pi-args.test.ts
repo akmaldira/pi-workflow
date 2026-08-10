@@ -222,7 +222,7 @@ describe("pi-args", () => {
 			});
 			expect(result.args).toContain("--tools");
 			const toolsIndex = result.args.indexOf("--tools");
-			expect(result.args[toolsIndex + 1]).toBe("ask_user_question,ask_supervisor,plan");
+			expect(result.args[toolsIndex + 1]).toBe("ask_user_question,ask_supervisor,plan,contract");
 		});
 
 		it("should add --no-skills when inheritSkills is false", () => {
@@ -302,6 +302,7 @@ describe("pi-args", () => {
 			expect(parsed).toContain("ask_user_question");
 			expect(parsed).toContain("ask_supervisor");
 			expect(parsed).toContain("plan");
+			expect(parsed).toContain("contract");
 		});
 
 		it("should write system prompt to temp file", () => {

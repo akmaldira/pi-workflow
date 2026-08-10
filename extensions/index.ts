@@ -50,6 +50,10 @@ import { registerTaskPanel } from "./task-panel.ts";
 import { registerWorkflowMode } from "./workflow-mode.ts";
 import { planCreate, planGet, planList, planEdit, planDelete } from "./plan-tool.ts";
 import { openPlansNavigator } from "./plan-ui.ts";
+import {
+	contractCreate, contractGet, contractList, contractEdit, contractPropose, contractSupersede,
+} from "./contract-tool.ts";
+import { openContractsNavigator } from "./contract-ui.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -920,6 +924,93 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// --- Contract Tool ---
+	pi.registerTool({
+		name: "contract",
+		label: "Contract",
+		description:
+			"Create, read, edit, list, propose, or supersede contracts stored as Markdown files in " +
+			".pi-workflow/contracts/. Contracts formally document agreements between agents (API, " +
+			"interface, task, data). Lifecycle: draft → proposed → superseded. Only draft contracts " +
+			"can be edited. Use supersede to create a new version of an existing contract. " +
+			"Actions: create | get | list | edit | propose | supersede.",
+		parameters: {
+			type: "object",
+			properties: {
+				action: {
+					type: "string",
+					enum: ["create", "get", "list", "edit", "propose", "supersede"],
+					description:
+						"create: write a new draft contract. get: read full content. " +
+						"list: enumerate all contracts with type/status. " +
+						"edit: precision find-and-replace (draft only). " +
+						"propose: mark a draft as proposed (ready for review). " +
+						"supersede: create a new version, mark old as superseded.",
+				},
+				name: { type: "string", description: "Contract title (required for create, supersede). Used to derive the id slug." },
+				id: { type: "string", description: "Contract id slug (required for get, edit, propose, supersede)." },
+				type: {
+					type: "string",
+					enum: ["api", "interface", "task", "data", "other"],
+					description: "Contract type (required for create): api | interface | task | data | other.",
+				},
+				producer: { type: "string", description: "Agent or party that produces/delivers (required for create)." },
+				consumer: { type: "string", description: "Agent or party that consumes/depends on this contract (required for create)." },
+				content: { type: "string", description: "Full Markdown body (required for create, supersede)." },
+				oldText: { type: "string", description: "Exact text to replace (required for edit). Must match exactly once." },
+				newText: { type: "string", description: "Replacement text (required for edit)." },
+			},
+			required: ["action"],
+		},
+		async execute(_toolCallId: string, params: Record<string, unknown>) {
+			const reply = (text: string): { content: { type: "text"; text: string }[]; details: Record<string, unknown> } =>
+				({ content: [{ type: "text" as const, text }], details: {} });
+
+			const cwd = sessionCwd;
+			if (!cwd) return reply("Error: no working directory available.");
+
+			const action  = String(params.action  ?? "");
+			const name    = String(params.name    ?? "");
+			const id      = String(params.id      ?? "");
+			const type    = String(params.type    ?? "other") as import("./contract-tool.ts").ContractType;
+			const producer = String(params.producer ?? "");
+			const consumer = String(params.consumer ?? "");
+			const content = String(params.content ?? "");
+			const oldText = String(params.oldText ?? "");
+			const newText = String(params.newText ?? "");
+
+			let result;
+			switch (action) {
+				case "create":    result = contractCreate(cwd, { name, type, producer, consumer, content }); break;
+				case "get":       result = contractGet(cwd, id); break;
+				case "list":      result = contractList(cwd); break;
+				case "edit":      result = contractEdit(cwd, id, oldText, newText); break;
+				case "propose":   result = contractPropose(cwd, id); break;
+				case "supersede": result = contractSupersede(cwd, id, { name, content }); break;
+				default:          result = { ok: false as const, error: `Unknown action "${action}". Use: create | get | list | edit | propose | supersede.` };
+			}
+
+			if (!result.ok) return reply(`Error: ${result.error}`);
+
+			const parts: string[] = [result.message];
+			if (result.id) parts.push(`id: ${result.id}`);
+			if (result.content !== undefined) parts.push("", result.content);
+			if (result.contracts !== undefined) {
+				if (result.contracts.length === 0) {
+					parts.push('No contracts yet. Use action: "create" to create the first one.');
+				} else {
+					parts.push("");
+					for (const c of result.contracts) {
+						parts.push(`• [${c.type}] [${c.status}] ${c.id}  —  ${c.title}`);
+						parts.push(`  producer: ${c.producer}  consumer: ${c.consumer}  v${c.version}  updated: ${c.updated.slice(0, 10)}`);
+					}
+				}
+			}
+
+			return reply(parts.join("\n"));
+		},
+	});
+
 	// --- Subagent Wait Tool ---
 	// Lets the main agent optionally wait for a detached subagent to finish,
 	// or check status of background runs.
@@ -1087,6 +1178,22 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("contracts", {
+		description: "Open the interactive /contracts navigator — browse contracts in .pi-workflow/contracts/",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("The /contracts navigator requires an interactive TUI session.", "warning");
+				return;
+			}
+			const cwd = ctx.cwd ?? sessionCwd;
+			if (!cwd) {
+				ctx.ui.notify("No working directory available.", "warning");
+				return;
+			}
+			await openContractsNavigator(pi, cwd, ctx.ui);
+		},
+	});
+
 	pi.registerCommand("saved-workflows", {
 		description: "List saved workflows (or `/saved-workflows delete <name>` to remove one)",
 		handler: async (args, ctx) => {
@@ -1180,6 +1287,7 @@ export default function (pi: ExtensionAPI) {
 		if (!active.includes("ask_supervisor")) toActivate.push("ask_supervisor");
 		if (!active.includes("subagent_wait")) toActivate.push("subagent_wait");
 		if (!active.includes("plan")) toActivate.push("plan");
+		if (!active.includes("contract")) toActivate.push("contract");
 		if (toActivate.some((t) => !active.includes(t))) {
 			pi.setActiveTools([...new Set([...active, ...toActivate])]);
 		}
