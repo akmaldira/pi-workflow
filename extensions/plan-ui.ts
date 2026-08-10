@@ -215,7 +215,7 @@ export function openPlansNavigator(
 					const topBorder =
 						borderColor("╭─") +
 						title +
-						borderColor(dashes(innerWidth - visibleWidth(panelTitle))) +
+						borderColor(dashes(innerWidth - panelTitle.length)) +
 						borderColor("╮");
 					const botBorder = borderColor(`╰${dashes(innerWidth + 2)}╯`);
 
@@ -241,6 +241,15 @@ export function openPlansNavigator(
 			};
 
 			return component;
+		},
+		{
+			overlay: true,
+			overlayOptions: {
+				anchor: "center",
+				width: "94%",
+				maxHeight: "92%",
+				margin: 1,
+			},
 		},
 	);
 }
