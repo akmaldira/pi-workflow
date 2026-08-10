@@ -1,19 +1,27 @@
 /**
- * /plans TUI navigator.
+ * /plans TUI navigator — styled panel identical to /workflows.
  *
  * Two-level view:
- *   list ──enter──▶ reader
- *        ◀──esc────
+ *   list ──enter/→──▶ reader
+ *        ◀──esc/←────
  *
- * Keys: ↑/↓ (j/k) navigate · enter/→ open plan · esc/← back · q quit
- * In reader: ↑/↓ scroll · esc/← back to list
+ * Keys: ↑/↓ (j/k) navigate · enter/→ open · esc/← back · r refresh · q quit
+ * In reader: ↑/↓ (j/k) scroll · esc/← back to list · q quit
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { parseKey, truncateToWidth } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { Component, TUI } from "@earendil-works/pi-tui";
+import { parseKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { listAllPlans, plansDir, type PlanMeta } from "./plan-tool.ts";
+
+// ── Box drawing (matches workflow-ui.ts) ────────────────────────────────
+const BOX_BORDER_LEFT = "│ ";
+const BOX_BORDER_RIGHT = " │";
+const BOX_BORDER_OVERHEAD = BOX_BORDER_LEFT.length + BOX_BORDER_RIGHT.length;
+
+// ── State ────────────────────────────────────────────────────────────────
 
 type ViewKind = "list" | "reader";
 
@@ -45,30 +53,29 @@ function readPlanContent(cwd: string, id: string): string {
 	}
 }
 
-// ── Rendering ────────────────────────────────────────────────────────────
+// ── Content rendering (inner lines, no border) ───────────────────────────
 
-function renderList(state: NavState, width: number, rows: number): string[] {
+function renderListContent(state: NavState, innerWidth: number, contentRows: number): string[] {
 	const lines: string[] = [];
-	lines.push(" 📋 Plans (.pi-workflow/plans/)");
-	lines.push("─".repeat(Math.min(width, 60)));
-	lines.push("");
 
 	if (state.plans.length === 0) {
-		lines.push("  No plans yet.");
 		lines.push("");
-		lines.push("  Use the plan tool to create one:");
-		lines.push('  plan(action: "create", name: "...", content: "...")');
+		lines.push("No plans yet.");
+		lines.push("");
+		lines.push('Use the plan tool: plan(action: "create", name: "...", content: "...")');
 		return lines;
 	}
 
-	lines.push("  ↑/↓ navigate  · enter open  · r refresh  · q quit");
+	lines.push("↑/↓ navigate  · enter open  · r refresh  · q quit");
 	lines.push("");
 
-	const header = "  " + "ID".padEnd(30) + "  " + "NAME".padEnd(34) + "  UPDATED";
+	const idW = 28;
+	const nameW = Math.max(10, innerWidth - idW - 14); // 14 = "  " + "  " + date(10)
+	const header = "ID".padEnd(idW) + "  " + "NAME".padEnd(nameW) + "  UPDATED";
 	lines.push(header);
-	lines.push("  " + "─".repeat(Math.min(width - 4, 74)));
+	lines.push("─".repeat(Math.min(innerWidth, header.length)));
 
-	const maxVisible = Math.max(1, rows - lines.length - 1);
+	const maxVisible = Math.max(1, contentRows - lines.length);
 	const start = Math.max(0, state.cursor - Math.floor(maxVisible / 2));
 	const slice = state.plans.slice(start, start + maxVisible);
 
@@ -76,34 +83,37 @@ function renderList(state: NavState, width: number, rows: number): string[] {
 		const p = slice[i];
 		const idx = start + i;
 		const selected = idx === state.cursor;
-		const prefix = selected ? "▶ " : "  ";
-		const idCol = truncateToWidth(p.id, 28).padEnd(30);
-		const nameCol = truncateToWidth(p.name, 32).padEnd(34);
+		const idCol = truncateToWidth(p.id, idW).padEnd(idW);
+		const nameCol = truncateToWidth(p.name, nameW).padEnd(nameW);
 		const updated = p.updatedAt.slice(0, 10);
-		const row = `${prefix}${idCol}  ${nameCol}  ${updated}`;
-		lines.push(selected ? `\x1b[7m${truncateToWidth(row, width - 1)}\x1b[0m` : row);
+		const row = `${idCol}  ${nameCol}  ${updated}`;
+		lines.push(selected ? `\x1b[7m${truncateToWidth(row, innerWidth)}\x1b[0m` : row);
 	}
 
 	return lines;
 }
 
-function renderReader(state: NavState, width: number, rows: number): string[] {
+function renderReaderContent(state: NavState, innerWidth: number, contentRows: number): string[] {
 	const lines: string[] = [];
 	const id = state.selectedId ?? "";
-	lines.push(` 📄 ${id}.md`);
-	lines.push("─".repeat(Math.min(width, 60)));
-	lines.push("  ↑/↓ scroll  · esc/← back to list  · q quit");
+
+	lines.push(`📄 ${id}.md`);
+	lines.push("↑/↓ scroll  · esc/← back to list  · q quit");
+	lines.push("─".repeat(Math.min(innerWidth, 50)));
 	lines.push("");
 
 	const contentLines = (state.selectedContent ?? "").split("\n");
-	const maxVisible = Math.max(1, rows - lines.length - 1);
+	const maxVisible = Math.max(1, contentRows - lines.length - 1);
 	const clampedScroll = Math.min(state.scroll, Math.max(0, contentLines.length - maxVisible));
 	const slice = contentLines.slice(clampedScroll, clampedScroll + maxVisible);
-	for (const l of slice) lines.push("  " + truncateToWidth(l, width - 3));
+
+	for (const l of slice) {
+		lines.push(truncateToWidth(l, innerWidth));
+	}
 
 	if (contentLines.length > maxVisible) {
 		const pct = Math.round((clampedScroll / Math.max(1, contentLines.length - maxVisible)) * 100);
-		lines.push(`  \x1b[2m— ${pct}% (${contentLines.length} lines) —\x1b[0m`);
+		lines.push(`— ${pct}% (${contentLines.length} lines) —`);
 	}
 
 	return lines;
@@ -147,7 +157,10 @@ function handleKey(
 
 	if (state.view === "reader") {
 		if (key === "escape" || key === "left") {
-			return { state: { ...state, view: "list", scroll: 0, selectedId: null, selectedContent: null }, close: false };
+			return {
+				state: { ...state, view: "list", scroll: 0, selectedId: null, selectedContent: null },
+				close: false,
+			};
 		}
 		if (key === "up" || key === "k") {
 			return { state: { ...state, scroll: Math.max(0, state.scroll - 1) }, close: false };
@@ -169,17 +182,51 @@ export function openPlansNavigator(
 ): Promise<void> {
 	let state = freshState(cwd);
 
-	return (ui as any).custom(
-		(tui: any, _theme: unknown, _keybindings: unknown, done: (r: undefined) => void) => {
+	return ui.custom<void>(
+		(tui: TUI, theme: Theme, _keybindings, done: (r: undefined) => void) => {
+			let _focused = false;
+
 			const component = {
-				get focused(): boolean { return false; },
-				set focused(_v: boolean) {},
+				get focused(): boolean { return _focused; },
+				set focused(v: boolean) { _focused = v; },
+
+				invalidate(): void { /* no cached state to clear */ },
 
 				render(width: number): string[] {
-					const rows: number = tui.terminal?.rows ?? 24;
-					return state.view === "list"
-						? renderList(state, width, rows)
-						: renderReader(state, width, rows);
+					const borderColor = (s: string) =>
+						_focused ? theme.fg("accent", s) : theme.fg("borderMuted", s);
+					const titleColor = (s: string) =>
+						_focused ? theme.fg("dim", theme.bold(s)) : theme.fg("muted", s);
+					const bgColor = (s: string) => theme.bg("customMessageBg", s) ?? s;
+
+					const innerWidth = Math.max(10, width - BOX_BORDER_OVERHEAD);
+					const terminalRows = tui.terminal?.rows ?? 24;
+					const overlayRows = Math.max(8, Math.floor(terminalRows * 0.92));
+					const contentRows = Math.max(6, overlayRows - 2);
+
+					const rawLines =
+						state.view === "list"
+							? renderListContent(state, innerWidth, contentRows)
+							: renderReaderContent(state, innerWidth, contentRows);
+
+					const panelTitle = state.view === "list" ? " plans " : ` plan: ${state.selectedId} `;
+					const title = titleColor(panelTitle);
+					const dashes = (n: number) => "─".repeat(Math.max(0, n));
+					const topBorder =
+						borderColor("╭─") +
+						title +
+						borderColor(dashes(innerWidth - visibleWidth(panelTitle))) +
+						borderColor("╮");
+					const botBorder = borderColor(`╰${dashes(innerWidth + 2)}╯`);
+
+					const wrapAndBg = (line: string) => {
+						const padded = truncateToWidth(line, innerWidth, "", true);
+						const fullLine = borderColor(BOX_BORDER_LEFT) + padded + borderColor(BOX_BORDER_RIGHT);
+						const trailingPad = width - visibleWidth(fullLine);
+						return bgColor(fullLine + (trailingPad > 0 ? " ".repeat(trailingPad) : ""));
+					};
+
+					return [bgColor(topBorder), ...rawLines.map(wrapAndBg), bgColor(botBorder)];
 				},
 
 				handleInput(data: string): void {
