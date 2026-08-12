@@ -67,7 +67,7 @@ export interface ChannelRequest {
 	runId: string;
 	nodeId?: string;
 	agent?: string;
-	kind: "human" | "supervisor";
+	kind: "human" | "supervisor" | "state";
 	question: string;
 	options?: Array<{ label: string; description?: string }>;
 	expectsReply: boolean;

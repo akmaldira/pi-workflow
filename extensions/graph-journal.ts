@@ -112,7 +112,7 @@ export interface GraphJournalBrokerRequestRecord {
 	runId: string;
 	nodeId?: string;
 	agent?: string;
-	kind: "human" | "supervisor";
+	kind: "human" | "supervisor" | "state";
 	question: string;
 	timestamp: number;
 }
@@ -285,7 +285,7 @@ export class GraphJournal {
 		runId: string;
 		nodeId?: string;
 		agent?: string;
-		kind: "human" | "supervisor";
+		kind: "human" | "supervisor" | "state";
 		question: string;
 	}): void {
 		this.append({

@@ -33,7 +33,7 @@ export interface BrokerQuestion {
 	multiSelect?: boolean;
 }
 
-export type RequestKind = "human" | "supervisor";
+export type RequestKind = "human" | "supervisor" | "state";
 
 export type RequestSource =
 	| "human" // a real answer from the user
