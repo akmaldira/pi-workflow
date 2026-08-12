@@ -116,7 +116,7 @@ Workflows support two ways to bring external judgment/preferences into a run:
 ```text
 g.edge("a", "b");                                       // direct
 g.edge("a", END);                                       // terminate
-g.edge("a", (state, result) => result.ok ? "b" : "c");  // conditional
+g.edge("a", (state, result) => result.status === "ok" ? "b" : "c");  // conditional
 ```
 
 A node normally has **one** outgoing edge, and a conditional edge is how you choose between
@@ -167,6 +167,11 @@ Interpolating a result yields the agent's **text**; edge conditions get the stru
 ```js
 { status: "ok" | "blocked", text, blockedOn?, reason?, evidence?, proposedFix? }
 ```
+
+That bare `s.architect` above works because a result carries a `toString()` returning `.text` —
+string concatenation and template interpolation trigger it automatically. Anything that needs a
+structured field directly (`result.status`, `result.blockedOn`) has to name it explicitly; `s.architect`
+alone is an object, not a string, outside a coercion context.
 
 ### What is available
 

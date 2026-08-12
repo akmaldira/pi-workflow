@@ -64,8 +64,11 @@ g.run({ target: args.target });", args={ target: "auth module" })
 - `g.run(initialState)` — start it
 
 **State flows between nodes.** Each node's result is stored under its id, so a later node reads an
-earlier one via `s.<nodeId>`. Interpolating a result gives the agent's text; edge conditions get
-`{ status, text, blockedOn, reason }`.
+earlier one via `s.<nodeId>`. Interpolating a result (string concatenation or `${}`) gives the
+agent's text via an automatic `toString()`; edge conditions get the structured object directly —
+`{ status, text, blockedOn, reason }` — and any field beyond `.text` (e.g. `result.status`,
+`result.blockedOn`) must be accessed explicitly. Bare `s.<nodeId>` only stringifies to `.text`
+inside a coercion context; it is not a plain string outside one.
 
 **Revisiting a node overwrites its state entry.** A node is not single-use: an edge can route
 back to it any number of times (a run is capped at `maxIterations`, default 25). But when a node
