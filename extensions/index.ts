@@ -31,6 +31,7 @@ import {
 	createAskUserQuestionTool,
 	createAskSupervisorTool,
 } from "./ask-tools.ts";
+import { createNodeStateTool } from "./node-state-tool.ts";
 import { installBrokerSinks, setBrokerContext } from "./broker-sinks.ts";
 import { runSingleAgent } from "./execution.ts";
 import {
@@ -850,6 +851,7 @@ export default function (pi: ExtensionAPI) {
 	// --- Ask Tools (User & Supervisor communication) ---
 	pi.registerTool(createAskUserQuestionTool());
 	pi.registerTool(createAskSupervisorTool());
+	pi.registerTool(createNodeStateTool());
 
 	// --- Plan Tool ---
 	pi.registerTool({

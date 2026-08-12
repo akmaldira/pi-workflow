@@ -222,7 +222,7 @@ describe("pi-args", () => {
 			});
 			expect(result.args).toContain("--tools");
 			const toolsIndex = result.args.indexOf("--tools");
-			expect(result.args[toolsIndex + 1]).toBe("ask_user_question,ask_supervisor,plan,contract");
+			expect(result.args[toolsIndex + 1]).toBe("ask_user_question,ask_supervisor,plan,contract,node_state");
 		});
 
 		it("should add --no-skills when inheritSkills is false", () => {

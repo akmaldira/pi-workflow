@@ -87,6 +87,18 @@ export interface ChannelRequest {
 		options?: Array<{ label: string; description?: string; preview?: string }>;
 		multiSelect?: boolean;
 	}>;
+	/**
+	 * Payload for `kind: "state"` requests only — the node_state tool's
+	 * dispatched action. `nodeId` above carries the scoping key (the graph
+	 * node's own id, from PI_WORKFLOW_NODE_ID), so this only needs the verb
+	 * and its arguments.
+	 */
+	stateAction?: {
+		action: "set" | "merge" | "append" | "get" | "list";
+		key?: string;
+		value?: unknown;
+		meta?: Record<string, unknown>;
+	};
 }
 
 export interface ChannelReply {
@@ -103,6 +115,14 @@ export interface ChannelReply {
 		selected?: string[];
 		notes?: string;
 	}>;
+	/**
+	 * Reply payload for `kind: "state"` requests. `stateValue` is the reduced
+	 * value — for `get`, the single key's current value; for `list`, the
+	 * whole accumulator — never the action envelope that produced it.
+	 */
+	stateOk?: boolean;
+	stateValue?: unknown;
+	stateError?: string;
 }
 
 // ── Child side: write requests, poll for replies ────────────────────────
