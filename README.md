@@ -54,7 +54,7 @@ export const meta = { name: "tdd_feature", description: "Design, test, implement
 
 const g = graph();
 
-g.node("architect", agent("architect", (s) => `Design the contract for: ${s.task}`));
+g.node("architect", agent("architect", (s) => `Design the contract for: ${args.task}`));
 g.node("red",       agent("red",       (s) => `Write failing tests for:\n${s.architect}`));
 g.node("green",     agent("green",     (s) => `Implement until these pass:\n${s.red}\n\nContract:\n${s.architect}`));
 g.node("reviewer",  agent("reviewer",  (s) => `Review:\n${s.green}`));
@@ -165,13 +165,28 @@ g.node("green", agent("green", (s) => `Implement:\n${s.architect}`));
 Interpolating a result yields the agent's **text**; edge conditions get the structured fields:
 
 ```js
-{ status: "ok" | "blocked", text, blockedOn?, reason?, evidence?, proposedFix? }
+{ status: "ok" | "blocked", text, blockedOn?, reason?, evidence?, proposedFix?, data }
 ```
 
 That bare `s.architect` above works because a result carries a `toString()` returning `.text` —
 string concatenation and template interpolation trigger it automatically. Anything that needs a
-structured field directly (`result.status`, `result.blockedOn`) has to name it explicitly; `s.architect`
-alone is an object, not a string, outside a coercion context.
+structured field directly (`result.status`, `result.blockedOn`, `result.data`) has to name it
+explicitly; `s.architect` alone is an object, not a string, outside a coercion context.
+
+`result.data` is the folded `node_state` buffer for that node — always an object (empty `{}`
+if the node never called `node_state`). Read it in prompts as `s.<nodeId>.data.<key>` and in
+edge conditions as `result.data.<key>` or `state.<nodeId>.data.<key>`:
+
+```js
+// In a prompt function: read a completed node's accumulated findings
+g.node('assembler', agent('worker', (s) =>
+  `Invoice: ${s.extractor.data?.invoice_number ?? 'unknown'}\n` +
+  `Vendor:  ${s.extractor.data?.vendor ?? 'unknown'}`));
+
+// In an edge: gate on how many findings were accumulated
+g.edge('extractor', (state, result) =>
+  Object.keys(result.data).length < 5 ? 'extractor' : 'assembler');
+```
 
 ### What is available
 
@@ -468,91 +483,83 @@ contracts — a `draft` may still be changing.
 ### `node_state` *(always injected — workflow-only)*
 
 Accumulates intermediate findings into a durable, per-node buffer that survives context
-compaction. Dispatch/reducer-shaped, five actions — the host applies a fixed reducer, never
-agent-supplied code:
+compaction. Use it when a node searches many files or runs for a long time — write each finding
+the moment it is found so compaction cannot lose it.
 
 | Action | Description |
 |---|---|
 | `set` | Overwrite a key (last-write-wins) |
 | `merge` | Shallow-merge an object into a key |
 | `append` | Push a value onto an array at a key |
-| `get` | Read one key's current value |
-| `list` | Read the whole accumulator |
+| `get` | Read one key's current value (own buffer only) |
+| `list` | Read the whole accumulator (own buffer only) |
 
-**Workflow-only, unlike `ask_supervisor`.** `ask_supervisor` works in both plain `subagent`
-calls and graph `agent()` nodes; `node_state` only works inside a graph run, as an `agent()`
-node — a plain `subagent` call or the main session gets a clear refusal. "Per-node" only means
-something when there is a graph node to scope to.
+**Workflow-only.** Works inside a graph `agent()` node. A plain `subagent` call or the main
+session gets a clear refusal (unlike `ask_supervisor`, which works in both).
 
-**Scoped per node, never shared.** Every call is tagged with the calling node's own id
-(`PI_WORKFLOW_NODE_ID`), so parallel nodes in the same round never share a buffer — no write
-race by construction, the same guarantee `state[nodeId] = result` gives final results today,
-extended one layer inward to in-flight writes. `get`/`list` read only the calling node's own
-buffer — they can never see another node's findings.
+**Two-phase visibility — the one rule that resolves all confusion:**
 
-> ⚠️ **Cross-node reads go through graph state, not `node_state(get)`.** A node cannot read
-> another node's accumulator with `get` — the buffer is isolated per node by design. When
-> authoring a workflow, hand findings to downstream nodes via graph state:
->
-> ```js
-> // ❌ Wrong: the worker node calling get on the planner's key
-> node_state({ action: "get", key: "planner_value" })   // → unset (own buffer only)
->
-> // ✅ Right: the script reads the completed node's folded data
-> g.node("worker", agent("worker", (s) =>
->   `Planner said: ${s.planner.data?.planner_value ?? "(none)"}`));
-> ```
+| Phase | When | Who can read/write | How |
+|---|---|---|---|
+| **Private** | While the node runs | That node only | `node_state` tool (`get`/`set`/etc.) |
+| **Public** | After the node completes | Every downstream node and edge | `s.<nodeId>.data.<key>` in prompts/edges |
 
-> 🔑 **Two-phase visibility — private while running, public once folded.** The same values have
-> two read paths with two scopes. While a node runs, its buffer is private — only that node
-> reads/writes it via the `node_state` tool. When the node completes, the runner folds the
-> buffer into that node's result as `data` (`state[nodeId] = result`), and from then on the
-> values are public graph state — every node reads them as `s.<nodeId>.data.<key>` with no
-> tool call. `get` never crosses nodes; graph state always does (for completed nodes).
+The buffer is folded into `result.data` when the node exits, and the executor stores
+`state[nodeId] = result`. From that moment it is graph state — readable by all without a tool
+call.
 
-**Folded into `result.data` at completion.** When a node finishes, its accumulated buffer
-becomes that node's `data`, so downstream access is plain JS hardcoded in the script —
-`state.<nodeId>.data.<key>` — no tool call needed to read a completed node's findings:
+**Cross-node reads go through graph state, not `node_state(get)`:**
 
 ```js
-g.node("assemble", agent("assembler", (s) =>
-  `Shard A: ${s.extract_a.data.invoice_number}\nShard B: ${s.extract_b.data.invoice_number}`));
+// ❌ Wrong — a node calling get on another node's key returns unset
+node_state({ action: "get", key: "planner_value" })   // → unset (own buffer only)
 
-g.edge("extract_a", (state, result) => {
-  const found = Object.keys(result.data).length;
-  return found < 90 ? "extract_a" : "assemble";
-});
+// ✅ Right — downstream node reads the completed planner's folded data via graph state
+g.node("worker", agent("worker", (s) =>
+  `Planner said: ${s.planner.data?.planner_value ?? "(none)"}`))
 ```
 
-**Cycles driven by folded state.** The same read path drives loops: the executor writes
-`state[nodeId]` *before* routing, so a conditional edge sees the just-completed visit's folded
-`data` and can decide to revisit the same node — the planner's `node_state` counter decides
-whether to cycle or proceed:
+**Fan-out extraction — two extractors, one assembler:**
 
 ```js
-const g = graph();
+// Each extractor writes its own findings; assembler reads both from graph state
+g.node("extract_a", agent("researcher", (s) =>
+  `Search docs/invoices/. For each invoice call:\n` +
+  `node_state({ action: "set", key: "invoice_number", value: "<v>" })\n` +
+  `node_state({ action: "append", key: "items", value: "<item>" })`));
 
+g.node("extract_b", agent("researcher", (s) =>
+  `Search docs/receipts/. Same node_state calls.`));
+
+g.node("assemble", agent("worker", (s) =>
+  `Combine:\nA: invoice=${s.extract_a.data?.invoice_number}, items=${JSON.stringify(s.extract_a.data?.items)}\n` +
+  `B: invoice=${s.extract_b.data?.invoice_number}, items=${JSON.stringify(s.extract_b.data?.items)}`));
+
+g.edge("scout", "extract_a"); g.edge("scout", "extract_b");  // fan-out
+g.edge("extract_a", "assemble"); g.edge("extract_b", "assemble");  // fan-in
+g.edge("assemble", END);
+```
+
+**Cycle driven by a pass counter in `node_state`** (requires real agents calling node_state):
+
+```text
 g.node("plan", agent("planner", (s) =>
-  `Planning pass ${(s.plan.data?.passes ?? 0) + 1} of max 2. ...planning instructions...\n` +
-  `When you finish this pass, call exactly:\n` +
-  `node_state({ action: "set", key: "passes", value: ${(s.plan.data?.passes ?? 0) + 1} })`));
+  `Pass ${(s.plan.data?.passes ?? 0) + 1} of 3. Task: ${args.task}\n` +
+  `Call when done: node_state({ action: "set", key: "passes", value: ${(s.plan.data?.passes ?? 0) + 1} })`));
 
+// Edge reads the COMPLETED visit's folded data — executor writes state before routing
 g.edge("plan", (state) =>
-  (state.plan.data?.passes ?? 0) < 2 ? "plan" : "worker");   // cycle until 2 passes are done
-
-g.edge("worker", END);
+  (state.plan.data?.passes ?? 0) < 3 ? "plan" : "worker");
 ```
 
-> ⚠️ **A constant flag loops forever.** The edge re-reads the current visit's folded data, so a
-> node that writes the same value every visit (e.g. `visited = 1` unconditionally) never
-> changes the edge's answer. Make the value change between visits (a counter, as above) or
-> stop writing it on the final visit; `maxIterations` caps rounds as a safety net.
+> ⚠️ **A constant flag loops forever.** Writing the same value every visit (e.g. `passes = 1`
+> unconditionally) means the edge condition never changes. Use a counter that increments, or
+> stop writing it on the final visit. `maxIterations` caps rounds as a last resort.
 
-A node's `data` follows the same lifecycle as its `text`: revisiting a node overwrites its
-entry, and resume never reconstructs a crashed node's in-flight writes. **Cross-node conflicts
-are author-gated, never auto-resolved** — if two parallel shards disagree on the same key, the
-workflow author writes the comparison explicitly (an edge condition or gate node) and routes to
-resolution; the reducer never silently picks a value.
+**Lifecycle:** a node's `data` follows the same lifecycle as its `text` — revisiting overwrites
+the entry, and resume never reconstructs a crashed node's in-flight writes. **Cross-node
+conflicts are author-gated** — if two parallel shards disagree on the same key, write a gate
+node to compare `state.<nodeId>.data` and route to resolution; the reducer never silently picks.
 
 ## Skills
 

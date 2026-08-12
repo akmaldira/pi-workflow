@@ -7,8 +7,14 @@ description: Create and manage structured plans using the plan tool. Plans are M
 
 The `plan` tool lets any agent create, read, edit, list, and delete Markdown plans stored in `.pi-workflow/plans/`. It works in **all modes** — including plan mode where `write`/`edit` are blocked.
 
-> **Typical producer:** the `planner` agent — it investigates the codebase and writes the implementation plan here so other agents and the human can read it.
-> **Any agent** can read plans. Any agent can create one if needed, but plans are most naturally a planner artefact.
+> **Typical producer:** the `planner` agent — it investigates the codebase and writes the
+> implementation plan here so other agents and the human can read it.
+> **Any agent** can read plans. Any agent can create one if needed, but plans are most naturally
+> a planner artefact.
+>
+> **When to create a plan:** create one any time you are asked to plan a task, about to break a
+> complex task into steps, or when the human asks you to record your approach before acting. Skip
+> it for one-off lookup tasks where there is nothing to track.
 
 ## Quick Reference
 
@@ -65,4 +71,7 @@ The id is auto-derived from the name as a URL slug (e.g. `"Refactor Auth"` → `
 
 ## /plans Command
 
-Type `/plans` in the TUI to open the interactive plan navigator — browse all plans, read content, scroll with ↑/↓.
+Type `/plans` in the TUI to open the interactive plan navigator — browse all plans, read content,
+scroll with ↑/↓. This is a **read-only TUI panel** only available in interactive sessions;
+agents running headless cannot open it, but can always use `plan(action: "list")` and
+`plan(action: "get", id: "...")` instead.

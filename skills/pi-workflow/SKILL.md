@@ -63,12 +63,20 @@ g.run({ target: args.target });", args={ target: "auth module" })
 - `g.edge(from, (state, result) => target)` — conditional routing
 - `g.run(initialState)` — start it
 
+**`human()` prompt interpolation:** inside a `human()` prompt string, use `#{nodeId}` to embed a
+node's result text — e.g. `human('Review this:\n#{researcher}', { default: 'approve' })`. This is
+different from the `${s.nodeId}` syntax used in `agent()` prompt functions — `${}` is a JS
+template literal evaluated at script-load time; `#{}` is resolved by the runtime when the human
+node actually executes.
+
 **State flows between nodes.** Each node's result is stored under its id, so a later node reads an
 earlier one via `s.<nodeId>`. Interpolating a result (string concatenation or `${}`) gives the
 agent's text via an automatic `toString()`; edge conditions get the structured object directly —
-`{ status, text, blockedOn, reason }` — and any field beyond `.text` (e.g. `result.status`,
-`result.blockedOn`) must be accessed explicitly. Bare `s.<nodeId>` only stringifies to `.text`
-inside a coercion context; it is not a plain string outside one.
+`{ status, text, blockedOn, reason, data }` — and any field beyond `.text` (e.g. `result.status`,
+`result.blockedOn`, `result.data`) must be accessed explicitly. Bare `s.<nodeId>` only stringifies
+to `.text` inside a coercion context; it is not a plain string outside one. `s.<nodeId>.data`
+contains the node's folded `node_state` buffer (an object), always present after the node
+completes (empty object `{}` if `node_state` was never called).
 
 **Revisiting a node overwrites its state entry.** A node is not single-use: an edge can route
 back to it any number of times (a run is capped at `maxIterations`, default 25). But when a node
@@ -121,6 +129,7 @@ Every edge condition receives `(state, result)`. The `result` object has:
 | `proposedFix` | `string` (optional) | What would unblock the agent |
 | `text` | `string` | Full text of the agent's reply |
 | `agent` | `string` | Name of the agent that ran |
+| `data` | `object` | Folded `node_state` buffer — always present, `{}` if unused |
 
 `blockedOn` is a **closed vocabulary** — use these values to decide where a blocker routes:
 
@@ -255,38 +264,28 @@ parallel nodes never share a buffer — there is no write race to reason about. 
 back the *reduced value* of **the calling node's own buffer only** — never an action envelope,
 never another node's accumulator, and never a buffer of a node that has not run yet.
 
-> ⚠️ **Cross-node reads go through graph state, not `node_state(get)`.** A node cannot read
-> another node's findings with `get` — by design, the buffer is isolated per node. To hand
-> findings to a downstream node, use the graph state in the workflow script:
+> ⚠️ **Two-phase visibility — private while running, public once folded.**
+>
+> - **While the node is running:** its buffer is private. Only that node reads/writes it via the
+>   `node_state` tool. Siblings calling `get` see their own buffer (unset for any key they never
+>   wrote). `list` shows only the calling node's own keys.
+> - **When the node completes:** the runner folds the buffer into `result.data`. The executor then
+>   stores `state[nodeId] = result`, making the values public graph state. Every downstream node
+>   and every edge reads them as `s.<nodeId>.data.<key>` — no tool call needed.
+>
+> **Cross-node reads always go through graph state, never through `node_state(get)`:**
 >
 > ```js
-> // ❌ Wrong: the worker node calling get on the planner's key
+> // ❌ Wrong — a node calling get on another node's key
 > node_state({ action: "get", key: "planner_value" })   // → unset (own buffer only)
 >
-> // ✅ Right: the script reads the completed node's folded data
+> // ✅ Right — the workflow script reads the completed node's folded data
 > g.node("worker", agent("worker", (s) =>
 >   `Planner said: ${s.planner.data?.planner_value ?? "(none)"}`));
 > ```
 >
-> So when authoring a workflow: if a node must see another node's findings, the value must
-> either flow through graph state (`state.<nodeId>.data.<key>`) or through the node's result
-> text — never through `node_state(get)`.
-
-> 🔑 **Two-phase visibility — private while running, public once folded.** This is the one rule
-> that resolves most confusion: the *same values* have two different read paths with two
-> different scopes.
->
-> - **While the node is running** — its buffer is private. Only that node can read/write it,
->   through the `node_state` tool (`set`/`merge`/`append`/`get`/`list`). No other node can see
->   it, even in parallel: a sibling's `get` returns unset, and a `list` shows only the calling
->   node's own keys.
-> - **When the node completes** — the runner folds the buffer into that node's result as
->   `data`, and the executor stores `state[nodeId] = result`. From that moment the values are
->   *public graph state*: every node (and every edge) reads them as `s.<nodeId>.data.<key>`,
->   with no tool call.
->
-> In short: `node_state` is the private in-flight workspace of one node; the folded `data` is
-> the public handoff. `get` never crosses nodes; graph state always does (for completed nodes).
+> Rule of thumb: use `node_state` to durably accumulate findings *within* a node; use
+> `s.<nodeId>.data.<key>` in the workflow script to hand those findings to the next node.
 
 **Downstream access is plain JS, hardcoded in the script.** When a node finishes, its
 accumulated buffer is folded into that node's result as `data`, so a later node reads it the
@@ -630,6 +629,68 @@ Each branch keeps its own key (`s.security`, `s.perf`), so nothing is overwritte
 agent's job across branches only pays off when the branches genuinely do not need each other's
 output — if one depends on the other, chain them instead.
 
+### 7. Long-Running Extraction with `node_state` (compaction-safe)
+
+When a node searches many files and may hit auto-compaction, write each finding immediately rather
+than accumulating in the reply. The folded `data` is then available to downstream nodes via graph
+state. The cycle variant drives the loop from the counter in `data`.
+
+```js
+export const meta = { name: 'extract_invoices', description: 'Extract invoice data from documents' };
+const g = graph();
+
+// Extractor: writes findings into its own node_state buffer as it goes
+g.node('extractor', agent('researcher', (s) =>
+  `Search every file under docs/ for invoice fields.\n` +
+  `For each invoice you find, call node_state IMMEDIATELY (do not wait until the end):\n` +
+  `  node_state({ action: "set",    key: "invoice_number", value: "<value>" })\n` +
+  `  node_state({ action: "set",    key: "vendor",         value: "<value>" })\n` +
+  `  node_state({ action: "append", key: "line_items",     value: "<item>" })\n` +
+  `When done, reply with a one-line summary.`));
+
+// Assembler: reads the extractor's folded data from graph state — no tool call needed
+g.node('assembler', agent('worker', (s) =>
+  `Produce a final invoice report from these extracted fields:\n` +
+  `Invoice #: ${s.extractor.data?.invoice_number ?? 'unknown'}\n` +
+  `Vendor:    ${s.extractor.data?.vendor         ?? 'unknown'}\n` +
+  `Line items: ${JSON.stringify(s.extractor.data?.line_items ?? [])}\n` +
+  `Verify completeness and format as Markdown.`));
+
+g.edge('extractor', 'assembler');
+g.edge('assembler', END);
+g.run({});
+```
+
+**Cycle variant — driven by a pass counter in `node_state`** (conceptual — requires real agents calling node_state):
+
+```text
+export const meta = { name: 'iterative_plan', description: 'Plan with up to 3 revision passes' };
+const g = graph();
+
+g.node('plan', agent('planner', (s) => {
+  const pass = (s.plan.data?.passes ?? 0) + 1;
+  return (
+    `This is planning pass ${pass} of max 3.\n` +
+    (s.plan.data?.passes ? `Previous pass summary:\n${s.plan}\n\n` : '') +
+    `Task: ${args.task}\n\n` +
+    `When you finish this pass, call EXACTLY:\n` +
+    `node_state({ action: "set", key: "passes", value: ${pass} })`
+  );
+}));
+
+// Edge reads the completed visit's folded data to decide whether to cycle
+g.edge('plan', (state) =>
+  (state.plan.data?.passes ?? 0) < 3 ? 'plan' : 'worker');
+
+g.node('worker', agent('worker', (s) =>
+  `Implement this plan (${s.plan.data?.passes} passes completed):\n${s.plan}`));
+g.edge('worker', END);
+g.run({ task: args.task });
+```
+
+> ⚠️ A constant flag (e.g. `passes = 1` written every pass) loops forever. The counter must
+> increment each visit so the edge's condition eventually becomes false.
+
 ### Delegate to a specialized agent
 ```
 subagent(tasks=[{"agent": "worker", "task": "Implement user authentication with JWT tokens"}], mode="single")
@@ -640,22 +701,26 @@ subagent(tasks=[{"agent": "worker", "task": "Implement user authentication with 
 subagent(tasks=[{"agent": "scout", "task": "Review auth"}, {"agent": "scout", "task": "Review API"}, {"agent": "scout", "task": "Review payments"}], mode="parallel")
 ```
 
-### Running Without a TUI (IDE / Headless Mode)
+### Running Without a TUI (Headless / IDE Mode)
 
-If you are running `pi` without an interactive terminal (like via an IDE extension, API, or `--mode json`) and you have `pi-permission-system` installed, it will automatically block the `subagent` and `workflow` tools because it cannot prompt the user for permission.
+When `pi-permission-system` is installed and no interactive terminal is available, it cannot
+prompt the user — so any tool gated as `ask` is blocked. The correct fix is to create a
+permission config file that pre-approves the tools your workflows need:
 
-You must configure your `pi-permission-system` settings (`~/.pi/agent/settings.json`) to explicitly allow these tools, or allow all tools:
+**Global (applies to all projects):** `~/.pi/agent/extensions/pi-permission-system/config.json`
+**Project (applies to this directory):** `.pi/extensions/pi-permission-system/config.json`
 
 ```json
 {
-  "extensionsConfig": {
-    "pi-permission-system": {
-      "policy": {
-        "subagent": "allow",
-        "workflow": "allow",
-        "*": "allow" // Or configure specifically
-      }
-    }
+  "permission": {
+    "workflow": "allow",
+    "subagent": "allow",
+    "node_state": "allow",
+    "ask_supervisor": "allow",
+    "ask_user_question": "allow"
   }
 }
 ```
+
+In a full TUI session these tools show a forwarded permission prompt the first time — approve with
+`s` ("for this session") to skip subsequent prompts for the rest of the session.

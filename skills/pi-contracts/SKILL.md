@@ -23,7 +23,9 @@ These rules prevent coordination failures:
 **If you are the consumer (reading the contract):**
 1. Always check `status` before acting on a contract
 2. **Only rely on `proposed` contracts** — a `draft` may still be changing
-3. If the contract you need is still `draft`, wait or ask the producer to propose it
+3. If the contract you need is still `draft`: call `ask_supervisor` to ask the producer to
+   propose it, or emit `STATUS: blocked / BLOCKED_ON: contract` so the graph routes the problem
+   to the architect. **Do not start implementing against a draft.**
 4. If you find an error in a `proposed` contract, tell the producer to `supersede` it — do not act on a spec you know is wrong
 
 **Why this matters:** a `draft` contract is work in progress. Another agent acting on a draft may build the wrong thing because the spec was not finished. `proposed` is the explicit signal: "this is final."
@@ -151,6 +153,16 @@ contract(action: "get", id: "auth-api")
 
 ### Step 4 — Worker hits a blocker and routes back to architect
 
+This step is triggered automatically by the graph edge routing on `BLOCKED_ON: contract`:
+
+```js
+// Workflow script edge that routes the blocker back to architect
+g.edge('worker', (state, result) => {
+  if (result.status === 'blocked' && result.blockedOn === 'contract') return 'architect';
+  return 'reviewer';
+});
+```
+
 ```
 # Worker discovers the contract can't be satisfied as written
 # It emits BLOCKED_ON: contract in its output
@@ -169,16 +181,6 @@ contract(action: "edit", id: "auth-api-v2", oldText: "...", newText: "...")
 contract(action: "propose", id: "auth-api-v2")
 # Worker retries against the revised contract
 ```
-
----
-
-## Edit Precision
-
-`edit` behaves like pi's built-in `edit` tool:
-- `oldText` must match **exactly once** in the full file (including frontmatter)
-- Error if zero matches → you have the wrong text
-- Error if multiple matches → add more surrounding context to make it unique
-- **Only works on `draft` contracts** — attempting to edit a `proposed` contract returns an error
 
 ---
 
