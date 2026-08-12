@@ -24,8 +24,10 @@ import type { GraphScriptResult } from "./graph-validator.ts";
 import { GraphJournal } from "./graph-journal.ts";
 import type { RequestBroker } from "./request-broker.ts";
 import { ChannelPoller, cleanupChannel, ensureChannel, PI_WORKFLOW_CHANNEL_DIR_ENV, PI_WORKFLOW_RUN_ID_ENV } from "./channel.ts";
+import type { ChannelRequest, ChannelReply } from "./channel.ts";
 import type { GraphDisplayBridge } from "./graph-display-bridge.ts";
 import { GraphRunContext } from "./graph-run-context.ts";
+import type { NodeStateBuffers, NodeStateAction } from "./node-state-reducer.ts";
 import type { NodeRunner } from "./graph-executor.ts";
 import { saveWorkflowScript } from "./workflow-library.ts";
 import type { WorkflowMeta } from "./workflow-display-types.ts";
@@ -128,6 +130,58 @@ export function formatEscalations(state: GraphState): string {
 }
 
 /**
+ * Handles a node_state channel request on the host side.
+ *
+ * Reduces the action into the per-node buffer, journals write actions, and
+ * replies — all synchronously. Returns true if the request was a state
+ * request (and was fully handled); false otherwise so the caller knows to
+ * fall through to the human/supervisor broker bridge.
+ *
+ * Extracted from the poller's onRequest closure so the isolation property
+ * (a state request never reaches the broker) can be tested directly.
+ */
+export function dispatchStateRequest(
+	request: ChannelRequest,
+	ctx: {
+		runId: string;
+		buffers: NodeStateBuffers;
+		journal: GraphJournal;
+		reply: (requestId: string, payload: Omit<ChannelReply, "type" | "requestId" | "createdAt">) => void;
+	},
+): boolean {
+	if (request.kind !== "state" || !request.stateAction) return false;
+
+	const nodeId = request.nodeId ?? "(unknown)";
+	const action: NodeStateAction = request.stateAction;
+	const reduced = ctx.buffers.apply(nodeId, action);
+	let replyValue: unknown;
+	if (reduced.ok) {
+		// Journal write actions (set/merge/append) for resume replay.
+		// get/list are read-only — nothing to replay.
+		if (action.action !== "get" && action.action !== "list") {
+			ctx.journal.recordStateAction({
+				runId: ctx.runId,
+				nodeId,
+				action: action.action,
+				...(action.key !== undefined ? { key: action.key } : {}),
+				...(action.value !== undefined ? { value: action.value } : {}),
+				...(action.meta ? { meta: action.meta } : {}),
+			});
+		}
+		replyValue = action.action === "list"
+			? ctx.buffers.readAll(nodeId)
+			: ctx.buffers.read(nodeId, action.key ?? "");
+	}
+	ctx.reply(request.id, {
+		source: "state",
+		stateOk: reduced.ok,
+		stateValue: replyValue,
+		stateError: reduced.error,
+	});
+	return true;
+}
+
+/**
  * Walks the graph and builds its report.
  *
  * Never throws for an aborted run: a detached run has no tool call to fail,
@@ -163,33 +217,12 @@ export async function executeGraphRun(options: GraphRunOptions): Promise<GraphRu
 				// reaching the broker. A state request never enters broker.pending,
 				// never triggers supervisor detach, never appears in a batch — it is
 				// structurally isolated from human/supervisor handling.
-				if (request.kind === "state" && request.stateAction) {
-					const nodeId = request.nodeId ?? "(unknown)";
-					const reduced = context.nodeStateBuffers.apply(nodeId, request.stateAction);
-					let replyValue: unknown;
-					if (reduced.ok) {
-						// Journal write actions (set/merge/append) for resume replay.
-						// get/list are read-only — nothing to replay.
-						if (request.stateAction.action !== "get" && request.stateAction.action !== "list") {
-							journal.recordStateAction({
-								runId,
-								nodeId,
-								action: request.stateAction.action,
-								...(request.stateAction.key !== undefined ? { key: request.stateAction.key } : {}),
-								...(request.stateAction.value !== undefined ? { value: request.stateAction.value } : {}),
-								...(request.stateAction.meta ? { meta: request.stateAction.meta } : {}),
-							});
-						}
-						replyValue = request.stateAction.action === "list"
-							? context.nodeStateBuffers.readAll(nodeId)
-							: context.nodeStateBuffers.read(nodeId, request.stateAction.key ?? "");
-					}
-					poller!.reply(request.id, {
-						source: "state",
-						stateOk: reduced.ok,
-						stateValue: replyValue,
-						stateError: reduced.error,
-					});
+				if (dispatchStateRequest(request, {
+					runId,
+					buffers: context.nodeStateBuffers,
+					journal,
+					reply: (id, payload) => poller!.reply(id, payload),
+				})) {
 					return;
 				}
 
