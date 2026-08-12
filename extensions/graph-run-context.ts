@@ -10,6 +10,7 @@
 import * as path from "node:path";
 import type { ArtifactConfig } from "./types.ts";
 import type { NodeExecution } from "./graph-executor.ts";
+import { NodeStateBuffers } from "./node-state-reducer.ts";
 import { cleanupWorktrees, createWorktree, isGitRepo, type Worktree } from "./worktree.ts";
 
 // --- Budget ---------------------------------------------------------------
@@ -229,6 +230,12 @@ export class GraphRunContext {
 	readonly warnings: BudgetWarning[] = [];
 	/** Extra env vars to inject into every spawned child. */
 	readonly extraEnv: Record<string, string>;
+	/**
+	 * Per-node state buffers for the `node_state` tool. Shared between the
+	 * channel poller (which reduces incoming actions) and the node runner
+	 * (which drains at completion into `result.data`).
+	 */
+	readonly nodeStateBuffers: NodeStateBuffers;
 
 	private readonly onWarning?: (warning: BudgetWarning) => void;
 
@@ -248,6 +255,7 @@ export class GraphRunContext {
 		this.cwd = this.worktree.cwd;
 		this.onWarning = options.onWarning;
 		this.extraEnv = options.extraEnv ?? {};
+		this.nodeStateBuffers = new NodeStateBuffers();
 	}
 
 	/** Feeds a completed node execution into budget tracking. */

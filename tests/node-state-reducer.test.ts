@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { reduceNodeStateAction, readNodeStateValue, type NodeStateData } from "../extensions/node-state-reducer.ts";
+import { reduceNodeStateAction, readNodeStateValue, NodeStateBuffers, type NodeStateData } from "../extensions/node-state-reducer.ts";
 
 describe("reduceNodeStateAction", () => {
 	describe("set", () => {
@@ -184,5 +184,78 @@ describe("readNodeStateValue", () => {
 
 	it("returns undefined for a missing key", () => {
 		expect(readNodeStateValue({ a: 1 }, "b")).toBeUndefined();
+	});
+});
+
+describe("NodeStateBuffers", () => {
+	describe("apply + read", () => {
+		it("applies a set action and reads it back", () => {
+			const bufs = new NodeStateBuffers();
+			const result = bufs.apply("extract_a", { action: "set", key: "invoice", value: "INV-1" });
+			expect(result.ok).toBe(true);
+			expect(bufs.read("extract_a", "invoice")).toBe("INV-1");
+		});
+
+		it("accumulates multiple actions for the same node", () => {
+			const bufs = new NodeStateBuffers();
+			bufs.apply("n", { action: "set", key: "a", value: 1 });
+			bufs.apply("n", { action: "set", key: "b", value: 2 });
+			expect(bufs.readAll("n")).toEqual({ a: 1, b: 2 });
+		});
+
+		it("returns empty object for a node that has not accumulated", () => {
+			const bufs = new NodeStateBuffers();
+			expect(bufs.readAll("unknown")).toEqual({});
+			expect(bufs.read("unknown", "key")).toBeUndefined();
+		});
+
+		it("does not apply a failed action", () => {
+			const bufs = new NodeStateBuffers();
+			bufs.apply("n", { action: "set", key: "a", value: 1 });
+			const failed = bufs.apply("n", { action: "set" }); // missing key
+			expect(failed.ok).toBe(false);
+			// The good value survived; nothing was written for the failed action.
+			expect(bufs.readAll("n")).toEqual({ a: 1 });
+		});
+	});
+
+	describe("drain", () => {
+		it("returns and clears the accumulator", () => {
+			const bufs = new NodeStateBuffers();
+			bufs.apply("n", { action: "set", key: "a", value: 1 });
+			const drained = bufs.drain("n");
+			expect(drained).toEqual({ a: 1 });
+			// After drain, the node starts from a clean slate.
+			expect(bufs.readAll("n")).toEqual({});
+			expect(bufs.has("n")).toBe(false);
+		});
+
+		it("returns empty object for a node that has not accumulated", () => {
+			const bufs = new NodeStateBuffers();
+			expect(bufs.drain("unknown")).toEqual({});
+		});
+	});
+
+	describe("per-node isolation", () => {
+		it("parallel nodes never share a buffer", () => {
+			const bufs = new NodeStateBuffers();
+			bufs.apply("extract_a", { action: "set", key: "invoice", value: "INV-A" });
+			bufs.apply("extract_b", { action: "set", key: "invoice", value: "INV-B" });
+			expect(bufs.read("extract_a", "invoice")).toBe("INV-A");
+			expect(bufs.read("extract_b", "invoice")).toBe("INV-B");
+			// Draining one does not affect the other.
+			bufs.drain("extract_a");
+			expect(bufs.read("extract_b", "invoice")).toBe("INV-B");
+		});
+	});
+
+	describe("reset", () => {
+		it("clears a node's buffer without returning it", () => {
+			const bufs = new NodeStateBuffers();
+			bufs.apply("n", { action: "set", key: "a", value: 1 });
+			bufs.reset("n");
+			expect(bufs.has("n")).toBe(false);
+			expect(bufs.readAll("n")).toEqual({});
+		});
 	});
 });

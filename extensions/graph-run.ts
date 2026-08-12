@@ -147,10 +147,40 @@ export async function executeGraphRun(options: GraphRunOptions): Promise<GraphRu
 		[PI_WORKFLOW_RUN_ID_ENV]: runId,
 	};
 
+	const context = new GraphRunContext({
+		cwd: options.cwd,
+		runId,
+		tokenBudget: options.tokenBudget,
+		useWorktree: options.useWorktree,
+		extraEnv: channelEnv,
+	});
+
 	let poller: ChannelPoller | undefined;
 	if (broker) {
 		poller = new ChannelPoller(chDir, {
 			onRequest: (request) => {
+				// node_state dispatch: reduce synchronously, reply, and return before
+				// reaching the broker. A state request never enters broker.pending,
+				// never triggers supervisor detach, never appears in a batch — it is
+				// structurally isolated from human/supervisor handling.
+				if (request.kind === "state" && request.stateAction) {
+					const nodeId = request.nodeId ?? "(unknown)";
+					const reduced = context.nodeStateBuffers.apply(nodeId, request.stateAction);
+					let replyValue: unknown;
+					if (reduced.ok) {
+						replyValue = request.stateAction.action === "list"
+							? context.nodeStateBuffers.readAll(nodeId)
+							: context.nodeStateBuffers.read(nodeId, request.stateAction.key ?? "");
+					}
+					poller!.reply(request.id, {
+						source: "state",
+						stateOk: reduced.ok,
+						stateValue: replyValue,
+						stateError: reduced.error,
+					});
+					return;
+				}
+
 				// Bridge: channel request → broker request → broker answer → channel reply.
 				// Pass request.id through so the broker uses the same UUID the child
 				// wrote, keeping the id consistent for markInlineDelivered lookups.
@@ -184,13 +214,6 @@ export async function executeGraphRun(options: GraphRunOptions): Promise<GraphRu
 		poller.start();
 	}
 
-	const context = new GraphRunContext({
-		cwd: options.cwd,
-		runId,
-		tokenBudget: options.tokenBudget,
-		useWorktree: options.useWorktree,
-		extraEnv: channelEnv,
-	});
 	const runNode = options.makeRunNode(context);
 
 	const journal = GraphJournal.create({

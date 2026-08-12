@@ -363,6 +363,76 @@ describe("createNodeRunner: agent nodes", () => {
 		expect(spawn.mock.calls[1][3].extraEnv).toMatchObject({ PI_WORKFLOW_NODE_ID: "extract_b" });
 	});
 
+	it("folds accumulated node_state data into result.data at completion", async () => {
+		const { NodeStateBuffers } = await import("../extensions/node-state-reducer.ts");
+		const buffers = new NodeStateBuffers();
+		// Simulate the host having received state writes for this node before it finishes.
+		buffers.apply("a", { action: "set", key: "invoice_number", value: "INV-4471" });
+		buffers.apply("a", { action: "set", key: "vendor", value: "Acme Corp" });
+
+		const spawn = vi.fn().mockResolvedValue(withText("All done."));
+		const runner = createNodeRunner({
+			cwd,
+			runId: "r1",
+			spawnAgent: spawn as never,
+			nodeStateBuffers: buffers,
+		});
+
+		const outcome = await runner(agentNode("a", "green"), {}, { step: 1, runId: "r1" });
+		const result = outcome.result as { data?: Record<string, unknown> };
+		expect(result.data).toEqual({ invoice_number: "INV-4471", vendor: "Acme Corp" });
+		// Buffer was drained — no leftover state for this node.
+		expect(buffers.has("a")).toBe(false);
+	});
+
+	it("result.data is an empty object when the agent never called node_state", async () => {
+		const { NodeStateBuffers } = await import("../extensions/node-state-reducer.ts");
+		const buffers = new NodeStateBuffers();
+
+		const spawn = vi.fn().mockResolvedValue(withText("All done."));
+		const runner = createNodeRunner({
+			cwd,
+			runId: "r1",
+			spawnAgent: spawn as never,
+			nodeStateBuffers: buffers,
+		});
+
+		const outcome = await runner(agentNode("a", "green"), {}, { step: 1, runId: "r1" });
+		const result = outcome.result as { data?: Record<string, unknown> };
+		expect(result.data).toEqual({});
+	});
+
+	it("result.data is an empty object when nodeStateBuffers is not configured", async () => {
+		const spawn = vi.fn().mockResolvedValue(withText("All done."));
+		const runner = runnerWith(spawn);
+
+		const outcome = await runner(agentNode("a", "green"), {}, { step: 1, runId: "r1" });
+		const result = outcome.result as { data?: Record<string, unknown> };
+		expect(result.data).toEqual({});
+	});
+
+	it("drains data even on agent-level failure (blocked result)", async () => {
+		const { NodeStateBuffers } = await import("../extensions/node-state-reducer.ts");
+		const buffers = new NodeStateBuffers();
+		buffers.apply("a", { action: "set", key: "partial", value: "found" });
+
+		const spawn = vi.fn().mockResolvedValue(withText(
+			"STATUS: blocked\nBLOCKED_ON: information\nREASON: missing doc\n",
+		));
+		const runner = createNodeRunner({
+			cwd,
+			runId: "r1",
+			spawnAgent: spawn as never,
+			nodeStateBuffers: buffers,
+		});
+
+		const outcome = await runner(agentNode("a", "green"), {}, { step: 1, runId: "r1" });
+		const result = outcome.result as { status: string; data?: Record<string, unknown> };
+		expect(result.status).toBe("blocked");
+		expect(result.data).toEqual({ partial: "found" });
+		expect(buffers.has("a")).toBe(false);
+	});
+
 	it("injects the escalation protocol into a custom agent that lacks it", async () => {
 		// The whole point of auto-injection: a custom agent authored without
 		// the escalation block must still receive it at spawn time, so it can

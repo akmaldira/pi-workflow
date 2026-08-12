@@ -317,6 +317,7 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 					extraEnv: context.extraEnv,
 					spawnAgent: spawnAgent as never,
 					broker: options.broker,
+					nodeStateBuffers: context.nodeStateBuffers,
 				});
 
 			// Detach. Everything below this line happens after the tool has

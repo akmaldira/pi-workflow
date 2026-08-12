@@ -419,6 +419,17 @@ export default function (pi: ExtensionAPI) {
 
 				const poller = new ChannelPoller(chDir, {
 					onRequest: (request) => {
+						// Defensive: a state request should never arrive here (node_state's
+						// client-side check refuses when PI_WORKFLOW_NODE_ID is absent),
+						// but handle it cleanly rather than letting it reach the broker.
+						if (request.kind === "state") {
+							poller.reply(request.id, {
+								source: "state",
+								stateOk: false,
+								stateError: "node_state is not available outside a workflow graph run.",
+							});
+							return;
+						}
 						// A supervisor request that expects a reply cannot be answered
 						// while this tool call is still blocking the main agent's turn —
 						// the reply would queue behind this very call. Emit the detach
@@ -613,6 +624,17 @@ export default function (pi: ExtensionAPI) {
 
 				const poller = new ChannelPoller(chDir, {
 					onRequest: (request) => {
+						// Defensive: a state request should never arrive here (node_state's
+						// client-side check refuses when PI_WORKFLOW_NODE_ID is absent),
+						// but handle it cleanly rather than letting it reach the broker.
+						if (request.kind === "state") {
+							poller.reply(request.id, {
+								source: "state",
+								stateOk: false,
+								stateError: "node_state is not available outside a workflow graph run.",
+							});
+							return;
+						}
 						// A supervisor request that expects a reply cannot be answered
 						// while this tool call is still blocking the main agent's turn —
 						// the reply would queue behind this very call. Emit the detach

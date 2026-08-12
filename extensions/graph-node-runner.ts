@@ -17,6 +17,7 @@ import type { AgentConfig } from "./agents.ts";
 import { discoverAgents } from "./agents.ts";
 import { PI_WORKFLOW_NODE_ID_ENV } from "./channel.ts";
 import { classifySingleResultFailure } from "./failure-classifier.ts";
+import type { NodeStateBuffers } from "./node-state-reducer.ts";
 import type { GraphNode, GraphState } from "./graph-dsl.ts";
 import type { NodeRunOutcome, NodeRunner } from "./graph-executor.ts";
 import type { RequestBroker } from "./request-broker.ts";
@@ -60,6 +61,13 @@ export interface AgentNodeResult {
 	/** Set when the agent finished but something went wrong along the way. */
 	error?: string;
 	usage?: { tokens: number };
+	/**
+	 * Accumulated per-node state from `node_state` tool calls during this
+	 * node's run. Folded in by the node runner at completion from the
+	 * NodeStateBuffers drain — empty object when the agent never called
+	 * node_state. Downstream nodes read it as `state.<nodeId>.data.<key>`.
+	 */
+	data?: Record<string, unknown>;
 }
 
 const STATUS_LINE = /^\s*STATUS:\s*(\w[\w-]*)\s*$/im;
@@ -293,6 +301,13 @@ export interface HumanHandlerResult {
 export interface CreateNodeRunnerOptions extends AgentSpawnOptions {
 	spawnAgent: SpawnAgentFn;
 	broker?: RequestBroker;
+	/**
+	 * Per-node state buffers for the `node_state` tool. When provided, the
+	 * runner drains each node's accumulated state into `result.data` at
+	 * completion. When absent (e.g. tests that don't exercise node_state),
+	 * `result.data` is an empty object and the tool is effectively inert.
+	 */
+	nodeStateBuffers?: NodeStateBuffers;
 }
 
 function usageTokens(result: SingleResult): number | undefined {
@@ -472,6 +487,8 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 
 			if (classification.class === "technical") {
 				// Infrastructure failed. There is no agent judgement to route on.
+				// Drain the buffer for cleanup even though the graph aborts.
+				options.nodeStateBuffers?.drain(node.id);
 				return {
 					result: { status: "failed", agent: agentName, text, error: classification.reason },
 					technicalFailure: true,
@@ -483,6 +500,7 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 			// An agent-level failure is a routable outcome, not an abort. The
 			// agent tried and could not finish; an edge decides what happens.
 			const parsed = parseAgentResult(text, agentName);
+			parsed.data = options.nodeStateBuffers?.drain(node.id) ?? {};
 			return {
 				result: { ...parsed, error: classification.reason, usage: tokens ? { tokens } : undefined },
 				error: classification.reason,
@@ -493,6 +511,7 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 
 		const parsed = parseAgentResult(text, agentName);
 		if (tokens) parsed.usage = { tokens };
+		parsed.data = options.nodeStateBuffers?.drain(node.id) ?? {};
 		return { result: parsed, tokens, sessionId };
 	}
 }
