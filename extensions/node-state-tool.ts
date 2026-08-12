@@ -84,6 +84,8 @@ export function createNodeStateTool(): ToolDefinition {
 		description: [
 			"Accumulate intermediate findings into a durable, per-node buffer that survives context compaction.",
 			"Workflow-only: available inside a workflow graph run (as an agent() node), not in standalone subagent calls.",
+			"Per-node isolated: get/list read ONLY this node's own buffer — they never see another node's data.",
+			"To pass findings to a later node, the workflow script reads them from graph state (s.<nodeId>.data.<key>).",
 			"Five actions: set | merge | append | get | list. Use it the moment you find a value — do not wait until the end.",
 		].join(" "),
 		parameters: NodeStateParams,

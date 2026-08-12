@@ -252,7 +252,25 @@ node_state({ action: "list" })                            // returns the whole a
 
 **Scope: per node, never shared.** Every call is tagged with the calling node's own id. Two
 parallel nodes never share a buffer — there is no write race to reason about. `get`/`list` read
-back the *reduced value*, never an action envelope.
+back the *reduced value* of **the calling node's own buffer only** — never an action envelope,
+never another node's accumulator, and never a buffer of a node that has not run yet.
+
+> ⚠️ **Cross-node reads go through graph state, not `node_state(get)`.** A node cannot read
+> another node's findings with `get` — by design, the buffer is isolated per node. To hand
+> findings to a downstream node, use the graph state in the workflow script:
+>
+> ```js
+> // ❌ Wrong: the worker node calling get on the planner's key
+> node_state({ action: "get", key: "planner_value" })   // → unset (own buffer only)
+>
+> // ✅ Right: the script reads the completed node's folded data
+> g.node("worker", agent("worker", (s) =>
+>   `Planner said: ${s.planner.data?.planner_value ?? "(none)"}`));
+> ```
+>
+> So when authoring a workflow: if a node must see another node's findings, the value must
+> either flow through graph state (`state.<nodeId>.data.<key>`) or through the node's result
+> text — never through `node_state(get)`.
 
 **Downstream access is plain JS, hardcoded in the script.** When a node finishes, its
 accumulated buffer is folded into that node's result as `data`, so a later node reads it the

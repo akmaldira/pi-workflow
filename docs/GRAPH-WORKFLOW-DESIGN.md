@@ -354,7 +354,12 @@ both the scoping key and the availability signal.
 **Folding into `result.data`:** when a node's process exits, the node runner drains its buffer
 into `result.data` before returning, so `state[nodeId] = outcome.result` carries the accumulated
 values exactly like every other result field. Downstream access is plain JS hardcoded in the
-script (`s.<nodeId>.data.<key>`), no tool call needed to read a completed node's findings.
+script (`s.<nodeId>.data.<key>`), no tool call needed to read a completed node's findings. The
+corollary authors must not miss: **the tool itself is one-way across nodes** — `get`/`list` see
+only the calling node's own accumulator, so findings can never be read from another node
+through `node_state`; any cross-node handoff happens in the script via graph state, or not at
+all. (Workflow authors who expect `get` to reach a sibling's buffer get an unset back — the
+script is the only cross-node read path.)
 
 **Journaling and resume:** write actions are journaled as `state_action` records (one per
 `set`/`merge`/`append`), but resume deliberately does **not** replay them. A completed node's

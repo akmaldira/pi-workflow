@@ -487,7 +487,21 @@ something when there is a graph node to scope to.
 **Scoped per node, never shared.** Every call is tagged with the calling node's own id
 (`PI_WORKFLOW_NODE_ID`), so parallel nodes in the same round never share a buffer — no write
 race by construction, the same guarantee `state[nodeId] = result` gives final results today,
-extended one layer inward to in-flight writes.
+extended one layer inward to in-flight writes. `get`/`list` read only the calling node's own
+buffer — they can never see another node's findings.
+
+> ⚠️ **Cross-node reads go through graph state, not `node_state(get)`.** A node cannot read
+> another node's accumulator with `get` — the buffer is isolated per node by design. When
+> authoring a workflow, hand findings to downstream nodes via graph state:
+>
+> ```js
+> // ❌ Wrong: the worker node calling get on the planner's key
+> node_state({ action: "get", key: "planner_value" })   // → unset (own buffer only)
+>
+> // ✅ Right: the script reads the completed node's folded data
+> g.node("worker", agent("worker", (s) =>
+>   `Planner said: ${s.planner.data?.planner_value ?? "(none)"}`));
+> ```
 
 **Folded into `result.data` at completion.** When a node finishes, its accumulated buffer
 becomes that node's `data`, so downstream access is plain JS hardcoded in the script —
