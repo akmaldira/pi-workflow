@@ -259,6 +259,39 @@ describe("journal: rounds and superstep resume", () => {
 		expect(resume.isValid).toBe(true);
 		expect(resume.frontier).toEqual([]);
 	});
+
+	it("preserves folded .data in completed rounds and discards state_action records of crashed rounds", () => {
+		const j = journalFor("r7");
+		// Round 1 completed: scout's result carries folded data (node runner
+		// drains the buffer into result.data before journaling).
+		j.recordNode({
+			...node(1, 1, "scout", "a,b"),
+			result: { status: "ok", text: "done", agent: "x", data: { found: "yes" } },
+		});
+		j.recordRoundComplete({
+			round: 1,
+			nodeIds: ["scout"],
+			nextFrontier: ["a", "b"],
+			remainingInDegree: { scout: 0, a: 0, b: 0, sum: 2 },
+		});
+		// Round 2 crashed: node "a" wrote a state_action, then died before its
+		// node record and round marker. The action must NOT reconstruct "a".
+		j.recordStateAction({ runId: "r7", nodeId: "a", action: "set", key: "invoice", value: "INV-999" });
+
+		const resume = loadGraphSuperstepResumeState({
+			journalDir: dir,
+			runId: "r7",
+			scriptHash: "hash-1",
+		});
+
+		expect(resume.isValid).toBe(true);
+		// Completed round's data survived via the node record.
+		expect((resume.state.scout as { data?: Record<string, unknown> }).data).toEqual({ found: "yes" });
+		// Crashed round: a is not in state, no stale data leaked.
+		expect(resume.state).not.toHaveProperty("a");
+		expect(resume.executedNodeIds).toEqual(["scout"]);
+		expect(resume.frontier).toEqual(["a", "b"]);
+	});
 });
 
 describe("display bridge: concurrent nodes", () => {

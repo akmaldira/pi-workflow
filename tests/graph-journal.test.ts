@@ -425,6 +425,68 @@ describe("loadGraphResumeState", () => {
 		expect(state.isValid).toBe(false);
 		expect(state.invalidReason).toMatch(/missing its run header/);
 	});
+
+	it("preserves a completed node's folded .data via node-record replay, with no double-apply from state_action records", () => {
+		// The node record already carries the folded data (the node runner
+		// drains the buffer into result.data before the executor journals it).
+		// The matching state_action records must NOT be replayed too — that
+		// would double-apply the writes.
+		journalWith([
+			header,
+			{
+				type: "node",
+				step: 1,
+				nodeId: "extract_a",
+				result: {
+					status: "ok",
+					text: "done",
+					agent: "green",
+					data: { invoice_number: "INV-4471", vendor: "Acme Corp" },
+				},
+				routedTo: "END",
+			},
+			{ type: "state_action", runId: "run1", nodeId: "extract_a", action: "set", key: "invoice_number", value: "INV-4471", timestamp: 1 },
+			{ type: "state_action", runId: "run1", nodeId: "extract_a", action: "set", key: "vendor", value: "Acme Corp", timestamp: 2 },
+		]);
+
+		const state = loadGraphResumeState({ journalDir, runId: "run1", scriptHash: "hash1" });
+
+		expect(state.isValid).toBe(true);
+		const data = (state.state.extract_a as { data?: Record<string, unknown> }).data;
+		expect(data).toEqual({ invoice_number: "INV-4471", vendor: "Acme Corp" });
+		// No double-apply: values were not appended/merged into a second layer.
+		expect((state.state.extract_a as { text?: string }).text).toBe("done");
+	});
+
+	it("discards a crashed node's in-flight state_action records (no node record → node re-runs clean)", () => {
+		// Node extract_b started, wrote three findings, then the process died
+		// before its node record was journaled. Resume must NOT reconstruct
+		// extract_b's data from the orphaned actions — the node re-runs from
+		// scratch (consistent with "revisiting a node overwrites its entry"
+		// and with resume never recovering partial in-flight work).
+		journalWith([
+			header,
+			{
+				type: "node",
+				step: 1,
+				nodeId: "extract_a",
+				result: { status: "ok", text: "done", agent: "green", data: { a: 1 } },
+				routedTo: "extract_b",
+			},
+			{ type: "state_action", runId: "run1", nodeId: "extract_b", action: "set", key: "invoice", value: "INV-999", timestamp: 1 },
+			{ type: "state_action", runId: "run1", nodeId: "extract_b", action: "set", key: "vendor", value: "Stale Co", timestamp: 2 },
+		]);
+
+		const state = loadGraphResumeState({ journalDir, runId: "run1", scriptHash: "hash1" });
+
+		expect(state.isValid).toBe(true);
+		// extract_a completed and its data survived.
+		expect((state.state.extract_a as { data?: Record<string, unknown> }).data).toEqual({ a: 1 });
+		// extract_b has NO state entry at all — no stale data leaked in.
+		expect(state.state.extract_b).toBeUndefined();
+		// Resume continues from where extract_a routed: extract_b runs fresh.
+		expect(state.resumeFrom).toBe("extract_b");
+	});
 });
 
 describe("listGraphRuns", () => {

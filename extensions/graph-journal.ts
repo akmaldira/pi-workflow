@@ -425,6 +425,15 @@ export function loadGraphResumeState(options: {
 
 	const executions = records.filter((r): r is GraphJournalNodeRecord => r.type === "node");
 
+	// state_action records are deliberately NOT replayed here. A completed
+	// node's result already carries its folded .data (the node runner drains
+	// the buffer into result.data before the executor journals the record), so
+	// replaying actions would double-apply them. A node that crashed mid-run
+	// has no node record; its in-flight state_action records are discarded,
+	// matching the "revisiting a node overwrites its state entry" rule — a
+	// node's state is whatever its most recent complete visit produced, true
+	// for .text and .data alike. Resume never recovers partial in-flight work.
+
 	// Replay in recorded order. A revisited node overwrites its earlier
 	// entry, exactly as it would during a live run.
 	const state: GraphState = { ...meta.initialState };
@@ -535,6 +544,11 @@ export function loadGraphSuperstepResumeState(options: {
 		(r): r is GraphJournalNodeRecord =>
 			r.type === "node" && (r.round ?? 0) <= lastCompletedRound,
 	);
+
+	// state_action records are deliberately NOT replayed (same rationale as
+	// the linear resume above): completed nodes carry their folded .data in
+	// the node record, and crashed nodes' in-flight actions are discarded so
+	// the node re-runs clean.
 
 	const state: GraphState = { ...meta.initialState };
 	for (const execution of executions) {
