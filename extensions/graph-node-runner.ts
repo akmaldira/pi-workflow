@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentConfig } from "./agents.ts";
 import { discoverAgents } from "./agents.ts";
+import { PI_WORKFLOW_NODE_ID_ENV } from "./channel.ts";
 import { classifySingleResultFailure } from "./failure-classifier.ts";
 import type { GraphNode, GraphState } from "./graph-dsl.ts";
 import type { NodeRunOutcome, NodeRunner } from "./graph-executor.ts";
@@ -443,7 +444,10 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 				turnBudget: resolved.agent.turnBudget,
 				toolBudget: resolved.agent.toolBudget,
 				timeoutMs: resolved.agent.timeoutMs,
-				extraEnv: options.extraEnv,
+				// This node's own id, so the child-side node_state tool can scope its
+				// requests to this node's accumulator (and so it can tell it is
+				// actually running as a graph node, not a plain subagent call).
+				extraEnv: { ...options.extraEnv, [PI_WORKFLOW_NODE_ID_ENV]: node.id },
 				maxSubagentDepth: resolveChildMaxSubagentDepth(
 					resolveCurrentMaxSubagentDepth(),
 					resolved.agent.maxSubagentDepth,

@@ -22,6 +22,15 @@ import { randomUUID } from "node:crypto";
 
 export const PI_WORKFLOW_CHANNEL_DIR_ENV = "PI_WORKFLOW_CHANNEL_DIR";
 export const PI_WORKFLOW_RUN_ID_ENV = "PI_WORKFLOW_RUN_ID";
+/**
+ * Set only when a child is spawned as a graph agent() node (never by the
+ * plain `subagent` tool, which has no graph node to identify). This is both
+ * the per-node scoping key for node_state requests and the signal the
+ * node_state tool uses to refuse outside an actual graph run — a plain
+ * `subagent` call has PI_WORKFLOW_CHANNEL_DIR/PI_WORKFLOW_RUN_ID set too, so
+ * channel presence alone cannot distinguish the two contexts.
+ */
+export const PI_WORKFLOW_NODE_ID_ENV = "PI_WORKFLOW_NODE_ID";
 
 // ── Layout ──────────────────────────────────────────────────────────────
 

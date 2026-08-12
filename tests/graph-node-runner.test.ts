@@ -324,6 +324,45 @@ describe("createNodeRunner: agent nodes", () => {
 		expect(passedAgent.tools).toContain("write");
 	});
 
+	it("injects PI_WORKFLOW_NODE_ID as the node's own id via extraEnv", async () => {
+		const spawn = vi.fn().mockResolvedValue(withText("ok"));
+		const runner = runnerWith(spawn);
+
+		await runner(agentNode("extract_a", "green"), {}, { step: 1, runId: "r1" });
+
+		const spawnOptions = spawn.mock.calls[0][3];
+		expect(spawnOptions.extraEnv).toMatchObject({ PI_WORKFLOW_NODE_ID: "extract_a" });
+	});
+
+	it("preserves other extraEnv entries alongside the injected node id", async () => {
+		const spawn = vi.fn().mockResolvedValue(withText("ok"));
+		const runner = createNodeRunner({
+			cwd,
+			runId: "r1",
+			spawnAgent: spawn as never,
+			extraEnv: { PI_WORKFLOW_CHANNEL_DIR: "/tmp/some-channel" },
+		});
+
+		await runner(agentNode("extract_b", "green"), {}, { step: 1, runId: "r1" });
+
+		const spawnOptions = spawn.mock.calls[0][3];
+		expect(spawnOptions.extraEnv).toMatchObject({
+			PI_WORKFLOW_CHANNEL_DIR: "/tmp/some-channel",
+			PI_WORKFLOW_NODE_ID: "extract_b",
+		});
+	});
+
+	it("gives different nodes different node ids", async () => {
+		const spawn = vi.fn().mockResolvedValue(withText("ok"));
+		const runner = runnerWith(spawn);
+
+		await runner(agentNode("extract_a", "green"), {}, { step: 1, runId: "r1" });
+		await runner(agentNode("extract_b", "green"), {}, { step: 2, runId: "r1" });
+
+		expect(spawn.mock.calls[0][3].extraEnv).toMatchObject({ PI_WORKFLOW_NODE_ID: "extract_a" });
+		expect(spawn.mock.calls[1][3].extraEnv).toMatchObject({ PI_WORKFLOW_NODE_ID: "extract_b" });
+	});
+
 	it("injects the escalation protocol into a custom agent that lacks it", async () => {
 		// The whole point of auto-injection: a custom agent authored without
 		// the escalation block must still receive it at spawn time, so it can
