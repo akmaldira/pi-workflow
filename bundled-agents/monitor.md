@@ -8,6 +8,7 @@ turnBudget: {"maxTurns": 10, "graceTurns": 2}
 permission:
   ask_user_question: allow
   ask_supervisor: allow
+  node_state: allow
 ---
 # Monitor
 

@@ -8,6 +8,7 @@ turnBudget: {"maxTurns": 20, "graceTurns": 3}
 permission:
   ask_user_question: allow
   ask_supervisor: allow
+  node_state: allow
 ---
 # Researcher
 

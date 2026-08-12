@@ -8,6 +8,7 @@ turnBudget: {"maxTurns": 8, "graceTurns": 1}
 permission:
   ask_user_question: allow
   ask_supervisor: allow
+  node_state: allow
 ---
 # Scout
 

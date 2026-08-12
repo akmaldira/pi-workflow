@@ -88,7 +88,7 @@ import { initialToolBudgetState, toolBudgetState } from "./tool-budget.ts";
 import { agentDefinitionDigest, launchBindingDigest } from "./launch-contract.ts";
 import { createBoundedByteTail, createBoundedLineReader, formatProtocolOutputLimit, MAX_CHILD_STDERR_BYTES, projectChildLifecycle, type ChildLifecycleAction, type ProtocolOutputLimit as ProtocolOutputLimitType } from "./child-protocol.ts";
 
-import type { EventEmitter } from "node:events";
+import { EventEmitter } from "node:events";
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
@@ -357,7 +357,7 @@ async function runSingleAttempt(
 	// ChannelPoller emits INTERCOM_DETACH_REQUEST_EVENT; we listen for it
 	// and trigger an early return (detach) so the parent's await unblocks
 	// while the child keeps running. Only enabled when allowIntercomDetach is true.
-	const intercomEvents = options.intercomEvents ?? new (require("node:events").EventEmitter)();
+	const intercomEvents = options.intercomEvents ?? new EventEmitter();
 	let detachedByIntercom = false;
 	let detachResolve: ((receipt: SingleResult) => void) | null = null;
 	const detachPromise = new Promise<SingleResult>((resolve) => {

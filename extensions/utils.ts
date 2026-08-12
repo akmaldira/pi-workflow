@@ -2,6 +2,8 @@
  * Utility functions for subagent execution.
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 
 export function getFinalOutput(messages: Message[]): string {
@@ -18,10 +20,10 @@ export function getFinalOutput(messages: Message[]): string {
 
 export function findLatestSessionFile(sessionDir: string): string | undefined {
 	try {
-		const files = require("node:fs").readdirSync(sessionDir).filter((f: string) => f.endsWith(".json"));
+		const files = fs.readdirSync(sessionDir).filter((f: string) => f.endsWith(".json"));
 		if (files.length === 0) return undefined;
 		files.sort().reverse();
-		return require("node:path").join(sessionDir, files[0]);
+		return path.join(sessionDir, files[0]);
 	} catch {
 		return undefined;
 	}

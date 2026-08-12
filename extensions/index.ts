@@ -10,7 +10,9 @@
  */
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import { EventEmitter } from "node:events";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { CONFIG_DIR_NAME, getAgentDir, type AgentToolResult, type ExtensionAPI, defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -85,7 +87,7 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 }
 
 async function writePromptToTempFile(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
-	const tmpDir = await fs.promises.mkdtemp(path.join(require("node:os").tmpdir(), "pi-subagent-"));
+	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
 	const safeName = agentName.replace(/[^\w.-]+/g, "_");
 	const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
 	await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
@@ -849,7 +851,7 @@ export default function (pi: ExtensionAPI) {
 	// When a child calls ask_supervisor (expectsReply: true), the ChannelPoller
 	// emits INTERCOM_DETACH_REQUEST_EVENT here; execution.ts listens and returns
 	// a detached receipt early, unblocking the parent while the child keeps running.
-	const intercomDetachEmitter = new (require("node:events").EventEmitter)();
+	const intercomDetachEmitter = new EventEmitter();
 
 	// The manager is passed in so runs appear in /workflows, the task panel,
 	// and workflow_status. Without it the tool still runs, but every one of
