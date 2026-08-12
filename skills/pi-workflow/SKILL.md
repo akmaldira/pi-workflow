@@ -272,6 +272,22 @@ never another node's accumulator, and never a buffer of a node that has not run 
 > either flow through graph state (`state.<nodeId>.data.<key>`) or through the node's result
 > text — never through `node_state(get)`.
 
+> 🔑 **Two-phase visibility — private while running, public once folded.** This is the one rule
+> that resolves most confusion: the *same values* have two different read paths with two
+> different scopes.
+>
+> - **While the node is running** — its buffer is private. Only that node can read/write it,
+>   through the `node_state` tool (`set`/`merge`/`append`/`get`/`list`). No other node can see
+>   it, even in parallel: a sibling's `get` returns unset, and a `list` shows only the calling
+>   node's own keys.
+> - **When the node completes** — the runner folds the buffer into that node's result as
+>   `data`, and the executor stores `state[nodeId] = result`. From that moment the values are
+>   *public graph state*: every node (and every edge) reads them as `s.<nodeId>.data.<key>`,
+>   with no tool call.
+>
+> In short: `node_state` is the private in-flight workspace of one node; the folded `data` is
+> the public handoff. `get` never crosses nodes; graph state always does (for completed nodes).
+
 **Downstream access is plain JS, hardcoded in the script.** When a node finishes, its
 accumulated buffer is folded into that node's result as `data`, so a later node reads it the
 same way it reads any result field — no tool call needed:

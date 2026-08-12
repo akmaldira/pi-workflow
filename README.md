@@ -503,6 +503,13 @@ buffer — they can never see another node's findings.
 >   `Planner said: ${s.planner.data?.planner_value ?? "(none)"}`));
 > ```
 
+> 🔑 **Two-phase visibility — private while running, public once folded.** The same values have
+> two read paths with two scopes. While a node runs, its buffer is private — only that node
+> reads/writes it via the `node_state` tool. When the node completes, the runner folds the
+> buffer into that node's result as `data` (`state[nodeId] = result`), and from then on the
+> values are public graph state — every node reads them as `s.<nodeId>.data.<key>` with no
+> tool call. `get` never crosses nodes; graph state always does (for completed nodes).
+
 **Folded into `result.data` at completion.** When a node finishes, its accumulated buffer
 becomes that node's `data`, so downstream access is plain JS hardcoded in the script —
 `state.<nodeId>.data.<key>` — no tool call needed to read a completed node's findings:

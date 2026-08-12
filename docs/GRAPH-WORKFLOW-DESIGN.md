@@ -361,6 +361,13 @@ through `node_state`; any cross-node handoff happens in the script via graph sta
 all. (Workflow authors who expect `get` to reach a sibling's buffer get an unset back — the
 script is the only cross-node read path.)
 
+This is a deliberate **two-phase visibility** model: while a node runs, its buffer is private to
+it (only the `node_state` tool touches it — no other node can read or write it, by
+construction); when the node completes, the same values become public graph state via the
+folded `data` (every node and edge can read `state.<nodeId>.data`). The privacy phase protects
+in-flight writes from wall-clock races; the public phase is the handoff surface. There is no
+phase in which a sibling can read a node's buffer while that node is still running.
+
 **Journaling and resume:** write actions are journaled as `state_action` records (one per
 `set`/`merge`/`append`), but resume deliberately does **not** replay them. A completed node's
 folded `.data` is already in its node record — replaying actions would double-apply. A crashed
