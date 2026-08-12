@@ -1,6 +1,6 @@
 ---
 name: pi-contracts
-description: Document formal agreements between agents using the contract tool. Contracts are versioned Markdown files with frontmatter stored in .pi-workflow/contracts/. Types: api, interface, task, data, other. Lifecycle: draft → proposed → superseded. Typically produced by the architect agent.
+description: "Document formal agreements between agents using the contract tool. Contracts are versioned Markdown files with frontmatter stored in .pi-workflow/contracts/. Types: api, interface, task, data, other. Lifecycle: draft → proposed → superseded. Typically produced by the architect agent."
 ---
 
 # Pi Contracts Skill
