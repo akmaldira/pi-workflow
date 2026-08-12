@@ -303,6 +303,31 @@ g.edge('extract_a', (state, result) => {
 });
 ```
 
+**Cycles driven by folded state.** The same read path drives loops: the executor writes
+`state[nodeId]` *before* routing, so a conditional edge sees the just-completed visit's folded
+`data` and can decide to revisit the same node. The planner writes a pass counter into its own
+buffer with `node_state`; the edge reads it back and either cycles or proceeds:
+
+```js
+const g = graph();
+
+g.node('plan', agent('planner', (s) =>
+  `Planning pass ${(s.plan.data?.passes ?? 0) + 1} of max 2. ...planning instructions...\n` +
+  `When you finish this pass, call exactly:\n` +
+  `node_state({ action: "set", key: "passes", value: ${(s.plan.data?.passes ?? 0) + 1} })`));
+
+g.edge('plan', (state) =>
+  (state.plan.data?.passes ?? 0) < 2 ? 'plan' : 'worker');   // cycle until 2 passes are done
+
+g.edge('worker', END);
+```
+
+> ⚠️ **A constant flag loops forever.** Because the edge re-reads the current visit's folded
+> data, a node that writes the same value every visit (e.g. `visited = 1` unconditionally)
+> never changes the edge's answer — the loop never exits. Make the value change between visits
+> (a counter, as above) or have the node stop writing it on the final visit. `maxIterations`
+> caps rounds as a safety net, but the cycle must be able to terminate on its own.
+
 A node's `data` follows the same lifecycle as its `text`: revisiting a node overwrites its
 entry, and resume never reconstructs a crashed node's in-flight writes — a node's state is
 whatever its most recent complete visit produced.
