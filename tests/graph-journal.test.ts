@@ -193,6 +193,42 @@ describe("GraphJournal", () => {
 		expect(journal.writeErrors.length).toBeGreaterThan(0);
 		expect(() => journal.recordNode(execution())).not.toThrow();
 	});
+
+	it("records a state_action journal record for write actions", () => {
+		const journal = create();
+		journal.recordStateAction({
+			runId: "run1",
+			nodeId: "extract_a",
+			action: "set",
+			key: "invoice",
+			value: "INV-4471",
+			meta: { source: "doc_17.pdf:p3" },
+		});
+
+		const actions = readGraphJournal(journal.filePath).filter((r) => r.type === "state_action");
+		expect(actions).toHaveLength(1);
+		expect(actions[0]).toMatchObject({
+			type: "state_action",
+			nodeId: "extract_a",
+			action: "set",
+			key: "invoice",
+			value: "INV-4471",
+			meta: { source: "doc_17.pdf:p3" },
+		});
+	});
+
+	it("records one state_action per write, in arrival order", () => {
+		const journal = create();
+		journal.recordStateAction({ runId: "run1", nodeId: "n", action: "set", key: "a", value: 1 });
+		journal.recordStateAction({ runId: "run1", nodeId: "n", action: "append", key: "list", value: "x" });
+		journal.recordStateAction({ runId: "run1", nodeId: "n", action: "merge", key: "obj", value: { y: 2 } });
+
+		const actions = readGraphJournal(journal.filePath).filter((r) => r.type === "state_action");
+		expect(actions).toHaveLength(3);
+		expect((actions[0] as { action: string }).action).toBe("set");
+		expect((actions[1] as { action: string }).action).toBe("append");
+		expect((actions[2] as { action: string }).action).toBe("merge");
+	});
 });
 
 describe("readGraphJournal", () => {

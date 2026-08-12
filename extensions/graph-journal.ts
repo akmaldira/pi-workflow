@@ -128,13 +128,25 @@ export interface GraphJournalBrokerAnswerRecord {
 	timestamp: number;
 }
 
+export interface GraphJournalStateActionRecord {
+	type: "state_action";
+	runId: string;
+	nodeId: string;
+	action: "set" | "merge" | "append";
+	key?: string;
+	value?: unknown;
+	meta?: Record<string, unknown>;
+	timestamp: number;
+}
+
 export type GraphJournalRecord =
 	| GraphJournalRunRecord
 	| GraphJournalNodeRecord
 	| GraphJournalRoundRecord
 	| GraphJournalResultRecord
 	| GraphJournalBrokerRequestRecord
-	| GraphJournalBrokerAnswerRecord;
+	| GraphJournalBrokerAnswerRecord
+	| GraphJournalStateActionRecord;
 
 export interface GraphResumeState {
 	/** Node executions already recorded, in order. */
@@ -314,6 +326,26 @@ export class GraphJournal {
 			source: info.source,
 			answer: info.answer,
 			reason: info.reason,
+			timestamp: Date.now(),
+		});
+	}
+
+	recordStateAction(info: {
+		runId: string;
+		nodeId: string;
+		action: "set" | "merge" | "append";
+		key?: string;
+		value?: unknown;
+		meta?: Record<string, unknown>;
+	}): void {
+		this.append({
+			type: "state_action",
+			runId: info.runId,
+			nodeId: info.nodeId,
+			action: info.action,
+			key: info.key,
+			value: info.value,
+			meta: info.meta,
 			timestamp: Date.now(),
 		});
 	}

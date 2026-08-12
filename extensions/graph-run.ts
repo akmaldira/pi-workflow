@@ -168,6 +168,18 @@ export async function executeGraphRun(options: GraphRunOptions): Promise<GraphRu
 					const reduced = context.nodeStateBuffers.apply(nodeId, request.stateAction);
 					let replyValue: unknown;
 					if (reduced.ok) {
+						// Journal write actions (set/merge/append) for resume replay.
+						// get/list are read-only — nothing to replay.
+						if (request.stateAction.action !== "get" && request.stateAction.action !== "list") {
+							journal.recordStateAction({
+								runId,
+								nodeId,
+								action: request.stateAction.action,
+								...(request.stateAction.key !== undefined ? { key: request.stateAction.key } : {}),
+								...(request.stateAction.value !== undefined ? { value: request.stateAction.value } : {}),
+								...(request.stateAction.meta ? { meta: request.stateAction.meta } : {}),
+							});
+						}
 						replyValue = request.stateAction.action === "list"
 							? context.nodeStateBuffers.readAll(nodeId)
 							: context.nodeStateBuffers.read(nodeId, request.stateAction.key ?? "");
