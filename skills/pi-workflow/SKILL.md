@@ -231,6 +231,54 @@ they resolve to the sandbox's own copies, so using them cannot reach the host). 
 only, and non-determinism would mean a rerun could take a different path. Scripts are validated
 before any agent spawns, so a rejected script costs nothing.
 
+### `node_state` — durable per-node memory for long-running agents
+
+An agent that searches many files over a long run can hit auto-compaction before producing its
+final output; compaction is a lossy summary and does not reliably preserve values found early.
+The fix is structural: write each finding the moment it is found, to a buffer that survives
+independently of the agent's context.
+
+`node_state` is a tool (dispatch/reducer-shaped, five actions) that does exactly this. It is
+**strictly workflow-only**: available to an `agent()` node inside a graph run, and **not** to a
+plain `subagent` call or the main session (unlike `ask_supervisor`, which works in both).
+
+```
+node_state({ action: "set",    key: "invoice_number", value: "INV-4471", meta?: {...} })
+node_state({ action: "merge",  key: "summary", value: { risk: "low" } })
+node_state({ action: "append", key: "risks", value: "unclosed transaction" })
+node_state({ action: "get",    key: "invoice_number" })   // returns the current value
+node_state({ action: "list" })                            // returns the whole accumulator
+```
+
+**Scope: per node, never shared.** Every call is tagged with the calling node's own id. Two
+parallel nodes never share a buffer — there is no write race to reason about. `get`/`list` read
+back the *reduced value*, never an action envelope.
+
+**Downstream access is plain JS, hardcoded in the script.** When a node finishes, its
+accumulated buffer is folded into that node's result as `data`, so a later node reads it the
+same way it reads any result field — no tool call needed:
+
+```js
+g.node('assemble', agent('assembler', (s) =>
+  `Shard A: ${s.extract_a.data.invoice_number}\n` +
+  `Shard B: ${s.extract_b.data.invoice_number}`));
+
+g.edge('extract_a', (state, result) => {
+  const found = Object.keys(result.data).length;
+  return found < 90 ? 'extract_a' : 'assemble';   // mechanical gate on folded data
+});
+```
+
+A node's `data` follows the same lifecycle as its `text`: revisiting a node overwrites its
+entry, and resume never reconstructs a crashed node's in-flight writes — a node's state is
+whatever its most recent complete visit produced.
+
+**Cross-node conflicts are author-gated, never auto-resolved.** The reducer only guarantees no
+collision *within* one node's buffer; it has no visibility across nodes. If two parallel shards
+disagree on the same key, the workflow author writes the comparison explicitly — an edge
+condition or a dedicated gate node comparing `state.<nodeId>.data` across nodes — and routes to
+a resolution node. Never silently pick one value.
+
 ## Saving and Reusing Workflows
 
 Scripts are not persisted automatically — pass `saveWorkflow: true` to save a script for later reuse (it is filed under the graph's `meta.name`), and `loadWorkflow` to re-run one without rewriting it:

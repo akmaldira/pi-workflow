@@ -465,6 +465,50 @@ modes. Typically produced by the `architect` agent; any agent can read.
 **Discipline:** always call `propose` when done writing. Consumers should only act on `proposed`
 contracts — a `draft` may still be changing.
 
+### `node_state` *(always injected — workflow-only)*
+
+Accumulates intermediate findings into a durable, per-node buffer that survives context
+compaction. Dispatch/reducer-shaped, five actions — the host applies a fixed reducer, never
+agent-supplied code:
+
+| Action | Description |
+|---|---|
+| `set` | Overwrite a key (last-write-wins) |
+| `merge` | Shallow-merge an object into a key |
+| `append` | Push a value onto an array at a key |
+| `get` | Read one key's current value |
+| `list` | Read the whole accumulator |
+
+**Workflow-only, unlike `ask_supervisor`.** `ask_supervisor` works in both plain `subagent`
+calls and graph `agent()` nodes; `node_state` only works inside a graph run, as an `agent()`
+node — a plain `subagent` call or the main session gets a clear refusal. "Per-node" only means
+something when there is a graph node to scope to.
+
+**Scoped per node, never shared.** Every call is tagged with the calling node's own id
+(`PI_WORKFLOW_NODE_ID`), so parallel nodes in the same round never share a buffer — no write
+race by construction, the same guarantee `state[nodeId] = result` gives final results today,
+extended one layer inward to in-flight writes.
+
+**Folded into `result.data` at completion.** When a node finishes, its accumulated buffer
+becomes that node's `data`, so downstream access is plain JS hardcoded in the script —
+`state.<nodeId>.data.<key>` — no tool call needed to read a completed node's findings:
+
+```js
+g.node("assemble", agent("assembler", (s) =>
+  `Shard A: ${s.extract_a.data.invoice_number}\nShard B: ${s.extract_b.data.invoice_number}`));
+
+g.edge("extract_a", (state, result) => {
+  const found = Object.keys(result.data).length;
+  return found < 90 ? "extract_a" : "assemble";
+});
+```
+
+A node's `data` follows the same lifecycle as its `text`: revisiting a node overwrites its
+entry, and resume never reconstructs a crashed node's in-flight writes. **Cross-node conflicts
+are author-gated, never auto-resolved** — if two parallel shards disagree on the same key, the
+workflow author writes the comparison explicitly (an edge condition or gate node) and routes to
+resolution; the reducer never silently picks a value.
+
 ## Skills
 
 Three skills ship with the package and appear in `pi config`:

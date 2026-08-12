@@ -312,6 +312,67 @@ produced, green sees what architect produced, and when green's output includes a
 edge routes back to architect who sees green's blocker in state on its next run. No messaging
 system — just state flowing through the graph.
 
+### The `node_state` tool — durable per-node accumulation
+
+State as described above updates **once per node, at completion** — the executor writes
+`state[nodeId] = outcome.result` after the agent process exits. That single point is a real
+limitation for long-running agents: everything an agent found before its final message exists
+only in its own context window, and auto-compaction is a lossy summary that does not reliably
+preserve values found early (it has no notion of "value #47 of 90 was found"). For extraction-
+style nodes that search a large, irregularly-named document set, the context window is being
+asked to serve as scratchpad, memory, and output buffer at once — and it always runs out of one
+of those first.
+
+`node_state` fixes this structurally, by giving a node a **durable, per-node accumulator** that
+an agent can write to mid-run, the moment it finds a value, through the same filesystem channel
+(`extensions/channel.ts`) that `ask_supervisor`/`ask_user_question` already use for cross-
+process IPC.
+
+**Why a reducer shape, not free-form writes:** a fixed, closed verb vocabulary
+(`set`/`merge`/`append`/`get`/`list`) implemented by a pure host-side function means an agent
+chooses *what* to write (key, value), never *how* the write is applied — the same principle that
+keeps the graph script sandbox free of `eval`/`Function`/code generation. It also gives
+convergence properties (order-independence across different keys, idempotent `set`) that plain
+file appends or last-write-wins shared objects lack.
+
+**Why per-node scoping, not a shared store:** every call is tagged with the calling node's own
+id (`PI_WORKFLOW_NODE_ID`, injected only by the graph node runner at spawn). Parallel nodes in
+the same round never share a buffer — no write race by construction — extending the existing
+"`state[nodeId] = result`, one key per node" guarantee one layer inward, to in-flight writes.
+This preserves the two invariants the rest of the executor relies on: unforgeable per-node
+ownership and round-barrier isolation. A literal shared mutable store would break both (an agent
+could overwrite a sibling's slot, and reads of a sibling's in-flight value would depend on wall-
+clock scheduling).
+
+**Why workflow-only, unlike `ask_supervisor`:** `ask_supervisor` works in both plain `subagent`
+calls and graph `agent()` nodes because both spawn paths set up a filesystem channel. But
+"per-node" only means something when there is a graph node to scope to — a plain `subagent` call
+has no node id. `node_state` gates on `PI_WORKFLOW_NODE_ID` presence (soft gate at `execute()`
+time): a plain `subagent` call or the main session gets a clear refusal. The env var doubles as
+both the scoping key and the availability signal.
+
+**Folding into `result.data`:** when a node's process exits, the node runner drains its buffer
+into `result.data` before returning, so `state[nodeId] = outcome.result` carries the accumulated
+values exactly like every other result field. Downstream access is plain JS hardcoded in the
+script (`s.<nodeId>.data.<key>`), no tool call needed to read a completed node's findings.
+
+**Journaling and resume:** write actions are journaled as `state_action` records (one per
+`set`/`merge`/`append`), but resume deliberately does **not** replay them. A completed node's
+folded `.data` is already in its node record — replaying actions would double-apply. A crashed
+node's in-flight actions are discarded so the node re-runs clean, matching the existing
+"revisiting a node overwrites its state entry" rule: a node's state is whatever its most recent
+complete visit produced, true for `.text` and `.data` alike. Resume never recovers partial in-
+flight agent work.
+
+**Cross-node conflicts are author-gated, never auto-resolved:** the reducer only guarantees no
+collision *within* one node's buffer — it has no visibility across nodes, by design. If two
+parallel shards disagree on the same key once their `.data` is folded in, the workflow author
+writes the comparison explicitly (an edge condition or a gate node comparing
+`state.<nodeId>.data` across nodes) and routes to a resolution node — a `human()` node, a re-
+check agent, or the `STATUS: blocked / BLOCKED_ON: information` escalation path. Silently
+picking one value on behalf of the author is rejected: it would convert a real data-quality
+problem into invisible, undetectable corruption.
+
 ## 7. Validation strategy (before any agent spawns)
 
 Three layers, all checked before the graph executor starts:
