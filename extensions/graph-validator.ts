@@ -343,7 +343,7 @@ export function validateGraphAst(ast: AnyNode, options: AstValidationOptions = {
 				);
 			} else if (!allowed.has(name) && !locals.has(name)) {
 				problems.push(
-					`"${name}" is not available in a graph script. Available globals: ${[...ALLOWED_GLOBALS].sort().join(", ")}.`,
+					`"${name}" is not available in a graph script. Available globals: ${[...allowed].sort().join(", ")}.`,
 				);
 			}
 		}
@@ -430,6 +430,16 @@ export interface EvaluateGraphOptions {
 	args?: unknown;
 	/** Wall-clock cap for evaluating the definition. Default 1000ms. */
 	timeoutMs?: number;
+	/**
+	 * Extra names injected into the sandbox and permitted by the AST checker.
+	 * Values must be plain synchronous objects/functions — no Promises, no
+	 * host-realm references that could bridge back to host state.
+	 *
+	 * Each key becomes a top-level global inside the script. Property access
+	 * on the object (e.g. `plan.get(...)`) works without any extra config —
+	 * only the root identifier needs to be listed here.
+	 */
+	sandboxExtras?: Record<string, unknown>;
 }
 
 /**
@@ -463,7 +473,9 @@ export function buildGraphFromScript(
 
 	const meta = extractGraphMeta(ast);
 
-	const problems = validateGraphAst(ast);
+	const problems = validateGraphAst(ast, {
+		extraGlobals: options.sandboxExtras ? Object.keys(options.sandboxExtras) : [],
+	});
 	if (problems.length > 0) {
 		throw new GraphValidationError(
 			`Graph script failed validation:\n${problems.map((p) => `  - ${p}`).join("\n")}`,
@@ -486,6 +498,7 @@ export function buildGraphFromScript(
 		agent,
 		human,
 		END,
+		...options.sandboxExtras,
 	};
 
 	const context = vm.createContext(sandbox, {

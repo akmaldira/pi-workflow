@@ -197,6 +197,49 @@ No `fs`, `process`, `require`, `import`, `fetch`, `Date`, or `Math.random`. A gr
 routing; it does not need ambient authority, and non-determinism would mean a rerun of the same
 graph could take a different path.
 
+**`plan` and `contract` are also available** — synchronous access to the same store that
+the `plan` and `contract` tools use, bound to the project's `cwd` at script load time.
+All calls use `fs.*Sync` internally so they work in both edge conditions and prompt functions.
+
+| Call | Returns | Notes |
+|---|---|---|
+| `plan.get(id)` | `{ ok, content? }` | Read a plan |
+| `plan.list()` | `{ ok, plans? }` | All plans, newest first |
+| `plan.create(name, content)` | `{ ok, id? }` | Create a new plan |
+| `plan.edit(id, old, new)` | `{ ok }` | Find-and-replace in a plan |
+| `plan.delete(id)` | `{ ok }` | Delete a plan |
+| `plan.isExists(id)` | `boolean` | Quick existence check |
+| `plan.length()` | `number` | Count of plans |
+| `plan.indexOf(fn)` | `PlanMeta \| null` | First plan where `fn(plan)` is true |
+| `contract.get(id)` | `{ ok, content? }` | Read a contract |
+| `contract.list()` | `{ ok, contracts? }` | All contracts, newest first |
+| `contract.create(params)` | `{ ok, id? }` | Create a draft contract |
+| `contract.edit(id, old, new)` | `{ ok }` | Find-and-replace (draft only) |
+| `contract.propose(id)` | `{ ok }` | Move draft → proposed |
+| `contract.supersede(oldId, params)` | `{ ok, id? }` | Create v+1 draft |
+| `contract.isExists(id)` | `boolean` | Quick existence check |
+| `contract.length()` | `number` | Count of contracts |
+| `contract.indexOf(fn)` | `ContractMeta \| null` | First contract where `fn(contract)` is true |
+
+```js
+// Gate: only proceed when contract is proposed; loop back if still draft
+g.edge('architect', (state, result) => {
+  const c = contract.get('auth-api');
+  if (!c.ok || c.content.includes('status: draft')) return 'architect';
+  return 'worker';
+});
+
+// Embed the current plan in a prompt
+g.node('green', agent('green', (s) => {
+  const p = plan.get('implementation-plan');
+  return `Implement:\n${p.ok ? p.content : '(no plan yet)'}\n\nTests:\n${s.red}`;
+}));
+
+// Branch: loop architect until at least one proposed contract exists
+g.edge('architect', (state, result) =>
+  contract.indexOf(c => c.status === 'proposed') ? 'worker' : 'architect');
+```
+
 Scripts are checked with an acorn AST pass, then evaluated in a `vm` context. Intrinsics are
 deliberately **not** injected from the host: a vm context has its own realm-local copies, and
 passing the host's would hand a script a route back to the host realm through

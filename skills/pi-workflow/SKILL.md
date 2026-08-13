@@ -240,6 +240,59 @@ they resolve to the sandbox's own copies, so using them cannot reach the host). 
 only, and non-determinism would mean a rerun could take a different path. Scripts are validated
 before any agent spawns, so a rejected script costs nothing.
 
+**`plan` and `contract` are also available in any graph script** — synchronous access to the
+same plan/contract store that the `plan` and `contract` tools use:
+
+| Call | Returns | Description |
+|---|---|---|
+| `plan.get(id)` | `{ ok, content?, message }` | Read a plan by id |
+| `plan.list()` | `{ ok, plans?, message }` | List all plans |
+| `plan.create(name, content)` | `{ ok, id?, message }` | Create a new plan |
+| `plan.edit(id, oldText, newText)` | `{ ok, message }` | Precision find-and-replace |
+| `plan.delete(id)` | `{ ok, message }` | Delete a plan |
+| `plan.isExists(id)` | `boolean` | True if the plan file exists |
+| `plan.length()` | `number` | Total number of plans |
+| `plan.indexOf(fn)` | `PlanMeta \| null` | First plan where `fn(plan)` is true |
+| `contract.get(id)` | `{ ok, content?, message }` | Read a contract by id |
+| `contract.list()` | `{ ok, contracts?, message }` | List all contracts |
+| `contract.create(params)` | `{ ok, id?, message }` | Create a draft contract |
+| `contract.edit(id, oldText, newText)` | `{ ok, message }` | Precision find-and-replace (draft only) |
+| `contract.propose(id)` | `{ ok, message }` | Move draft → proposed |
+| `contract.supersede(oldId, params)` | `{ ok, id?, message }` | Create v+1 from an existing contract |
+| `contract.isExists(id)` | `boolean` | True if the contract file exists |
+| `contract.length()` | `number` | Total number of contracts |
+| `contract.indexOf(fn)` | `ContractMeta \| null` | First contract where `fn(contract)` is true |
+
+All calls are **synchronous** (using `fs.*Sync` internally) so they work inside both edge
+conditions and prompt functions. They are bound to the project's `cwd` at script load time.
+
+Example — gate on contract status in an edge:
+```js
+g.edge('architect', (state, result) => {
+  // Only proceed when the contract is proposed; loop back if still draft
+  const c = contract.get('auth-api');
+  if (!c.ok || c.content.includes('status: draft')) return 'architect';
+  return 'worker';
+});
+```
+
+Example — embed the current plan in a prompt:
+```js
+g.node('green', agent('green', (s) => {
+  const p = plan.get('implementation-plan');
+  const planText = p.ok ? p.content : '(no plan yet — proceed with best judgment)';
+  return `Implement according to this plan:\n${planText}\n\nTests to pass:\n${s.red}`;
+}));
+```
+
+Example — branch based on whether any proposed contract exists:
+```js
+g.edge('architect', (state, result) => {
+  const ready = contract.indexOf(c => c.status === 'proposed');
+  return ready ? 'worker' : 'architect';  // loop until at least one is proposed
+});
+```
+
 ### `node_state` — durable per-node memory for long-running agents
 
 An agent that searches many files over a long run can hit auto-compaction before producing its

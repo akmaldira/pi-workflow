@@ -40,6 +40,79 @@ import type { WorkflowManager } from "./workflow-manager.ts";
 import type { RequestBroker } from "./request-broker.ts";
 import type { ForkContextOptions } from "./types.ts";
 import { runSingleAgent } from "./execution.ts";
+import {
+	planCreate, planGet, planList, planEdit, planDelete,
+	planIsExists, planLength, planIndexOf,
+	type PlanMeta,
+} from "./plan-tool.ts";
+import {
+	contractCreate, contractGet, contractList, contractEdit,
+	contractPropose, contractSupersede,
+	contractIsExists, contractLength, contractIndexOf,
+	type ContractMeta,
+} from "./contract-tool.ts";
+
+// ── Sandbox factory helpers ──────────────────────────────────────────────
+
+/**
+ * Returns a plain synchronous `plan` object bound to `cwd`, suitable for
+ * injection into a graph script sandbox. All functions are synchronous
+ * (they use fs.*Sync internally) so they work inside edge conditions and
+ * prompt functions without any await.
+ */
+function makePlanSandbox(cwd: string) {
+	return {
+		/** Create a new plan. Returns { ok, id?, message } */
+		create: (name: string, content: string) => planCreate(cwd, name, content),
+		/** Read a plan by id. Returns { ok, id?, content?, message } */
+		get: (id: string) => planGet(cwd, id),
+		/** List all plans. Returns { ok, plans?, message } */
+		list: () => planList(cwd),
+		/** Precision find-and-replace inside a draft plan. */
+		edit: (id: string, oldText: string, newText: string) => planEdit(cwd, id, oldText, newText),
+		/** Delete a plan by id. */
+		delete: (id: string) => planDelete(cwd, id),
+		/** Returns true if a plan with the given id exists. */
+		isExists: (id: string) => planIsExists(cwd, id),
+		/** Returns the total number of plans. */
+		length: () => planLength(cwd),
+		/**
+		 * Returns the first PlanMeta where predicate returns true, or null.
+		 * e.g. plan.indexOf(p => p.name.includes('auth'))
+		 */
+		indexOf: (predicate: (p: PlanMeta) => boolean) => planIndexOf(cwd, predicate),
+	};
+}
+
+/**
+ * Returns a plain synchronous `contract` object bound to `cwd`, suitable
+ * for injection into a graph script sandbox.
+ */
+function makeContractSandbox(cwd: string) {
+	return {
+		/** Create a new draft contract. Returns { ok, id?, message } */
+		create: (params: Parameters<typeof contractCreate>[1]) => contractCreate(cwd, params),
+		/** Read a contract by id. Returns { ok, id?, content?, message } */
+		get: (id: string) => contractGet(cwd, id),
+		/** List all contracts. Returns { ok, contracts?, message } */
+		list: () => contractList(cwd),
+		/** Precision find-and-replace inside a draft contract. */
+		edit: (id: string, oldText: string, newText: string) => contractEdit(cwd, id, oldText, newText),
+		/** Move a draft contract to proposed. */
+		propose: (id: string) => contractPropose(cwd, id),
+		/** Supersede a proposed contract with a new draft. */
+		supersede: (oldId: string, params: Parameters<typeof contractSupersede>[2]) => contractSupersede(cwd, oldId, params),
+		/** Returns true if a contract with the given id exists. */
+		isExists: (id: string) => contractIsExists(cwd, id),
+		/** Returns the total number of contracts. */
+		length: () => contractLength(cwd),
+		/**
+		 * Returns the first ContractMeta where predicate returns true, or null.
+		 * e.g. contract.indexOf(c => c.status === 'proposed')
+		 */
+		indexOf: (predicate: (c: ContractMeta) => boolean) => contractIndexOf(cwd, predicate),
+	};
+}
 
 const GraphToolParams = Type.Object({
 	script: Type.Optional(
@@ -176,7 +249,13 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 			// Validate first: a bad script must cost nothing.
 			let built: ReturnType<typeof buildGraphFromScript>;
 			try {
-				built = buildGraphFromScript(script, { args: params.args });
+				built = buildGraphFromScript(script, {
+					args: params.args,
+					sandboxExtras: {
+						plan: makePlanSandbox(cwd),
+						contract: makeContractSandbox(cwd),
+					},
+				});
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				const roster =

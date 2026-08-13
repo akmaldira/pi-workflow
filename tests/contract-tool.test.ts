@@ -17,6 +17,9 @@ import {
 	contractSupersede,
 	listAllContracts,
 	contractsDir,
+	contractIsExists,
+	contractLength,
+	contractIndexOf,
 } from "../extensions/contract-tool.ts";
 
 let tmpDir: string;
@@ -284,5 +287,56 @@ describe("listAllContracts", () => {
 		expect(all).toHaveLength(2);
 		const ids = all.map((c) => c.id).sort();
 		expect(ids).toEqual(["alpha", "beta"]);
+	});
+});
+
+describe("contractIsExists", () => {
+	it("returns false when contract does not exist", () => {
+		expect(contractIsExists(tmpDir, "nonexistent")).toBe(false);
+	});
+
+	it("returns true after contractCreate", () => {
+		contractCreate(tmpDir, { name: "Auth API", type: "api", producer: "architect", consumer: "worker", content: "# Auth API" });
+		expect(contractIsExists(tmpDir, "auth-api")).toBe(true);
+	});
+});
+
+describe("contractLength", () => {
+	it("returns 0 when no contracts exist", () => {
+		expect(contractLength(tmpDir)).toBe(0);
+	});
+
+	it("returns correct count", () => {
+		contractCreate(tmpDir, { name: "API A", type: "api", producer: "architect", consumer: "worker", content: "# API A" });
+		contractCreate(tmpDir, { name: "API B", type: "api", producer: "architect", consumer: "worker", content: "# API B" });
+		expect(contractLength(tmpDir)).toBe(2);
+	});
+});
+
+describe("contractIndexOf", () => {
+	it("returns null when list is empty", () => {
+		expect(contractIndexOf(tmpDir, () => true)).toBeNull();
+	});
+
+	it("returns null when nothing matches", () => {
+		contractCreate(tmpDir, { name: "Auth API", type: "api", producer: "architect", consumer: "worker", content: "# Auth API" });
+		expect(contractIndexOf(tmpDir, (c) => c.status === "proposed")).toBeNull();
+	});
+
+	it("returns first matching contract by status", () => {
+		contractCreate(tmpDir, { name: "Auth API", type: "api", producer: "architect", consumer: "worker", content: "# Auth API" });
+		contractCreate(tmpDir, { name: "DB Schema", type: "data", producer: "architect", consumer: "worker", content: "# DB Schema" });
+		contractPropose(tmpDir, "db-schema");
+		const found = contractIndexOf(tmpDir, (c) => c.status === "proposed");
+		expect(found).not.toBeNull();
+		expect(found!.id).toBe("db-schema");
+	});
+
+	it("returns first matching contract by type", () => {
+		contractCreate(tmpDir, { name: "Auth API", type: "api", producer: "architect", consumer: "worker", content: "# Auth API" });
+		contractCreate(tmpDir, { name: "DB Schema", type: "data", producer: "architect", consumer: "worker", content: "# DB Schema" });
+		const found = contractIndexOf(tmpDir, (c) => c.type === "data");
+		expect(found).not.toBeNull();
+		expect(found!.id).toBe("db-schema");
 	});
 });
