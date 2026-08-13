@@ -274,24 +274,3 @@ export function contractSupersede(
 
 	return { ok: true, message: `Contract "${oldId}" superseded. New contract: ${newId}.md (v${oldVersion + 1})`, id: newId };
 }
-
-/** Returns true if a contract with the given id exists on disk. */
-export function contractIsExists(cwd: string, id: string): boolean {
-	return fs.existsSync(path.join(contractsDir(cwd), `${id}.md`));
-}
-
-/** Returns the total number of contracts. */
-export function contractLength(cwd: string): number {
-	return listAllContracts(cwd).length;
-}
-
-/**
- * Returns the first ContractMeta where predicate returns true, or null.
- * Equivalent to Array.prototype.find over the contract list (sorted newest-first).
- */
-export function contractIndexOf(
-	cwd: string,
-	predicate: (contract: ContractMeta) => boolean,
-): ContractMeta | null {
-	return listAllContracts(cwd).find(predicate) ?? null;
-}

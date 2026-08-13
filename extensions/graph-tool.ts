@@ -42,13 +42,11 @@ import type { ForkContextOptions } from "./types.ts";
 import { runSingleAgent } from "./execution.ts";
 import {
 	planCreate, planGet, planList, planEdit, planDelete,
-	planIsExists, planLength, planIndexOf,
 	type PlanMeta,
 } from "./plan-tool.ts";
 import {
 	contractCreate, contractGet, contractList, contractEdit,
 	contractPropose, contractSupersede,
-	contractIsExists, contractLength, contractIndexOf,
 	type ContractMeta,
 } from "./contract-tool.ts";
 
@@ -64,7 +62,7 @@ function makePlanSandbox(cwd: string) {
 	return {
 		/** Create a new plan. Returns { ok, id?, message } */
 		create: (name: string, content: string) => planCreate(cwd, name, content),
-		/** Read a plan by id. Returns { ok, id?, content?, message } */
+		/** Read a plan by id. Returns { ok, id?, content?, message } — ok:false if not found, never throws. */
 		get: (id: string) => planGet(cwd, id),
 		/** List all plans. Returns { ok, plans?, message } */
 		list: () => planList(cwd),
@@ -72,15 +70,6 @@ function makePlanSandbox(cwd: string) {
 		edit: (id: string, oldText: string, newText: string) => planEdit(cwd, id, oldText, newText),
 		/** Delete a plan by id. */
 		delete: (id: string) => planDelete(cwd, id),
-		/** Returns true if a plan with the given id exists. */
-		isExists: (id: string) => planIsExists(cwd, id),
-		/** Returns the total number of plans. */
-		length: () => planLength(cwd),
-		/**
-		 * Returns the first PlanMeta where predicate returns true, or null.
-		 * e.g. plan.indexOf(p => p.name.includes('auth'))
-		 */
-		indexOf: (predicate: (p: PlanMeta) => boolean) => planIndexOf(cwd, predicate),
 	};
 }
 
@@ -92,7 +81,7 @@ function makeContractSandbox(cwd: string) {
 	return {
 		/** Create a new draft contract. Returns { ok, id?, message } */
 		create: (params: Parameters<typeof contractCreate>[1]) => contractCreate(cwd, params),
-		/** Read a contract by id. Returns { ok, id?, content?, message } */
+		/** Read a contract by id. Returns { ok, id?, content?, message } — ok:false if not found, never throws. */
 		get: (id: string) => contractGet(cwd, id),
 		/** List all contracts. Returns { ok, contracts?, message } */
 		list: () => contractList(cwd),
@@ -102,15 +91,6 @@ function makeContractSandbox(cwd: string) {
 		propose: (id: string) => contractPropose(cwd, id),
 		/** Supersede a proposed contract with a new draft. */
 		supersede: (oldId: string, params: Parameters<typeof contractSupersede>[2]) => contractSupersede(cwd, oldId, params),
-		/** Returns true if a contract with the given id exists. */
-		isExists: (id: string) => contractIsExists(cwd, id),
-		/** Returns the total number of contracts. */
-		length: () => contractLength(cwd),
-		/**
-		 * Returns the first ContractMeta where predicate returns true, or null.
-		 * e.g. contract.indexOf(c => c.status === 'proposed')
-		 */
-		indexOf: (predicate: (c: ContractMeta) => boolean) => contractIndexOf(cwd, predicate),
 	};
 }
 

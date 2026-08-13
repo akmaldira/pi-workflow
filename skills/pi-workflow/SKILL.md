@@ -250,18 +250,12 @@ same plan/contract store that the `plan` and `contract` tools use:
 | `plan.create(name, content)` | `{ ok, id?, message }` | Create a new plan |
 | `plan.edit(id, oldText, newText)` | `{ ok, message }` | Precision find-and-replace |
 | `plan.delete(id)` | `{ ok, message }` | Delete a plan |
-| `plan.isExists(id)` | `boolean` | True if the plan file exists |
-| `plan.length()` | `number` | Total number of plans |
-| `plan.indexOf(fn)` | `PlanMeta \| null` | First plan where `fn(plan)` is true |
 | `contract.get(id)` | `{ ok, content?, message }` | Read a contract by id |
 | `contract.list()` | `{ ok, contracts?, message }` | List all contracts |
 | `contract.create(params)` | `{ ok, id?, message }` | Create a draft contract |
 | `contract.edit(id, oldText, newText)` | `{ ok, message }` | Precision find-and-replace (draft only) |
 | `contract.propose(id)` | `{ ok, message }` | Move draft → proposed |
 | `contract.supersede(oldId, params)` | `{ ok, id?, message }` | Create v+1 from an existing contract |
-| `contract.isExists(id)` | `boolean` | True if the contract file exists |
-| `contract.length()` | `number` | Total number of contracts |
-| `contract.indexOf(fn)` | `ContractMeta \| null` | First contract where `fn(contract)` is true |
 
 All calls are **synchronous** (using `fs.*Sync` internally) so they work inside both edge
 conditions and prompt functions. They are bound to the project's `cwd` at script load time.
@@ -285,11 +279,13 @@ g.node('green', agent('green', (s) => {
 }));
 ```
 
-Example — branch based on whether any proposed contract exists:
+Example — branch based on whether a contract is ready (check via `get` + content):
 ```js
 g.edge('architect', (state, result) => {
-  const ready = contract.indexOf(c => c.status === 'proposed');
-  return ready ? 'worker' : 'architect';  // loop until at least one is proposed
+  const c = contract.get('auth-api');
+  // ok:false = doesn't exist yet; draft = still being written
+  if (!c.ok || c.content.includes('status: draft')) return 'architect';
+  return 'worker';
 });
 ```
 

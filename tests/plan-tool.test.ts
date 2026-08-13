@@ -16,9 +16,6 @@ import {
 	planDelete,
 	listAllPlans,
 	plansDir,
-	planIsExists,
-	planLength,
-	planIndexOf,
 } from "../extensions/plan-tool.ts";
 
 let tmpDir: string;
@@ -227,54 +224,5 @@ describe("listAllPlans", () => {
 		fs.writeFileSync(path.join(plansDir(tmpDir), "junk.txt"), "hi");
 		const plans = listAllPlans(tmpDir);
 		expect(plans).toHaveLength(0);
-	});
-});
-
-describe("planIsExists", () => {
-	it("returns false when plan does not exist", () => {
-		expect(planIsExists(tmpDir, "nonexistent")).toBe(false);
-	});
-
-	it("returns true after planCreate", () => {
-		planCreate(tmpDir, "My Plan", "# My Plan\n\nContent.");
-		expect(planIsExists(tmpDir, "my-plan")).toBe(true);
-	});
-
-	it("returns false after planDelete", () => {
-		planCreate(tmpDir, "Temp Plan", "# Temp Plan\n\nContent.");
-		planDelete(tmpDir, "temp-plan");
-		expect(planIsExists(tmpDir, "temp-plan")).toBe(false);
-	});
-});
-
-describe("planLength", () => {
-	it("returns 0 when no plans exist", () => {
-		expect(planLength(tmpDir)).toBe(0);
-	});
-
-	it("returns correct count", () => {
-		planCreate(tmpDir, "Plan A", "# Plan A\n\nA.");
-		planCreate(tmpDir, "Plan B", "# Plan B\n\nB.");
-		planCreate(tmpDir, "Plan C", "# Plan C\n\nC.");
-		expect(planLength(tmpDir)).toBe(3);
-	});
-});
-
-describe("planIndexOf", () => {
-	it("returns null when no plans match", () => {
-		planCreate(tmpDir, "Auth Plan", "# Auth Plan\n\nContent.");
-		expect(planIndexOf(tmpDir, (p) => p.name.includes("XYZ"))).toBeNull();
-	});
-
-	it("returns first matching plan", () => {
-		planCreate(tmpDir, "Auth Plan", "# Auth Plan\n\nContent.");
-		planCreate(tmpDir, "DB Plan", "# DB Plan\n\nContent.");
-		const found = planIndexOf(tmpDir, (p) => p.name.includes("DB"));
-		expect(found).not.toBeNull();
-		expect(found!.id).toBe("db-plan");
-	});
-
-	it("returns null when list is empty", () => {
-		expect(planIndexOf(tmpDir, () => true)).toBeNull();
 	});
 });

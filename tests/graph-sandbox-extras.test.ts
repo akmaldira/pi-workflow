@@ -1,10 +1,10 @@
 /**
  * Tests for the sandboxExtras feature in graph-validator:
  * - plan and contract objects are available inside graph scripts
- * - all methods work (create, get, list, edit, delete, propose, supersede,
- *   isExists, length, indexOf)
- * - AST validator accepts plan/contract identifiers when they are registered
- * - unknown extras still blocked (error message lists all allowed globals)
+ * - all methods work (create, get, list, edit, delete, propose, supersede)
+ * - get returns ok:false (never throws) for a missing id
+ * - AST validator accepts plan/contract identifiers when registered
+ * - unknown extras still rejected by AST (error message lists all allowed globals)
  * - cwd binding is correct (writes land in the right directory)
  * - works in both edge conditions and prompt functions
  */
@@ -17,38 +17,15 @@ import {
 	buildGraphFromScript,
 	validateGraphAst,
 } from "../extensions/graph-validator.ts";
-import {
-	planCreate,
-	planIsExists,
-	planLength,
-	planIndexOf,
-} from "../extensions/plan-tool.ts";
+import { planCreate, planGet } from "../extensions/plan-tool.ts";
 import {
 	contractCreate,
+	contractGet,
 	contractPropose,
-	contractIsExists,
-	contractLength,
-	contractIndexOf,
 } from "../extensions/contract-tool.ts";
 import { makePlanSandboxForTest, makeContractSandboxForTest } from "./helpers/sandbox-extras.ts";
 import type { AgentNodeDef } from "../extensions/graph-dsl.ts";
 import * as acorn from "acorn";
-
-/** Helper: get the promptFn from a built graph node. */
-function promptFnOf(graph: ReturnType<typeof buildGraphFromScript>["graph"], id: string) {
-	const node = graph.nodes.get(id);
-	if (!node) throw new Error(`Node "${id}" not found`);
-	if (node.def.type !== "agent") throw new Error(`Node "${id}" is not an agent node`);
-	return (node.def as AgentNodeDef).promptFn;
-}
-
-/** Helper: get the condition fn from a built graph edge. */
-function conditionOf(graph: ReturnType<typeof buildGraphFromScript>["graph"], from: string) {
-	const edges = graph.edges.get(from) ?? [];
-	const edge = edges.find((e) => e.type === "conditional");
-	if (!edge || edge.type !== "conditional") throw new Error(`No conditional edge from "${from}"`);
-	return edge.condition;
-}
 
 let tmpDir: string;
 
@@ -60,6 +37,22 @@ afterEach(() => {
 	fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+function promptFnOf(graph: ReturnType<typeof buildGraphFromScript>["graph"], id: string) {
+	const node = graph.nodes.get(id);
+	if (!node) throw new Error(`Node "${id}" not found`);
+	if (node.def.type !== "agent") throw new Error(`Node "${id}" is not an agent node`);
+	return (node.def as AgentNodeDef).promptFn;
+}
+
+function conditionOf(graph: ReturnType<typeof buildGraphFromScript>["graph"], from: string) {
+	const edges = graph.edges.get(from) ?? [];
+	const edge = edges.find((e) => e.type === "conditional");
+	if (!edge || edge.type !== "conditional") throw new Error(`No conditional edge from "${from}"`);
+	return edge.condition;
+}
+
 // ── AST validation ────────────────────────────────────────────────────────────
 
 describe("AST validation with sandboxExtras", () => {
@@ -68,8 +61,7 @@ describe("AST validation with sandboxExtras", () => {
 			ecmaVersion: "latest",
 			sourceType: "module",
 		}) as Parameters<typeof validateGraphAst>[0];
-		const errors = validateGraphAst(ast, { extraGlobals: ["plan"] });
-		expect(errors).toEqual([]);
+		expect(validateGraphAst(ast, { extraGlobals: ["plan"] })).toEqual([]);
 	});
 
 	it("accepts 'contract' identifier when registered as extraGlobal", () => {
@@ -77,8 +69,7 @@ describe("AST validation with sandboxExtras", () => {
 			ecmaVersion: "latest",
 			sourceType: "module",
 		}) as Parameters<typeof validateGraphAst>[0];
-		const errors = validateGraphAst(ast, { extraGlobals: ["contract"] });
-		expect(errors).toEqual([]);
+		expect(validateGraphAst(ast, { extraGlobals: ["contract"] })).toEqual([]);
 	});
 
 	it("still rejects 'plan' when NOT registered as extraGlobal", () => {
@@ -86,11 +77,10 @@ describe("AST validation with sandboxExtras", () => {
 			ecmaVersion: "latest",
 			sourceType: "module",
 		}) as Parameters<typeof validateGraphAst>[0];
-		const errors = validateGraphAst(ast, {});
-		expect(errors.some((e) => e.includes('"plan"'))).toBe(true);
+		expect(validateGraphAst(ast, {}).some((e) => e.includes('"plan"'))).toBe(true);
 	});
 
-	it("error message lists extra globals when they are registered", () => {
+	it("error message includes extra globals when registered", () => {
 		const ast = acorn.parse("unknownThing;", {
 			ecmaVersion: "latest",
 			sourceType: "module",
@@ -101,63 +91,16 @@ describe("AST validation with sandboxExtras", () => {
 	});
 });
 
-// ── plan sandbox object ───────────────────────────────────────────────────────
+// ── plan sandbox ──────────────────────────────────────────────────────────────
 
 describe("plan sandbox in graph script", () => {
-	it("plan.isExists returns false for a missing plan", () => {
-		const script = `
-export const meta = { name: 'test', description: 'test' };
-const g = graph();
-g.node('a', agent('worker', () => plan.isExists('nonexistent') ? 'yes' : 'no'));
-g.edge('a', END);
-g.run({});
-`;
-		const { graph } = buildGraphFromScript(script, {
-			sandboxExtras: { plan: makePlanSandboxForTest(tmpDir) },
-		});
-		expect(promptFnOf(graph, "a")({})).toBe("no");
-	});
-
-	it("plan.isExists returns true after plan.create", () => {
-		planCreate(tmpDir, "My Plan", "# My Plan\n\nContent here.");
-		const script = `
-export const meta = { name: 'test', description: 'test' };
-const g = graph();
-g.node('a', agent('worker', () => plan.isExists('my-plan') ? 'yes' : 'no'));
-g.edge('a', END);
-g.run({});
-`;
-		const { graph } = buildGraphFromScript(script, {
-			sandboxExtras: { plan: makePlanSandboxForTest(tmpDir) },
-		});
-		expect(promptFnOf(graph, "a")({})).toBe("yes");
-	});
-
-	it("plan.length returns correct count", () => {
-		planCreate(tmpDir, "Plan A", "# Plan A\n\nA.");
-		planCreate(tmpDir, "Plan B", "# Plan B\n\nB.");
-		const script = `
-export const meta = { name: 'test', description: 'test' };
-const g = graph();
-g.node('a', agent('worker', () => String(plan.length())));
-g.edge('a', END);
-g.run({});
-`;
-		const { graph } = buildGraphFromScript(script, {
-			sandboxExtras: { plan: makePlanSandboxForTest(tmpDir) },
-		});
-		expect(promptFnOf(graph, "a")({})).toBe("2");
-	});
-
-	it("plan.indexOf finds a plan by name fragment", () => {
-		planCreate(tmpDir, "Auth Plan", "# Auth Plan\n\nDesign auth.");
-		planCreate(tmpDir, "DB Plan", "# DB Plan\n\nDesign DB.");
+	it("plan.get returns ok:false (no throw) for a missing plan", () => {
 		const script = `
 export const meta = { name: 'test', description: 'test' };
 const g = graph();
 g.node('a', agent('worker', () => {
-  const found = plan.indexOf(p => p.name.includes('Auth'));
-  return found ? found.id : 'none';
+  const p = plan.get('nonexistent');
+  return p.ok ? 'found' : 'missing';
 }));
 g.edge('a', END);
 g.run({});
@@ -165,28 +108,10 @@ g.run({});
 		const { graph } = buildGraphFromScript(script, {
 			sandboxExtras: { plan: makePlanSandboxForTest(tmpDir) },
 		});
-		expect(promptFnOf(graph, "a")({})).toBe("auth-plan");
+		expect(promptFnOf(graph, "a")({})).toBe("missing");
 	});
 
-	it("plan.indexOf returns null when nothing matches", () => {
-		planCreate(tmpDir, "Auth Plan", "# Auth Plan\n\nContent.");
-		const script = `
-export const meta = { name: 'test', description: 'test' };
-const g = graph();
-g.node('a', agent('worker', () => {
-  const found = plan.indexOf(p => p.name.includes('XYZ'));
-  return found === null ? 'null' : 'found';
-}));
-g.edge('a', END);
-g.run({});
-`;
-		const { graph } = buildGraphFromScript(script, {
-			sandboxExtras: { plan: makePlanSandboxForTest(tmpDir) },
-		});
-		expect(promptFnOf(graph, "a")({})).toBe("null");
-	});
-
-	it("plan.get returns content in prompt function", () => {
+	it("plan.get returns content after plan.create", () => {
 		planCreate(tmpDir, "My Plan", "# My Plan\n\nThe content.");
 		const script = `
 export const meta = { name: 'test', description: 'test' };
@@ -204,13 +129,34 @@ g.run({});
 		expect(promptFnOf(graph, "a")({})).toContain("The content.");
 	});
 
-	it("plan.create writes a file visible to subsequent plan.isExists", () => {
+	it("plan.get content can be used for length and indexOf checks", () => {
+		planCreate(tmpDir, "Auth Plan", "# Auth Plan\n\nDesign the auth module.");
 		const script = `
 export const meta = { name: 'test', description: 'test' };
 const g = graph();
 g.node('a', agent('worker', () => {
-  plan.create('New Plan', '# New Plan\\n\\nContent.');
-  return plan.isExists('new-plan') ? 'yes' : 'no';
+  const p = plan.get('auth-plan');
+  const len = p.content?.length ?? 0;
+  const pos = p.content?.indexOf('auth') ?? -1;
+  return len > 0 && pos >= 0 ? 'ok' : 'fail';
+}));
+g.edge('a', END);
+g.run({});
+`;
+		const { graph } = buildGraphFromScript(script, {
+			sandboxExtras: { plan: makePlanSandboxForTest(tmpDir) },
+		});
+		expect(promptFnOf(graph, "a")({})).toBe("ok");
+	});
+
+	it("plan.create writes a file readable by plan.get", () => {
+		const script = `
+export const meta = { name: 'test', description: 'test' };
+const g = graph();
+g.node('a', agent('worker', () => {
+  plan.create('New Plan', '# New Plan\\n\\nCreated in script.');
+  const p = plan.get('new-plan');
+  return p.ok ? 'yes' : 'no';
 }));
 g.edge('a', END);
 g.run({});
@@ -219,18 +165,39 @@ g.run({});
 			sandboxExtras: { plan: makePlanSandboxForTest(tmpDir) },
 		});
 		expect(promptFnOf(graph, "a")({})).toBe("yes");
-		expect(planIsExists(tmpDir, "new-plan")).toBe(true);
+		// Verify it hit tmpDir, not process.cwd()
+		expect(planGet(tmpDir, "new-plan").ok).toBe(true);
+		expect(planGet(process.cwd(), "new-plan").ok).toBe(false);
 	});
 
-	it("plan functions work in an edge condition", () => {
-		planCreate(tmpDir, "Ready Plan", "# Ready Plan\n\nDone.");
+	it("plan.list returns all plans", () => {
+		planCreate(tmpDir, "Plan A", "# Plan A\n\nA.");
+		planCreate(tmpDir, "Plan B", "# Plan B\n\nB.");
+		const script = `
+export const meta = { name: 'test', description: 'test' };
+const g = graph();
+g.node('a', agent('worker', () => {
+  const r = plan.list();
+  return String(r.plans?.length ?? 0);
+}));
+g.edge('a', END);
+g.run({});
+`;
+		const { graph } = buildGraphFromScript(script, {
+			sandboxExtras: { plan: makePlanSandboxForTest(tmpDir) },
+		});
+		expect(promptFnOf(graph, "a")({})).toBe("2");
+	});
+
+	it("plan.get works in an edge condition", () => {
+		planCreate(tmpDir, "Ready Plan", "# Ready Plan\n\nApproved.");
 		const script = `
 export const meta = { name: 'test', description: 'test' };
 const g = graph();
 g.node('a', agent('worker', () => 'done'));
 g.node('b', agent('worker', () => 'b'));
 g.node('c', agent('worker', () => 'c'));
-g.edge('a', (state, result) => plan.isExists('ready-plan') ? 'b' : 'c');
+g.edge('a', (state, result) => plan.get('ready-plan').ok ? 'b' : 'c');
 g.edge('b', END);
 g.edge('c', END);
 g.run({});
@@ -240,66 +207,36 @@ g.run({});
 		});
 		expect(conditionOf(graph, "a")({}, {} as any)).toBe("b");
 	});
+
+	it("plan.get returns ok:false in edge condition when plan is missing", () => {
+		const script = `
+export const meta = { name: 'test', description: 'test' };
+const g = graph();
+g.node('a', agent('worker', () => 'done'));
+g.node('b', agent('worker', () => 'b'));
+g.node('c', agent('worker', () => 'c'));
+g.edge('a', (state, result) => plan.get('no-such-plan').ok ? 'b' : 'c');
+g.edge('b', END);
+g.edge('c', END);
+g.run({});
+`;
+		const { graph } = buildGraphFromScript(script, {
+			sandboxExtras: { plan: makePlanSandboxForTest(tmpDir) },
+		});
+		expect(conditionOf(graph, "a")({}, {} as any)).toBe("c");
+	});
 });
 
-// ── contract sandbox object ───────────────────────────────────────────────────
+// ── contract sandbox ──────────────────────────────────────────────────────────
 
 describe("contract sandbox in graph script", () => {
-	it("contract.isExists returns false for missing contract", () => {
-		const script = `
-export const meta = { name: 'test', description: 'test' };
-const g = graph();
-g.node('a', agent('worker', () => contract.isExists('no-such') ? 'yes' : 'no'));
-g.edge('a', END);
-g.run({});
-`;
-		const { graph } = buildGraphFromScript(script, {
-			sandboxExtras: { contract: makeContractSandboxForTest(tmpDir) },
-		});
-		expect(promptFnOf(graph, "a")({})).toBe("no");
-	});
-
-	it("contract.isExists returns true after contractCreate", () => {
-		contractCreate(tmpDir, { name: "Auth API", type: "api", producer: "architect", consumer: "worker", content: "# Auth API\n\nSpec." });
-		const script = `
-export const meta = { name: 'test', description: 'test' };
-const g = graph();
-g.node('a', agent('worker', () => contract.isExists('auth-api') ? 'yes' : 'no'));
-g.edge('a', END);
-g.run({});
-`;
-		const { graph } = buildGraphFromScript(script, {
-			sandboxExtras: { contract: makeContractSandboxForTest(tmpDir) },
-		});
-		expect(promptFnOf(graph, "a")({})).toBe("yes");
-	});
-
-	it("contract.length returns correct count", () => {
-		contractCreate(tmpDir, { name: "API A", type: "api", producer: "architect", consumer: "worker", content: "# API A" });
-		contractCreate(tmpDir, { name: "API B", type: "api", producer: "architect", consumer: "worker", content: "# API B" });
-		const script = `
-export const meta = { name: 'test', description: 'test' };
-const g = graph();
-g.node('a', agent('worker', () => String(contract.length())));
-g.edge('a', END);
-g.run({});
-`;
-		const { graph } = buildGraphFromScript(script, {
-			sandboxExtras: { contract: makeContractSandboxForTest(tmpDir) },
-		});
-		expect(promptFnOf(graph, "a")({})).toBe("2");
-	});
-
-	it("contract.indexOf finds by status", () => {
-		contractCreate(tmpDir, { name: "Draft Contract", type: "api", producer: "architect", consumer: "worker", content: "# Draft" });
-		contractCreate(tmpDir, { name: "Proposed Contract", type: "api", producer: "architect", consumer: "worker", content: "# Proposed" });
-		contractPropose(tmpDir, "proposed-contract");
+	it("contract.get returns ok:false (no throw) for a missing contract", () => {
 		const script = `
 export const meta = { name: 'test', description: 'test' };
 const g = graph();
 g.node('a', agent('worker', () => {
-  const found = contract.indexOf(c => c.status === 'proposed');
-  return found ? found.id : 'none';
+  const c = contract.get('no-such');
+  return c.ok ? 'found' : 'missing';
 }));
 g.edge('a', END);
 g.run({});
@@ -307,28 +244,10 @@ g.run({});
 		const { graph } = buildGraphFromScript(script, {
 			sandboxExtras: { contract: makeContractSandboxForTest(tmpDir) },
 		});
-		expect(promptFnOf(graph, "a")({})).toBe("proposed-contract");
+		expect(promptFnOf(graph, "a")({})).toBe("missing");
 	});
 
-	it("contract.indexOf returns null when nothing matches", () => {
-		contractCreate(tmpDir, { name: "Draft Only", type: "api", producer: "architect", consumer: "worker", content: "# Draft" });
-		const script = `
-export const meta = { name: 'test', description: 'test' };
-const g = graph();
-g.node('a', agent('worker', () => {
-  const found = contract.indexOf(c => c.status === 'proposed');
-  return found === null ? 'null' : 'found';
-}));
-g.edge('a', END);
-g.run({});
-`;
-		const { graph } = buildGraphFromScript(script, {
-			sandboxExtras: { contract: makeContractSandboxForTest(tmpDir) },
-		});
-		expect(promptFnOf(graph, "a")({})).toBe("null");
-	});
-
-	it("contract.get returns content in prompt function", () => {
+	it("contract.get returns content after contractCreate", () => {
 		contractCreate(tmpDir, { name: "Auth API", type: "api", producer: "architect", consumer: "worker", content: "# Auth API\n\nEndpoints here." });
 		const script = `
 export const meta = { name: 'test', description: 'test' };
@@ -346,7 +265,65 @@ g.run({});
 		expect(promptFnOf(graph, "a")({})).toContain("Endpoints here.");
 	});
 
-	it("contract functions work in an edge condition", () => {
+	it("contract.get content supports indexOf for status checks", () => {
+		contractCreate(tmpDir, { name: "Auth API", type: "api", producer: "architect", consumer: "worker", content: "# Auth API" });
+		contractPropose(tmpDir, "auth-api");
+		const script = `
+export const meta = { name: 'test', description: 'test' };
+const g = graph();
+g.node('a', agent('worker', () => {
+  const c = contract.get('auth-api');
+  return (c.ok && c.content.includes('status: proposed')) ? 'proposed' : 'other';
+}));
+g.edge('a', END);
+g.run({});
+`;
+		const { graph } = buildGraphFromScript(script, {
+			sandboxExtras: { contract: makeContractSandboxForTest(tmpDir) },
+		});
+		expect(promptFnOf(graph, "a")({})).toBe("proposed");
+	});
+
+	it("contract.create writes a file readable by contract.get", () => {
+		const script = `
+export const meta = { name: 'test', description: 'test' };
+const g = graph();
+g.node('a', agent('worker', () => {
+  contract.create({ name: 'New API', type: 'api', producer: 'architect', consumer: 'worker', content: '# New API' });
+  const c = contract.get('new-api');
+  return c.ok ? 'yes' : 'no';
+}));
+g.edge('a', END);
+g.run({});
+`;
+		const { graph } = buildGraphFromScript(script, {
+			sandboxExtras: { contract: makeContractSandboxForTest(tmpDir) },
+		});
+		expect(promptFnOf(graph, "a")({})).toBe("yes");
+		expect(contractGet(tmpDir, "new-api").ok).toBe(true);
+		expect(contractGet(process.cwd(), "new-api").ok).toBe(false);
+	});
+
+	it("contract.list returns all contracts", () => {
+		contractCreate(tmpDir, { name: "API A", type: "api", producer: "architect", consumer: "worker", content: "# API A" });
+		contractCreate(tmpDir, { name: "API B", type: "api", producer: "architect", consumer: "worker", content: "# API B" });
+		const script = `
+export const meta = { name: 'test', description: 'test' };
+const g = graph();
+g.node('a', agent('worker', () => {
+  const r = contract.list();
+  return String(r.contracts?.length ?? 0);
+}));
+g.edge('a', END);
+g.run({});
+`;
+		const { graph } = buildGraphFromScript(script, {
+			sandboxExtras: { contract: makeContractSandboxForTest(tmpDir) },
+		});
+		expect(promptFnOf(graph, "a")({})).toBe("2");
+	});
+
+	it("contract.get works in an edge condition — route on status", () => {
 		contractCreate(tmpDir, { name: "Auth API", type: "api", producer: "architect", consumer: "worker", content: "# Auth API" });
 		contractPropose(tmpDir, "auth-api");
 		const script = `
@@ -368,27 +345,9 @@ g.run({});
 		});
 		expect(conditionOf(graph, "a")({}, {} as any)).toBe("ready");
 	});
-
-	it("contract.create writes a file visible to contract.isExists", () => {
-		const script = `
-export const meta = { name: 'test', description: 'test' };
-const g = graph();
-g.node('a', agent('worker', () => {
-  contract.create({ name: 'New API', type: 'api', producer: 'architect', consumer: 'worker', content: '# New API' });
-  return contract.isExists('new-api') ? 'yes' : 'no';
-}));
-g.edge('a', END);
-g.run({});
-`;
-		const { graph } = buildGraphFromScript(script, {
-			sandboxExtras: { contract: makeContractSandboxForTest(tmpDir) },
-		});
-		expect(promptFnOf(graph, "a")({})).toBe("yes");
-		expect(contractIsExists(tmpDir, "new-api")).toBe(true);
-	});
 });
 
-// ── both plan and contract together ──────────────────────────────────────────
+// ── plan and contract together ────────────────────────────────────────────────
 
 describe("plan and contract together in one script", () => {
 	it("both can be used in the same script", () => {
@@ -398,9 +357,9 @@ describe("plan and contract together in one script", () => {
 export const meta = { name: 'test', description: 'test' };
 const g = graph();
 g.node('a', agent('worker', () => {
-  const hasplan = plan.isExists('auth-plan');
-  const hasContract = contract.isExists('auth-api');
-  return hasplan && hasContract ? 'both' : 'missing';
+  const hasPlan = plan.get('auth-plan').ok;
+  const hasContract = contract.get('auth-api').ok;
+  return hasPlan && hasContract ? 'both' : 'missing';
 }));
 g.edge('a', END);
 g.run({});
@@ -412,28 +371,5 @@ g.run({});
 			},
 		});
 		expect(promptFnOf(graph, "a")({})).toBe("both");
-	});
-});
-
-// ── cwd isolation ─────────────────────────────────────────────────────────────
-
-describe("cwd binding", () => {
-	it("writes land in tmpDir, not cwd", () => {
-		const script = `
-export const meta = { name: 'test', description: 'test' };
-const g = graph();
-g.node('a', agent('worker', () => {
-  plan.create('Isolated Plan', '# Isolated Plan\\n\\nContent.');
-  return 'done';
-}));
-g.edge('a', END);
-g.run({});
-`;
-		const { graph } = buildGraphFromScript(script, {
-			sandboxExtras: { plan: makePlanSandboxForTest(tmpDir) },
-		});
-		promptFnOf(graph, "a")({});
-		expect(planIsExists(tmpDir, "isolated-plan")).toBe(true);
-		expect(planIsExists(process.cwd(), "isolated-plan")).toBe(false);
 	});
 });

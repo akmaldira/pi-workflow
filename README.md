@@ -203,23 +203,17 @@ All calls use `fs.*Sync` internally so they work in both edge conditions and pro
 
 | Call | Returns | Notes |
 |---|---|---|
-| `plan.get(id)` | `{ ok, content? }` | Read a plan |
+| `plan.get(id)` | `{ ok, content? }` | Read a plan — `ok:false` if not found, never throws |
 | `plan.list()` | `{ ok, plans? }` | All plans, newest first |
 | `plan.create(name, content)` | `{ ok, id? }` | Create a new plan |
 | `plan.edit(id, old, new)` | `{ ok }` | Find-and-replace in a plan |
 | `plan.delete(id)` | `{ ok }` | Delete a plan |
-| `plan.isExists(id)` | `boolean` | Quick existence check |
-| `plan.length()` | `number` | Count of plans |
-| `plan.indexOf(fn)` | `PlanMeta \| null` | First plan where `fn(plan)` is true |
-| `contract.get(id)` | `{ ok, content? }` | Read a contract |
+| `contract.get(id)` | `{ ok, content? }` | Read a contract — `ok:false` if not found, never throws |
 | `contract.list()` | `{ ok, contracts? }` | All contracts, newest first |
 | `contract.create(params)` | `{ ok, id? }` | Create a draft contract |
 | `contract.edit(id, old, new)` | `{ ok }` | Find-and-replace (draft only) |
 | `contract.propose(id)` | `{ ok }` | Move draft → proposed |
 | `contract.supersede(oldId, params)` | `{ ok, id? }` | Create v+1 draft |
-| `contract.isExists(id)` | `boolean` | Quick existence check |
-| `contract.length()` | `number` | Count of contracts |
-| `contract.indexOf(fn)` | `ContractMeta \| null` | First contract where `fn(contract)` is true |
 
 ```js
 // Gate: only proceed when contract is proposed; loop back if still draft
@@ -235,9 +229,10 @@ g.node('green', agent('green', (s) => {
   return `Implement:\n${p.ok ? p.content : '(no plan yet)'}\n\nTests:\n${s.red}`;
 }));
 
-// Branch: loop architect until at least one proposed contract exists
+// Branch: loop architect until the contract is proposed
+// get returns ok:false if missing, content has 'status: draft' if still draft
 g.edge('architect', (state, result) =>
-  contract.indexOf(c => c.status === 'proposed') ? 'worker' : 'architect');
+  contract.get('auth-api').content?.includes('status: proposed') ? 'worker' : 'architect');
 ```
 
 Scripts are checked with an acorn AST pass, then evaluated in a `vm` context. Intrinsics are

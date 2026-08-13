@@ -146,24 +146,3 @@ export function planDelete(cwd: string, id: string): PlanActionResult {
 	return { ok: true, message: `Plan "${id}" deleted.` };
 }
 
-/** Returns true if a plan with the given id exists on disk. */
-export function planIsExists(cwd: string, id: string): boolean {
-	return fs.existsSync(path.join(plansDir(cwd), `${id}.md`));
-}
-
-/** Returns the total number of plans. */
-export function planLength(cwd: string): number {
-	return listAllPlans(cwd).length;
-}
-
-/**
- * Returns the first PlanMeta where predicate returns true, or null.
- * Equivalent to Array.prototype.find over the plan list (sorted newest-first).
- */
-export function planIndexOf(
-	cwd: string,
-	predicate: (plan: PlanMeta) => boolean,
-): PlanMeta | null {
-	return listAllPlans(cwd).find(predicate) ?? null;
-}
-
