@@ -23,6 +23,9 @@ export type GraphState = Record<string, unknown>;
 /** Builds a node's prompt from the state available when it runs. */
 export type PromptFn = (state: GraphState) => string;
 
+/** A pure synchronous function node — no agent, no LLM, instant execution. */
+export type FnNodeFn = (state: GraphState) => string;
+
 /**
  * Chooses the next node from the current node's result.
  *
@@ -55,7 +58,27 @@ export interface HumanNodeDef {
 	default?: string;
 }
 
-export type NodeDef = AgentNodeDef | HumanNodeDef;
+/**
+ * A pure synchronous function node.
+ *
+ * Runs instantly with no LLM call, no subprocess, no cost. The function
+ * receives the current graph state and returns a string that becomes the
+ * node's result text — identical in shape to an agent result so downstream
+ * prompts and edges work unchanged.
+ *
+ * Primary use case: a zero-cost hub node for conditional fan-out.
+ *
+ *   g.node('dispatch', (state) => 'ready');  // fan-out hub
+ *   g.edge('gate', (state, result) => plan.get('sprint-plan').ok ? 'dispatch' : 'gate');
+ *   g.edge('dispatch', 'scout1');
+ *   g.edge('dispatch', 'scout2');
+ */
+export interface FnNodeDef {
+	type: "fn";
+	fn: FnNodeFn;
+}
+
+export type NodeDef = AgentNodeDef | HumanNodeDef | FnNodeDef;
 
 export interface GraphNode {
 	id: string;
@@ -186,14 +209,20 @@ export class GraphBuilder {
 	private initialState: GraphState = {};
 	private started = false;
 
-	node(id: string, def: NodeDef): this {
+	node(id: string, def: NodeDef | FnNodeFn): this {
 		assertValidNodeId(id);
 		if (this.nodes.has(id)) {
 			throw new GraphDefinitionError(`Node "${id}" is already defined`);
 		}
+		// Plain function shorthand: g.node('x', (state) => 'result')
+		if (typeof def === "function") {
+			this.nodes.set(id, { id, def: { type: "fn", fn: def } });
+			if (this.entry === null) this.entry = id;
+			return this;
+		}
 		if (!def || typeof def !== "object" || !("type" in def)) {
 			throw new GraphDefinitionError(
-			`Node "${id}" must be defined with agent() or human()`,
+			`Node "${id}" must be defined with agent(), human(), or a plain function: (state) => "result"`,
 			);
 		}
 		this.nodes.set(id, { id, def });

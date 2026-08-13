@@ -136,7 +136,7 @@ describe("GraphBuilder", () => {
 			const g = new GraphBuilder();
 
 			// @ts-expect-error deliberately wrong type
-			expect(() => g.node("a", { notANode: true })).toThrow(/agent\(\) or human\(\)/);
+			expect(() => g.node("a", { notANode: true })).toThrow(/agent\(\)|human\(\)|plain function/);
 		});
 	});
 

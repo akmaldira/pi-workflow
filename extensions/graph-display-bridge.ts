@@ -159,7 +159,11 @@ export class GraphDisplayBridge {
 		// Every run is round-based now, so tagging each label with its round
 		// would add noise to the common one-node-per-round case. Which nodes
 		// shared a wave is already reported by roundComplete().
-		const label = info.agentName ? `${info.nodeId} (${info.agentName})` : info.nodeId;
+		const label = info.agentName
+			? `${info.nodeId} (${info.agentName})`
+			: info.nodeType === "fn"
+				? `${info.nodeId} [fn]`
+			: info.nodeId;
 
 		try {
 			this.manager.markAgentStart(this.runId, 0, {

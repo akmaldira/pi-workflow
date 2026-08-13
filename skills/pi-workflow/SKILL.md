@@ -59,6 +59,7 @@ g.run({ target: args.target });", args={ target: "auth module" })
 - `graph()` — create the graph (exactly one per script)
 - `g.node(id, agent(name, (state) => prompt))` — an agent node
 - `g.node(id, human(prompt | promptFn, { options, default }))` — ask the user; always give a `default`
+- `g.node(id, (state) => 'result')` — a function node: pure JS, no LLM, instant
 - `g.edge(from, to)` / `g.edge(from, END)` — direct routing
 - `g.edge(from, (state, result) => target)` — conditional routing
 - `g.run(initialState)` — start it
@@ -100,6 +101,39 @@ g.node('worker2', agent('worker2', (s) =>
   // The reply text is still available alongside it
   `Worker1 said: ${s.worker1}`
 ));
+```
+
+**Function nodes — pure JS, no LLM.** Pass a plain arrow function as the second argument to
+`g.node()` to create a zero-cost hub node. The function receives the current graph state and
+returns a string that becomes the node's result text — identical in shape to an agent result, so
+downstream prompts (`${s.dispatch}`) and edges work unchanged. No subprocess, no API call.
+
+**Primary use case: conditional fan-out.** A conditional edge returns one target. A function node
+acts as that one target, then fans out to many via normal direct edges:
+
+```js
+// Gate: conditional edge routes to dispatch or loops back
+g.edge('plan', (state, result) => {
+  const p = plan.get('sprint-plan');
+  return p.ok ? 'dispatch' : 'plan';
+});
+
+// dispatch is a fn node — no agent, no cost
+g.node('dispatch', () => 'ready');
+g.edge('dispatch', 'scout1');
+g.edge('dispatch', 'scout2');
+g.edge('dispatch', 'scout3');
+
+// scouts fan-in to combine as normal
+g.edge('scout1', 'combine');
+g.edge('scout2', 'combine');
+g.edge('scout3', 'combine');
+```
+
+The fn receives `state` and can use it or the `plan`/`contract` sandbox functions:
+```js
+g.node('dispatch', (state) => `running plan: ${state.plan}`);
+g.node('check',    (state) => plan.get('sprint-plan').ok ? 'found' : 'missing');
 ```
 
 **Revisiting a node overwrites its state entry.** A node is not single-use: an edge can route

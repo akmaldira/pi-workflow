@@ -152,6 +152,54 @@ last-write-wins and will silently drop one — use distinct keys and combine the
 A parallel run reports two numbers, e.g. *"6 node executions across 3 rounds"*: rounds measure how
 deep the coordination went, node executions how much work happened. `maxIterations` caps rounds.
 
+### Node types
+
+Three kinds of node, one API:
+
+```js
+g.node('worker',   agent('worker', (state) => `Implement: ${state.plan}`)); // LLM agent
+g.node('approve',  human('Ship it?', { options: ['yes', 'no'], default: 'yes' })); // human gate
+g.node('dispatch', (state) => 'ready'); // fn node — pure JS, no LLM, instant
+```
+
+**Function nodes** are the new addition. Pass a plain arrow function as the second argument: it
+receives the current graph state and returns a string that becomes the node's result text —
+identical in shape to an agent result. No subprocess, no API call, runs in microseconds.
+
+The primary use case is a **zero-cost fan-out hub**. A conditional edge can only return one
+target. Put a function node at that target, then fan out to many via direct edges:
+
+```js
+// Without fn node: no way to conditionally fan-out
+// With fn node: conditional edge → fn hub → direct fan-out
+
+g.node('plan', agent('planner', () => 'plan...'));
+g.node('dispatch', () => 'ready');  // fn hub — free
+g.node('scout1', agent('scout', (s) => `check auth:\n${s.dispatch}`));
+g.node('scout2', agent('scout', (s) => `check db:\n${s.dispatch}`));
+g.node('scout3', agent('scout', (s) => `check api:\n${s.dispatch}`));
+g.node('combine', agent('worker', (s) => `${s.scout1}\n${s.scout2}\n${s.scout3}`));
+
+// Conditional gate: loop plan until the plan file exists, then fan out
+g.edge('plan', (state, result) =>
+  plan.get('sprint-plan').ok ? 'dispatch' : 'plan');
+g.edge('dispatch', 'scout1');
+g.edge('dispatch', 'scout2');
+g.edge('dispatch', 'scout3');
+g.edge('scout1', 'combine');
+g.edge('scout2', 'combine');
+g.edge('scout3', 'combine');
+g.edge('combine', END);
+g.run({});
+```
+
+Function nodes can also inspect state and use `plan`/`contract` sandbox functions:
+
+```js
+g.node('check', (state) => plan.get('sprint-plan').ok ? 'found' : 'missing');
+g.node('label', (state) => `processing task: ${state.planner}`);
+```
+
 ### State
 
 Every node's result is stored under its id, and every prompt function receives the accumulated

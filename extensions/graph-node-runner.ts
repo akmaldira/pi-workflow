@@ -329,6 +329,25 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 		const signal = context.signal ?? options.signal;
 
 		switch (node.def.type) {
+			case "fn": {
+				// Pure synchronous function node — no LLM, no subprocess.
+				// Runs instantly; result shape is identical to an agent result
+				// so downstream prompts and edges work unchanged.
+				let text: string;
+				try {
+					text = String(node.def.fn(state));
+				} catch (error) {
+					return {
+						result: withResultText({ status: "ok", text: "", data: {} }),
+						technicalFailure: true,
+						error: `fn node "${node.id}" threw: ${error instanceof Error ? error.message : String(error)}`,
+					};
+				}
+				return {
+					result: withResultText({ status: "ok", text, data: {} }),
+				};
+			}
+
 			case "agent":
 				return runAgentNode(node, node.def.agentName, node.def.promptFn(state), signal);
 
