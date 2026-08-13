@@ -215,24 +215,80 @@ All calls use `fs.*Sync` internally so they work in both edge conditions and pro
 | `contract.propose(id)` | `{ ok }` | Move draft → proposed |
 | `contract.supersede(oldId, params)` | `{ ok, id? }` | Create v+1 draft |
 
-```js
-// Gate: only proceed when contract is proposed; loop back if still draft
+**`get` never throws.** For a missing id it returns `{ ok: false }`. This means:
+- Existence check: `plan.get('foo').ok`
+- Character count: `plan.get('foo').content?.length`
+- Keyword search: `plan.get('foo').content?.includes('JWT')`
+
+No separate `isExists`, `length`, or `indexOf` helpers are needed.
+
+**Gate on contract status — loop architect until it proposes the contract:**
+
+```text
+export const meta = { name: 'tdd_gated', description: 'Design contract, then implement' };
+const g = graph();
+
+g.node('architect', agent('architect', (s) =>
+  `Design the auth API contract. When done, call contract(action:"propose", id:"auth-api").`));
+
+// Edge reads the file directly — no gate node needed
 g.edge('architect', (state, result) => {
   const c = contract.get('auth-api');
-  if (!c.ok || c.content.includes('status: draft')) return 'architect';
-  return 'worker';
+  if (!c.ok) return 'architect';                              // not created yet
+  if (c.content.includes('status: draft')) return 'architect'; // created but not proposed
+  return 'worker';                                            // proposed — advance
 });
 
-// Embed the current plan in a prompt
-g.node('green', agent('green', (s) => {
-  const p = plan.get('implementation-plan');
-  return `Implement:\n${p.ok ? p.content : '(no plan yet)'}\n\nTests:\n${s.red}`;
+g.node('worker', agent('worker', (s) => {
+  const c = contract.get('auth-api');
+  return `Implement against this contract:\n${c.content}\n\nArchitect output:\n${s.architect}`;
+}));
+g.edge('worker', END);
+g.run({ task: args.task });
+```
+
+**Embed the current plan in a prompt — always uses the latest version:**
+
+```text
+export const meta = { name: 'plan_driven', description: 'Read plan at execution time' };
+const g = graph();
+
+g.node('planner', agent('planner', () =>
+  `Investigate the codebase and write a plan using plan(action:"create", ...). ` +
+  `When done, call plan(action:"propose", id:"sprint-plan").`));
+
+// Prompt function runs at node execution time, not script load time — always fresh
+g.node('worker', agent('worker', (s) => {
+  const p = plan.get('sprint-plan');
+  return p.ok
+    ? `Execute this plan:\n${p.content}`
+    : `No plan found — use your best judgment. Context:\n${s.planner}`;
 }));
 
-// Branch: loop architect until the contract is proposed
-// get returns ok:false if missing, content has 'status: draft' if still draft
-g.edge('architect', (state, result) =>
-  contract.get('auth-api').content?.includes('status: proposed') ? 'worker' : 'architect');
+g.edge('planner', (state, result) =>
+  plan.get('sprint-plan').ok ? 'worker' : 'planner'); // loop until plan exists
+g.edge('worker', END);
+g.run({});
+```
+
+**List all contracts to give the architect context:**
+
+```js
+g.node('architect', agent('architect', (s) => {
+  const r = contract.list();
+  const existing = r.contracts?.map(c => `- ${c.id} (${c.status})`).join('\n') ?? 'none';
+  return `Existing contracts:\n${existing}\n\nDesign a new contract for: ${args.feature}`;
+}));
+```
+
+**Search contract content for a keyword — skip redesign if already covered:**
+
+```js
+g.edge('architect', (state, result) => {
+  const c = contract.get('auth-api');
+  if (c.ok && c.content.includes('JWT')) return 'worker'; // already covers JWT
+  return 'architect';                                     // needs redesign
+});
 ```
 
 Scripts are checked with an acorn AST pass, then evaluated in a `vm` context. Intrinsics are

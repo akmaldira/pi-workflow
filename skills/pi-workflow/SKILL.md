@@ -245,33 +245,41 @@ same plan/contract store that the `plan` and `contract` tools use:
 
 | Call | Returns | Description |
 |---|---|---|
-| `plan.get(id)` | `{ ok, content?, message }` | Read a plan by id |
-| `plan.list()` | `{ ok, plans?, message }` | List all plans |
+| `plan.get(id)` | `{ ok, content?, message }` | Read a plan — `ok:false` if not found, never throws |
+| `plan.list()` | `{ ok, plans?, message }` | List all plans (newest first) |
 | `plan.create(name, content)` | `{ ok, id?, message }` | Create a new plan |
 | `plan.edit(id, oldText, newText)` | `{ ok, message }` | Precision find-and-replace |
 | `plan.delete(id)` | `{ ok, message }` | Delete a plan |
-| `contract.get(id)` | `{ ok, content?, message }` | Read a contract by id |
-| `contract.list()` | `{ ok, contracts?, message }` | List all contracts |
+| `contract.get(id)` | `{ ok, content?, message }` | Read a contract — `ok:false` if not found, never throws |
+| `contract.list()` | `{ ok, contracts?, message }` | List all contracts (newest first) |
 | `contract.create(params)` | `{ ok, id?, message }` | Create a draft contract |
 | `contract.edit(id, oldText, newText)` | `{ ok, message }` | Precision find-and-replace (draft only) |
 | `contract.propose(id)` | `{ ok, message }` | Move draft → proposed |
 | `contract.supersede(oldId, params)` | `{ ok, id?, message }` | Create v+1 from an existing contract |
 
-All calls are **synchronous** (using `fs.*Sync` internally) so they work inside both edge
-conditions and prompt functions. They are bound to the project's `cwd` at script load time.
+All calls are **synchronous** (`fs.*Sync` internally) so they work in both **edge conditions**
+and **prompt functions**. Bound to the project's `cwd` at script load time.
 
-Example — gate on contract status in an edge:
+**Key rule for `get`:** `ok:false` means the file does not exist — it never throws. Use `p.ok`
+as an existence check; use `p.content?.includes(...)` / `p.content?.length` for content checks.
+These replace any need for separate `isExists` / `indexOf` / `length` helpers.
+
+**Pattern 1 — Gate on contract status (loop architect until proposed):**
 ```js
+// The architect node writes and proposes the contract as part of its work.
+// The edge reads the file back and only advances when it sees 'status: proposed'.
 g.edge('architect', (state, result) => {
-  // Only proceed when the contract is proposed; loop back if still draft
   const c = contract.get('auth-api');
-  if (!c.ok || c.content.includes('status: draft')) return 'architect';
-  return 'worker';
+  if (!c.ok) return 'architect';                         // file doesn't exist yet
+  if (c.content.includes('status: draft')) return 'architect'; // still being written
+  return 'worker';                                       // proposed — proceed
 });
 ```
 
-Example — embed the current plan in a prompt:
+**Pattern 2 — Embed the live plan into a node's prompt:**
 ```js
+// The plan was written by a previous planner node (or by the architect tool).
+// Green reads it at execution time so it always sees the latest version.
 g.node('green', agent('green', (s) => {
   const p = plan.get('implementation-plan');
   const planText = p.ok ? p.content : '(no plan yet — proceed with best judgment)';
@@ -279,13 +287,32 @@ g.node('green', agent('green', (s) => {
 }));
 ```
 
-Example — branch based on whether a contract is ready (check via `get` + content):
+**Pattern 3 — Create a plan inside a node, gate on it in the next edge:**
+```js
+// Planner writes the plan as part of its work (via the plan tool).
+// Edge confirms the plan file exists before routing to worker.
+g.edge('planner', (state, result) => {
+  const p = plan.get('sprint-plan');
+  return p.ok ? 'worker' : 'planner'; // loop if plan not written yet
+});
+```
+
+**Pattern 4 — List all contracts in a prompt to give context:**
+```js
+g.node('architect', agent('architect', (s) => {
+  const r = contract.list();
+  const summary = r.contracts?.map(c => `- ${c.id} (${c.status})`).join('\n') ?? 'none';
+  return `Existing contracts:\n${summary}\n\nNow design the new auth contract.`;
+}));
+```
+
+**Pattern 5 — Search contract content for a keyword:**
 ```js
 g.edge('architect', (state, result) => {
   const c = contract.get('auth-api');
-  // ok:false = doesn't exist yet; draft = still being written
-  if (!c.ok || c.content.includes('status: draft')) return 'architect';
-  return 'worker';
+  // Check if the contract already covers JWT — if so skip to worker
+  if (c.ok && c.content.includes('JWT')) return 'worker';
+  return 'architect';
 });
 ```
 
