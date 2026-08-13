@@ -78,6 +78,30 @@ to `.text` inside a coercion context; it is not a plain string outside one. `s.<
 contains the node's folded `node_state` buffer (an object), always present after the node
 completes (empty object `{}` if `node_state` was never called).
 
+**`${s.nodeId}` gives the reply text only — `data` is invisible to interpolation.**
+This is the most common surprise when using `node_state`. If worker1 called
+`node_state({ action: "merge", key: "summary", value: { risk: "low" } })`, then in worker2:
+
+```js
+g.node('worker2', agent('worker2', (s) => `process this: ${s.worker1}`));
+//                                                        ^^^^^^^^^^^^
+//  Produces: "process this: <worker1's reply text>"
+//  The node_state data is NOT included. data is silently absent from interpolation.
+```
+
+To pass `node_state` data to the next node you must name the fields explicitly:
+
+```js
+g.node('worker2', agent('worker2', (s) =>
+  // Access individual fields
+  `Risk level: ${s.worker1.data?.summary?.risk ?? 'unknown'}\n` +
+  // Or dump the whole buffer as JSON
+  `Full summary: ${JSON.stringify(s.worker1.data)}\n` +
+  // The reply text is still available alongside it
+  `Worker1 said: ${s.worker1}`
+));
+```
+
 **Revisiting a node overwrites its state entry.** A node is not single-use: an edge can route
 back to it any number of times (a run is capped at `maxIterations`, default 25). But when a node
 runs again, `s.<nodeId>` is replaced with the **latest** result — earlier results are dropped from

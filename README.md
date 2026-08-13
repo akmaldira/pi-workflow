@@ -188,6 +188,30 @@ g.edge('extractor', (state, result) =>
   Object.keys(result.data).length < 5 ? 'extractor' : 'assembler');
 ```
 
+> ⚠️ **`${s.nodeId}` gives the reply text only — `data` is invisible to interpolation.**
+> This is the most common surprise when using `node_state`. Say worker1 called:
+> `node_state({ action: "merge", key: "summary", value: { risk: "low" } })`
+>
+> Then in worker2:
+> ```js
+> // ❌ data is NOT in the interpolated string
+> `process this: ${s.worker1}`
+> // → "process this: <worker1's reply text>"
+> // The { summary: { risk: "low" } } buffer is silently absent.
+>
+> // ✅ Access data fields explicitly
+> `Risk: ${s.worker1.data?.summary?.risk ?? 'unknown'}`
+> // → "Risk: low"
+>
+> // ✅ Or dump the whole buffer as JSON
+> `Summary: ${JSON.stringify(s.worker1.data)}`
+> // → 'Summary: {"summary":{"risk":"low"}}'
+>
+> // ✅ Both text and data side by side
+> `${s.worker1}\nRisk: ${s.worker1.data?.summary?.risk}`
+> // → "<worker1 reply text>\nRisk: low"
+> ```
+
 ### What is available
 
 The graph API — `graph`, `agent`, `human`, `END`, `args` — plus ordinary language
