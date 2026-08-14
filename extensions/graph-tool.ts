@@ -106,7 +106,9 @@ const GraphToolParams = Type.Object({
 	),
 	args: Type.Optional(
 		Type.Any({
-			description: "Values available to the script as `args`. Must be JSON-serialisable.",
+			description:
+				"Values available to the script as `args`. Must be a JSON object of key/value pairs " +
+				"(e.g. args: { caseId: \"8907\" }). Not a JSON string, number, boolean, array, or null.",
 		}),
 	),
 	maxIterations: Type.Optional(
@@ -208,6 +210,29 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const cwd = options.cwd ?? ctx.cwd;
+
+			// args is the only unstructured parameter (Type.Any), and a model
+			// can silently send a JSON string, a number, a boolean, an array,
+			// or null. Each of those builds a graph whose prompts read
+			// `args.x` as undefined with no error anywhere — e.g. the observed
+			// "case undefined" failure. Fail fast here with an actionable
+			// message instead.
+			if (params.args !== undefined) {
+				const received =
+					params.args === null
+						? "null"
+						: Array.isArray(params.args)
+							? "an array"
+							: typeof params.args === "string"
+								? "a string"
+								: `a ${typeof params.args}`;
+				if (typeof params.args !== "object" || params.args === null || Array.isArray(params.args)) {
+					throw new Error(
+						`workflow args must be an object of key/value pairs (e.g. args: { caseId: "8907" }), but received ${received}. ` +
+							`Pass the values as an object literal — not a JSON string, number, boolean, array, or null.`,
+					);
+				}
+			}
 
 			let script: string;
 			if (params.loadWorkflow) {

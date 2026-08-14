@@ -68,6 +68,70 @@ g.run({ task: args.task });
 `;
 
 	describe("validation", () => {
+		it("rejects args that are not an object, before building anything", async () => {
+			const spawn = vi.fn();
+			const script = `${META}
+const g = graph();
+g.node("a", (s) => "ok");
+g.edge("a", END);
+g.run({});
+`;
+
+			const badArgs: unknown[] = [
+				'{"caseId": "8907"}', // JSON string — the observed production failure shape
+				1,
+				false,
+				null,
+				["a", "b"],
+			];
+
+			for (const bad of badArgs) {
+				const result = await run(script, { args: bad }, spawn);
+				expect(result.failed).toBe(true);
+				expect(result.text).toMatch(/args must be an object of key\/value pairs/);
+				expect(result.text).toMatch(/not a JSON string, number, boolean, array, or null/);
+			}
+
+			// The point of validating first: a bad args call costs nothing.
+			expect(spawn).not.toHaveBeenCalled();
+		});
+
+		it("names the received type in the error for each rejected shape", async () => {
+			const script = `${META}
+const g = graph();
+g.node("a", (s) => "ok");
+g.edge("a", END);
+g.run({});
+`;
+			const cases: Array<[unknown, RegExp]> = [
+				['{"a": 1}', /received a string/],
+				[1, /received a number/],
+				[false, /received a boolean/],
+				[null, /received null/],
+				[["a"], /received an array/],
+			];
+			for (const [bad, pattern] of cases) {
+				const result = await run(script, { args: bad }, vi.fn());
+				expect(result.failed).toBe(true);
+				expect(result.text).toMatch(pattern);
+			}
+		});
+
+		it("accepts args as an object and as undefined (omitted)", async () => {
+			const script = `${META}
+const g = graph();
+g.node("a", (s) => "ok");
+g.edge("a", END);
+g.run({});
+`;
+			// Object with mixed value types must pass validation.
+			const withObject = await run(script, { args: { name: "john", age: 13, is_active: true } }, vi.fn());
+			expect(withObject.failed).toBe(false);
+
+			// Omitted args stays valid (the schema marks it optional).
+			const omitted = await run(script, {}, vi.fn());
+			expect(omitted.failed).toBe(false);
+		});
 		it("rejects a script that reaches for the filesystem, without spawning anything", async () => {
 			const spawn = vi.fn();
 			const result = await run(`${META}\nconst fs = require("fs");`, {}, spawn);
