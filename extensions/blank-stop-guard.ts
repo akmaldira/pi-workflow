@@ -81,8 +81,13 @@ export function isBlankStop(message: AssistantMessageLike | undefined | null): b
  *
  * State (the consecutive-blank counter) is closure-scoped per call, so each
  * registration — and thus each pi process — is isolated.
+ *
+ * @param options.enabled — when false, no hooks are registered and the
+ *   guard is inert (same as if it had never existed). Defaults to true.
+ *   Driven by `.pi-workflow/settings.json` → `blankStopGuard: false`.
  */
-export function registerBlankStopGuard(pi: ExtensionAPI): void {
+export function registerBlankStopGuard(pi: ExtensionAPI, options?: { enabled?: boolean }): void {
+	if (options?.enabled === false) return;
 	let consecutiveBlanks = 0;
 	let lastTurnBlank = false;
 

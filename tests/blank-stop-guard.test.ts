@@ -196,4 +196,26 @@ describe("registerBlankStopGuard", () => {
 		expect(errorSpy).toHaveBeenCalledOnce();
 		errorSpy.mockRestore();
 	});
+
+	it("registers no hooks and sends nothing when enabled: false", () => {
+		const pi = makePi();
+		registerBlankStopGuard(pi as never, { enabled: false });
+
+		pi.emit("turn_end", turnEnd(OBSERVED_BLANK));
+		pi.emit("agent_end", agentEnd());
+
+		// The blank result flows out untouched — exactly the pre-guard
+		// behaviour, as if the guard had never existed in this process.
+		expect(pi.sendCalls.length).toBe(0);
+	});
+
+	it("defaults to enabled when options or options.enabled are omitted", () => {
+		const pi = makePi();
+		registerBlankStopGuard(pi as never, {});
+
+		pi.emit("turn_end", turnEnd(OBSERVED_BLANK));
+		pi.emit("agent_end", agentEnd());
+
+		expect(pi.sendCalls.length).toBe(1);
+	});
 });
