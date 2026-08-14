@@ -435,8 +435,18 @@ async function runSingleAttempt(
 					progress.tokens = (result.usage?.input ?? 0) + (result.usage?.output ?? 0);
 				}
 				if (event.type === "agent_end") {
-					if (event.messages && event.messages.length > 0) {
-						// Ensure we capture all messages at the end in case we missed some
+					// event.messages replays the *entire* session history in one event —
+					// every message_end/tool_result_end we've already collected above,
+					// plus nothing else (agent-loop builds this array from the exact
+					// same stream of events). It exists as a safety net for the rare
+					// case the incremental collector missed something, not as the
+					// primary source. Prefer the incremental array: it's known-complete
+					// by construction and, unlike this one event, was never at risk of
+					// exceeding the per-line protocol limit (each message_end/
+					// tool_result_end line is bounded by a single message's size; this
+					// line is bounded by the whole session's size and grows without
+					// bound as a long, image-heavy run progresses).
+					if ((!result.messages || result.messages.length === 0) && event.messages && event.messages.length > 0) {
 						result.messages = event.messages;
 					}
 				}
@@ -838,6 +848,20 @@ export async function runSingleAgent(
 		finalResult.failureClass = classification.class;
 		finalResult.failureReason = classification.reason;
 		finalResult.failureCode = classification.code;
+		// A degraded-to-"none" classification (currently: an agent_end protocol
+		// limit where the incremental messages already have everything, see
+		// failure-classifier.ts) means the run genuinely succeeded. Clear the
+		// error-shaped fields here rather than leaving them for every consumer
+		// of SingleResult to separately learn "error set but failureClass none
+		// means fine actually" — index.ts, graph-node-runner.ts, and the
+		// workflow/graph display all key off result.error/protocolError
+		// directly in places, not just failureClass, so a stray error string
+		// would still surface as a failure in the UI/journal without this.
+		if (classification.class === "none") {
+			finalResult.error = undefined;
+			finalResult.errorMessage = undefined;
+			finalResult.protocolError = undefined;
+		}
 	} else {
 		finalResult.failureClass = "none";
 	}

@@ -100,6 +100,24 @@ export function classifySingleResultFailure(result: SingleResult, exitSignal?: s
 	}
 
 	if (result.protocolError) {
+		// The one line pi-workflow deliberately does NOT bound tightly is
+		// agent_end: it replays the entire session's messages as a single
+		// JSON line, so its size grows with session length (most visibly,
+		// with how many images an agent read) rather than staying bounded
+		// like every other event line. If that line trips the limit, it is
+		// not a sign of anything broken — execution.ts already collected
+		// every one of those same messages incrementally, one small event
+		// at a time, before agent_end ever arrived (see the agent_end
+		// handler in execution.ts for why the two are guaranteed to carry
+		// identical content). So when result.messages is already populated,
+		// the run genuinely completed and this is not a technical failure —
+		// it would be wrong to abort a workflow over a redundant, oversized
+		// replay of data we already have safely in hand.
+		const diagnostics = `${result.protocolError.diagnosticPrefix ?? ""}${result.protocolError.diagnosticTail ?? ""}`;
+		const isAgentEndReplay = diagnostics.includes('"type":"agent_end"') || diagnostics.includes('"type": "agent_end"');
+		if (isAgentEndReplay && result.messages && result.messages.length > 0) {
+			return { class: "none", reason: "", code: "ok" };
+		}
 		return {
 			class: "technical",
 			reason: `Protocol output limit exceeded: ${result.protocolError.code} on ${result.protocolError.stream}.`,
