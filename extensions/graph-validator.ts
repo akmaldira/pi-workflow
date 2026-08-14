@@ -24,6 +24,7 @@ import {
 	GraphBuilder,
 	GraphDefinitionError,
 	agent,
+	command,
 	createGraphFactory,
 	human,
 } from "./graph-dsl.ts";
@@ -64,6 +65,7 @@ const ALLOWED_GLOBALS = new Set([
 	"graph",
 	"agent",
 	"human",
+	"command",
 	"END",
 	"args",
 	"meta",
@@ -285,7 +287,7 @@ export function validateGraphAst(ast: AnyNode, options: AstValidationOptions = {
 			case "ImportDeclaration":
 			case "ImportExpression":
 				problems.push(
-					"import is not allowed in a graph script. Everything a graph needs is already provided: graph, agent, human, END, args.",
+					"import is not allowed in a graph script. Everything a graph needs is already provided: graph, agent, human, command, END, args.",
 				);
 				break;
 			case "ExportDefaultDeclaration":
@@ -333,6 +335,24 @@ export function validateGraphAst(ast: AnyNode, options: AstValidationOptions = {
 		}
 		if (node.type === "NewExpression" && node.callee?.type === "Identifier" && node.callee.name === "Date") {
 			problems.push(NONDETERMINISM_ERROR);
+		}
+
+		// command()'s whole safety story is that the command a human reviews in
+		// the script is the command that runs — no runtime computation between
+		// them. Enforced here, at parse time, rather than left to convention: an
+		// argument built from anything other than a plain string literal (or a
+		// template literal with no ${} substitutions) is rejected outright.
+		if (node.type === "CallExpression" && node.callee?.type === "Identifier" && node.callee.name === "command") {
+			const firstArg = node.arguments?.[0] as AnyNode | undefined;
+			const isStaticString =
+				firstArg?.type === "Literal" && typeof firstArg.value === "string"
+					? true
+					: firstArg?.type === "TemplateLiteral" && (firstArg.expressions?.length ?? 0) === 0;
+			if (!isStaticString) {
+				problems.push(
+					"command() requires a literal string as its first argument — not a variable, template with ${} substitutions, or any computed expression. A human reviewing the script must be able to see the exact command that will run.",
+				);
+			}
 		}
 
 		if (node.type === "Identifier" && !isNonReferencePosition(node, parent)) {
@@ -497,6 +517,7 @@ export function buildGraphFromScript(
 		graph,
 		agent,
 		human,
+		command,
 		END,
 		...options.sandboxExtras,
 	};

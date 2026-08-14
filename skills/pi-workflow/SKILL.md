@@ -60,6 +60,7 @@ g.run({ target: args.target });", args={ target: "auth module" })
 - `g.node(id, agent(name, (state) => prompt))` — an agent node
 - `g.node(id, human(prompt | promptFn, { options, default }))` — ask the user; always give a `default`
 - `g.node(id, (state) => 'result')` — a function node: pure JS, no LLM, instant
+- `g.node(id, command('shell command', { timeoutMs, cwd, env, allowFailure }))` — a fixed shell command, no LLM
 - `g.edge(from, to)` / `g.edge(from, END)` — direct routing
 - `g.edge(from, (state, result) => target)` — conditional routing
 - `g.run(initialState)` — start it
@@ -136,8 +137,51 @@ g.node('dispatch', (state) => `running plan: ${state.plan}`);
 g.node('check',    (state) => plan.get('sprint-plan').ok ? 'found' : 'missing');
 ```
 
+**Command nodes — a fixed shell command, no LLM.** `command(cmdString, options)` runs a real
+shell command synchronously, with no agent involved. Use it for deterministic, mechanical checks
+that don't need judgement — `npm test`, a linter, a build step:
+
+```js
+g.node('worker', agent('worker', (s) => 'implement the feature'));
+g.node('test',   command('npm test'));
+g.node('review', agent('reviewer', (s) => `Test output:\n${s.test}`));
+g.edge('worker', 'test');
+g.edge('test', 'review');
+g.edge('review', END);
+```
+
+**The command string must be a literal — never built from state.** This is enforced by the
+script validator, not just convention: `command(someVariable)`, `command('npm ' + suite)`, and
+`command(\`npm test ${suite}\`)` are all rejected at build time. The whole point of a
+command node is that a human reviewing the script sees the exact command that will run, with
+nothing computed at runtime that could change it. If a command genuinely needs to vary, write two
+command nodes and have an edge choose between them — the *choice* is dynamic, the commands
+themselves are not:
+
+```js
+g.edge('gate', (state, result) => args.ci ? 'test_ci' : 'test_local');
+g.node('test_ci',    command('npm test -- --ci'));
+g.node('test_local', command('npm test -- --watch=false'));
+```
+
+**Result shape matches an agent's.** `result.status` is `"ok"` on exit code 0, `"blocked"` on a
+nonzero exit (same vocabulary an agent's escalation uses, so an edge written for agent results
+also reads a command node's result unmodified). `result.text` is stdout (or stderr if stdout was
+empty). `result.data` carries `{ exitCode, stdout, stderr, timedOut }` for anything beyond the
+text. Options: `timeoutMs` (default 30000), `cwd` (defaults to the run's cwd), `env` (merged over
+the host's), `allowFailure` (forces `status: "ok"` even on a nonzero exit — for best-effort steps
+where only "did it run" matters, not "did it pass"). A timeout is a technical failure that aborts
+the run by default, same as an agent spawn failure — unless `allowFailure` is set, in which case
+it routes as `"ok"` instead of aborting. A command that cannot start at all (missing shell, bad
+cwd) always aborts the run regardless of `allowFailure` — there is no exit code to route on, so
+there is nothing for an edge to decide between.
+
+```js
+g.edge('test', (state, result) => result.status === 'ok' ? END : 'worker');
+```
+
 **Revisiting a node overwrites its state entry.** A node is not single-use: an edge can route
-back to it any number of times (a run is capped at `maxIterations`, default 25). But when a node
+back to it any number of times (a run is capped at `maxIterations`, default 35). But when a node
 runs again, `s.<nodeId>` is replaced with the **latest** result — earlier results are dropped from
 state (the full visit sequence is still recorded in the run's history/path). This is deliberate:
 cycles are for *iterative refinement* where each pass only needs the most recent state (red finds
@@ -156,7 +200,7 @@ g.edge('green', (state, result) => {
 });
 ```
 
-Cycles are allowed and are how escalation works. A run stops at `maxIterations` (default 25) if a
+Cycles are allowed and are how escalation works. A run stops at `maxIterations` (default 35) if a
 loop never resolves.
 
 ### Interactive Gates vs. In-Flight Tools
@@ -606,6 +650,8 @@ Two kinds of subagent failure are handled differently:
 
 - **Agent-level** (the agent ran, but its own work has errors — failing tests, a tool error, rejected acceptance): The graph node still emits a result, but `status === 'error'` or `status === 'blocked'`. The workflow keeps running and follows whatever edge you wrote for that condition.
 - **Technical** (LLM provider errors, rate limits, quota exhaustion, process crashes/OOM kills, protocol output limits): the whole workflow run is **automatically aborted**. The `workflow` tool call fails with a message naming the failing agent, the failure reason, and the `runId` to investigate further.
+
+Command nodes follow the same split: a nonzero exit code is agent-level (`status: 'blocked'`, routable — the command ran, it just failed, same as a test suite reporting real failures). A command that could not even start (missing binary's shell dependency, bad `cwd`) or that timed out is technical (aborts the run), unless `allowFailure: true` was set on that node, which downgrades both to routable.
 
 If you see a workflow tool call fail with "hit a technical failure", **do not** assume the workflow script is broken — it's usually transient infrastructure (rate limit, provider outage, OOM). Use `workflow_status` to inspect before retrying or editing the script.
 

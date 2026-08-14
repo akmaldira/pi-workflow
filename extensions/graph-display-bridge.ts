@@ -163,7 +163,9 @@ export class GraphDisplayBridge {
 			? `${info.nodeId} (${info.agentName})`
 			: info.nodeType === "fn"
 				? `${info.nodeId} [fn]`
-			: info.nodeId;
+				: info.nodeType === "command"
+					? `${info.nodeId} [command]`
+					: info.nodeId;
 
 		try {
 			this.manager.markAgentStart(this.runId, 0, {

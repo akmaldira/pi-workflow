@@ -186,6 +186,38 @@ describe("args are isolated from the host", () => {
 	});
 });
 
+describe("sandbox escape: command() with a computed command string", () => {
+	// command()'s whole safety story is that the command a human reviews in
+	// the script text is the command that runs. These attempts try to make
+	// the executed command depend on something other than a literal, which
+	// would silently break that guarantee if any of them were allowed to build.
+	const attempts: [string, string][] = [
+		["variable", `const cmd = "npm test"; g.node("t", command(cmd)); g.edge("t", END);`],
+		["string concatenation", `g.node("t", command("npm " + "test")); g.edge("t", END);`],
+		["template literal with substitution", `const suite = args.suite; g.node("t", command(\`npm test \${suite}\`)); g.edge("t", END);`],
+		["function call result", `function f() { return "npm test"; } g.node("t", command(f())); g.edge("t", END);`],
+		["array join", `g.node("t", command(["npm", "test"].join(" "))); g.edge("t", END);`],
+		["conditional expression", `g.node("t", command(args.ci ? "npm test" : "npm run dev")); g.edge("t", END);`],
+	];
+
+	for (const [label, code] of attempts) {
+		it(`blocks ${label}`, () => {
+			const script = `${META}\nconst g = graph();\n${code}\ng.run();`;
+			expect(() => buildGraphFromScript(script)).toThrow();
+		});
+	}
+
+	it("allows a literal string", () => {
+		const script = `${META}\nconst g = graph();\ng.node("t", command("npm test"));\ng.edge("t", END);\ng.run();`;
+		expect(() => buildGraphFromScript(script)).not.toThrow();
+	});
+
+	it("allows a template literal with no substitutions", () => {
+		const script = `${META}\nconst g = graph();\ng.node("t", command(\`npm test\`));\ng.edge("t", END);\ng.run();`;
+		expect(() => buildGraphFromScript(script)).not.toThrow();
+	});
+});
+
 describe("legitimate scripts still work", () => {
 	it("allows the routing logic a real coordination graph needs", () => {
 		// The sandbox is useless if it blocks ordinary code. This is the

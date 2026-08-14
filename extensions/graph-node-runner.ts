@@ -11,6 +11,7 @@
  * branch on.
  */
 
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentConfig } from "./agents.ts";
@@ -18,7 +19,7 @@ import { discoverAgents } from "./agents.ts";
 import { PI_WORKFLOW_NODE_ID_ENV } from "./channel.ts";
 import { classifySingleResultFailure } from "./failure-classifier.ts";
 import type { NodeStateBuffers } from "./node-state-reducer.ts";
-import type { GraphNode, GraphState } from "./graph-dsl.ts";
+import type { CommandNodeDef, GraphNode, GraphState } from "./graph-dsl.ts";
 import type { NodeRunOutcome, NodeRunner } from "./graph-executor.ts";
 import type { RequestBroker } from "./request-broker.ts";
 import {
@@ -71,6 +72,22 @@ export interface AgentNodeResult {
 }
 
 const STATUS_LINE = /^\s*STATUS:\s*(\w[\w-]*)\s*$/im;
+
+/** Default wall-clock cap for a command node, mirrors acceptance verify commands. */
+const COMMAND_NODE_DEFAULT_TIMEOUT_MS = 30_000;
+/** Output cap per stream, mirrors child-transcript.ts's tool payload cap. */
+const COMMAND_NODE_MAX_OUTPUT_BYTES = 32 * 1024;
+const COMMAND_OUTPUT_TRUNCATION_MARKER = "\n\n… output truncated";
+
+function truncateOutput(text: string, maxBytes = COMMAND_NODE_MAX_OUTPUT_BYTES): string {
+	const payload = Buffer.from(text, "utf-8");
+	if (payload.length <= maxBytes) return text;
+	const markerBytes = Buffer.byteLength(COMMAND_OUTPUT_TRUNCATION_MARKER, "utf-8");
+	let end = Math.max(0, maxBytes - markerBytes);
+	// Never cut a multi-byte UTF-8 sequence in half.
+	while (end > 0 && (payload[end]! & 0xc0) === 0x80) end--;
+	return `${payload.subarray(0, end).toString("utf-8")}${COMMAND_OUTPUT_TRUNCATION_MARKER}`;
+}
 
 /** Escalation fields, narrowed to the string-valued keys so no cast is needed. */
 type EscalationField = "blockedOn" | "reason" | "evidence" | "proposedFix";
@@ -348,6 +365,9 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 				};
 			}
 
+			case "command":
+				return runCommandNode(node.id, node.def, options.cwd);
+
 			case "agent":
 				return runAgentNode(node, node.def.agentName, node.def.promptFn(state), signal);
 
@@ -423,6 +443,83 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 			}
 		}
 	};
+
+	async function runCommandNode(
+		nodeId: string,
+		def: CommandNodeDef,
+		defaultCwd: string,
+	): Promise<NodeRunOutcome> {
+		const timeout = def.timeoutMs ?? COMMAND_NODE_DEFAULT_TIMEOUT_MS;
+		const cwd = def.cwd ?? defaultCwd;
+		const env = { ...process.env, ...(def.env ?? {}) };
+
+		// spawnSync does NOT throw for ENOENT, a bad cwd, a timeout, or an
+		// overflowed maxBuffer — all of those land in result.error with
+		// status/signal null. try/catch alone would never see them; result.error
+		// must be checked explicitly, which is what distinguishes "infrastructure
+		// could not even run the command" from "the command ran and exited
+		// nonzero" below.
+		const spawnResult = spawnSync(def.command, {
+			cwd,
+			env,
+			timeout,
+			shell: true,
+			encoding: "utf-8",
+			maxBuffer: COMMAND_NODE_MAX_OUTPUT_BYTES,
+		});
+
+		const timedOut = spawnResult.error !== undefined && (spawnResult.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
+		const stdout = truncateOutput(spawnResult.stdout ?? "");
+		const stderr = truncateOutput(spawnResult.stderr ?? "");
+		const text = stdout.trim() || stderr.trim() || "";
+
+		if (timedOut) {
+			// allowFailure makes this routable instead of aborting the run, so its
+			// status must stay in the "ok" | "blocked" vocabulary an edge condition
+			// is written against — "failed" would be a third value no edge expects.
+			// Without allowFailure this is a technicalFailure and the run aborts
+			// before any edge sees the result, so the status value in that branch
+			// is display-only.
+			return {
+				result: withResultText({
+					status: def.allowFailure ? "ok" : "blocked",
+					text,
+					data: { exitCode: null, stdout, stderr, timedOut: true },
+				}),
+				technicalFailure: !def.allowFailure,
+				error: `command node "${nodeId}" timed out after ${timeout}ms: ${def.command}`,
+			};
+		}
+
+		// Any other spawn-level error (ENOENT on the shell, bad cwd, ENOBUFS from
+		// exceeding the output cap) is infrastructure, not something the command
+		// itself did — there is no exit code to route on, so this always aborts
+		// the run regardless of allowFailure, same as an agent's technical failure.
+		if (spawnResult.error !== undefined) {
+			return {
+				result: withResultText({ status: "failed", text, data: { exitCode: null, stdout, stderr } }),
+				technicalFailure: true,
+				error: `command node "${nodeId}" failed to run: ${spawnResult.error.message}`,
+			};
+		}
+
+		const exitCode = spawnResult.status;
+		const succeeded = exitCode === 0;
+
+		// A nonzero exit is a routable outcome by default — same status vocabulary
+		// as an agent's escalation ( "ok" | "blocked" ) so an edge written for
+		// agent results also reads a command node's result without special-casing
+		// it. allowFailure additionally forces "ok" for authors who only care
+		// that the command ran, not whether it exited clean.
+		const status = succeeded || def.allowFailure ? "ok" : "blocked";
+		return {
+			result: withResultText({
+				status,
+				text,
+				data: { exitCode, stdout, stderr, timedOut: false },
+			}),
+		};
+	}
 
 	async function runAgentNode(
 		node: GraphNode,

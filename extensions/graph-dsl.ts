@@ -26,6 +26,24 @@ export type PromptFn = (state: GraphState) => string;
 /** A pure synchronous function node — no agent, no LLM, instant execution. */
 export type FnNodeFn = (state: GraphState) => string;
 
+export interface CommandNodeOptions {
+	/** Working directory for the command. Defaults to the run's cwd. */
+	cwd?: string;
+	/** Wall-clock cap in ms. Default 30000, same as acceptance verify commands. */
+	timeoutMs?: number;
+	/** Extra environment variables merged over the host's. */
+	env?: Record<string, string>;
+	/**
+	 * When true, `result.status` reads "ok" even on a nonzero exit code.
+	 * Purely a convenience for a conditional edge that only cares the command
+	 * ran, not whether it exited clean (e.g. a best-effort cleanup step). Does
+	 * not change routing by itself: a direct edge fires regardless of status
+	 * either way, and a conditional edge still sees the real exit code in
+	 * `result.data.exitCode`. Default false.
+	 */
+	allowFailure?: boolean;
+}
+
 /**
  * Chooses the next node from the current node's result.
  *
@@ -78,7 +96,32 @@ export interface FnNodeDef {
 	fn: FnNodeFn;
 }
 
-export type NodeDef = AgentNodeDef | HumanNodeDef | FnNodeDef;
+/**
+ * A declarative shell command node.
+ *
+ * Unlike a fn node, the command a `command` node runs is a literal string
+ * fixed at script-authoring time — never a function, never built from state
+ * at runtime. That is the whole point: a human reviewing the script sees
+ * the exact command that will execute, with nothing else reachable. Mixing
+ * in interpolated state (`command(`npm test ${state.worker.data.arg}`)`) is
+ * exactly the pattern this node type refuses to support; if a command truly
+ * needs to vary by state, that variation belongs in an edge choosing which
+ * (fixed) command node to route to, not in the command string itself.
+ *
+ * Runs synchronously via the host's shell, same execution shape as an
+ * acceptance verify command (see acceptance.ts's runVerifyCommand): bounded
+ * by a timeout, output captured, never any LLM cost.
+ */
+export interface CommandNodeDef {
+	type: "command";
+	command: string;
+	cwd?: string;
+	timeoutMs?: number;
+	env?: Record<string, string>;
+	allowFailure?: boolean;
+}
+
+export type NodeDef = AgentNodeDef | HumanNodeDef | FnNodeDef | CommandNodeDef;
 
 export interface GraphNode {
 	id: string;
@@ -200,6 +243,39 @@ export function human(prompt: string | PromptFn, options: HumanNodeOptions = {})
 	};
 }
 
+/**
+ * Declares a command node: runs a fixed shell command, no LLM involved.
+ *
+ * The command must be a string literal, not built from state at runtime —
+ * see CommandNodeDef's doc comment for why. This is enforced structurally
+ * by the type signature (command() takes a string, not a function), and by
+ * the graph script validator, which rejects a non-literal argument to
+ * command() at parse time so a script author gets the error immediately
+ * rather than a confusing runtime failure.
+ */
+export function command(commandString: string, options: CommandNodeOptions = {}): CommandNodeDef {
+	if (typeof commandString !== "string" || commandString.trim().length === 0) {
+		throw new GraphDefinitionError("command() requires a non-empty command string");
+	}
+	if (options.timeoutMs !== undefined && (typeof options.timeoutMs !== "number" || options.timeoutMs <= 0)) {
+		throw new GraphDefinitionError("command() timeoutMs must be a positive number");
+	}
+	if (options.cwd !== undefined && typeof options.cwd !== "string") {
+		throw new GraphDefinitionError("command() cwd must be a string");
+	}
+	if (options.env !== undefined && (typeof options.env !== "object" || options.env === null || Array.isArray(options.env))) {
+		throw new GraphDefinitionError("command() env must be an object");
+	}
+	return {
+		type: "command",
+		command: commandString,
+		cwd: options.cwd,
+		timeoutMs: options.timeoutMs,
+		env: options.env ? { ...options.env } : undefined,
+		allowFailure: options.allowFailure === true,
+	};
+}
+
 // --- Graph builder ---
 
 export class GraphBuilder {
@@ -222,7 +298,7 @@ export class GraphBuilder {
 		}
 		if (!def || typeof def !== "object" || !("type" in def)) {
 			throw new GraphDefinitionError(
-			`Node "${id}" must be defined with agent(), human(), or a plain function: (state) => "result"`,
+			`Node "${id}" must be defined with agent(), human(), command(), or a plain function: (state) => "result"`,
 			);
 		}
 		this.nodes.set(id, { id, def });

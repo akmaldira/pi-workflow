@@ -104,6 +104,8 @@ g.run(initialState);        // required, once
 |---|---|
 | `agent(name, promptFn)` | Spawn a subagent. `promptFn(state) => string` |
 | `human(prompt \| promptFn, opts?)` | Ask the user. `opts: { options?, default? }` |
+| `(state) => string` | Plain function node — pure JS, no LLM, instant |
+| `command(cmdString, opts?)` | Fixed shell command, no LLM. `opts: { timeoutMs?, cwd?, env?, allowFailure? }` |
 
 ### Interactive Gates vs. In-Flight Tools
 
@@ -122,7 +124,7 @@ g.edge("a", (state, result) => result.status === "ok" ? "b" : "c");  // conditio
 A node normally has **one** outgoing edge, and a conditional edge is how you choose between
 targets. Give a node **several** outgoing edges and those branches run **in parallel** instead.
 
-Cycles are legal — the escalation loop *is* a cycle. A run stops at `maxIterations` (default 25)
+Cycles are legal — the escalation loop *is* a cycle. A run stops at `maxIterations` (default 35)
 if a loop never resolves.
 
 ### Parallel branches
@@ -154,12 +156,13 @@ deep the coordination went, node executions how much work happened. `maxIteratio
 
 ### Node types
 
-Three kinds of node, one API:
+Four kinds of node, one API:
 
 ```js
 g.node('worker',   agent('worker', (state) => `Implement: ${state.plan}`)); // LLM agent
 g.node('approve',  human('Ship it?', { options: ['yes', 'no'], default: 'yes' })); // human gate
 g.node('dispatch', (state) => 'ready'); // fn node — pure JS, no LLM, instant
+g.node('test',     command('npm test')); // command node — fixed shell command, no LLM
 ```
 
 **Function nodes** are the new addition. Pass a plain arrow function as the second argument: it
@@ -198,6 +201,61 @@ Function nodes can also inspect state and use `plan`/`contract` sandbox function
 ```js
 g.node('check', (state) => plan.get('sprint-plan').ok ? 'found' : 'missing');
 g.node('label', (state) => `processing task: ${state.planner}`);
+```
+
+**Command nodes** run a real shell command synchronously — no LLM, no subprocess spawned by an
+agent, just the command itself. Use them for deterministic checks that don't need judgement:
+`npm test`, a linter, a build step.
+
+```js
+g.node('worker', agent('worker', (s) => 'implement the feature'));
+g.node('test',   command('npm test'));
+g.node('review', agent('reviewer', (s) => `Test output:\n${s.test}`));
+g.edge('worker', 'test');
+g.edge('test', 'review');
+g.edge('review', END);
+```
+
+The command **must be a literal string** — not a variable, not built with `+`, not a template
+literal with `${}` substitutions. This is enforced by the script validator at build time, not
+left to convention: the whole safety property of a command node is that a human reviewing the
+script sees the exact command that will execute, with nothing computed at runtime that could
+change it.
+
+```js
+// Rejected — validator throws before the graph ever runs
+const cmd = 'npm test';
+g.node('test', command(cmd));
+
+g.node('test', command('npm ' + suite));
+
+g.node('test', command(`npm test ${args.suite}`));
+
+// If a command genuinely needs to vary, let an edge choose between two
+// literal command nodes — the choice is dynamic, the commands are not
+g.edge('gate', (state, result) => args.ci ? 'test_ci' : 'test_local');
+g.node('test_ci',    command('npm test -- --ci'));
+g.node('test_local', command('npm test -- --watch=false'));
+```
+
+Result shape matches an agent's, so an edge written for agent results reads a command node's
+result unmodified:
+
+```text
+{ status: "ok" | "blocked", text, data: { exitCode, stdout, stderr, timedOut } }
+```
+
+`status` is `"ok"` on exit code 0, `"blocked"` on nonzero — unless `allowFailure: true`, which
+forces `"ok"` regardless (useful for best-effort steps where only "did it run" matters). `text`
+is stdout, falling back to stderr if stdout was empty. Options: `timeoutMs` (default 30000ms,
+matches acceptance verify commands), `cwd` (defaults to the run's cwd), `env` (merged over the
+host's). A timeout is a technical failure that aborts the run by default — same as an agent spawn
+failure — unless `allowFailure` is set, in which case it routes as `"ok"` instead. A command that
+can't start at all (missing shell, bad cwd) always aborts regardless of `allowFailure` — there is
+no exit code to route on.
+
+```js
+g.edge('test', (state, result) => result.status === 'ok' ? END : 'worker');
 ```
 
 ### State
@@ -262,12 +320,15 @@ g.edge('extractor', (state, result) =>
 
 ### What is available
 
-The graph API — `graph`, `agent`, `human`, `END`, `args` — plus ordinary language
+The graph API — `graph`, `agent`, `human`, `command`, `END`, `args` — plus ordinary language
 intrinsics (`JSON`, `Object`, `Array`, `String`, `Math` for arithmetic, and so on).
 
 No `fs`, `process`, `require`, `import`, `fetch`, `Date`, or `Math.random`. A graph describes
 routing; it does not need ambient authority, and non-determinism would mean a rerun of the same
-graph could take a different path.
+graph could take a different path. `command()` is not a loophole here — it does not give script
+code a callable exec function; it declares one node whose fixed, literal command string is visible
+in the script text a human reviews. There is no way to reach a shell from a fn node, an edge
+condition, or a prompt function.
 
 **`plan` and `contract` are also available** — synchronous access to the same store that
 the `plan` and `contract` tools use, bound to the project's `cwd` at script load time.
@@ -559,7 +620,7 @@ All tools are available to every agent and subagent automatically — no frontma
 |---|---|
 | `script` | The graph script (or use `loadWorkflow`) |
 | `args` | Values available as `args`; must be JSON-serialisable |
-| `maxIterations` | Node-execution cap. Default 25 |
+| `maxIterations` | Node-execution cap. Default 35 |
 | `tokenBudget` | Soft budget — warns at 80% and 100%, never kills a run |
 | `useWorktree` | Run agents in an isolated git worktree |
 | `resumeRunId` | Resume a run, skipping completed nodes |
