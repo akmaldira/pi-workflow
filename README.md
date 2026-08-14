@@ -882,6 +882,17 @@ user can take as long as needed. If the subagent run ends before the user answer
 closes cleanly. `ask_supervisor` has a 10-minute timeout after which the child proceeds
 autonomously.
 
+**Blank model stops are auto-continued.** Some models (notably Gemini Flash tiers) occasionally
+return a "successful" turn with nothing in it — `content: []`, zero output tokens,
+`stopReason: "stop"` — which pi-coding-agent treats as a clean completion (its auto-retry only
+fires on `stopReason: "error"`). The guard detects this shape and sends a visible `continue`
+user message, exactly as you would by hand; the model resumes with its full context intact.
+It runs in the main agent and in every subagent (the extension is injected into each child),
+sends at most 3 times for consecutive blanks, resets after any healthy turn, and never
+interferes with retry/compaction — those are checked before the guard's queued message. If the
+model stays blank after 3 nudges, the empty result flows out unchanged and workflow-level
+backstops (retry edges) remain the last line of defense.
+
 ## Compatibility
 
 Works alongside [`@gotgenes/pi-permission-system`](https://www.npmjs.com/package/@gotgenes/pi-permission-system).
