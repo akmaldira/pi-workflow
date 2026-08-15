@@ -613,12 +613,36 @@ safety net.
 | `description` | **Required.** Short description of what the agent does |
 | `model` | Model to use (e.g., google/gemini-2.5-pro) |
 | `tools` | Tool allowlist (comma-separated or YAML list) |
-| `turnBudget` | `{"maxTurns": N, "graceTurns": N}` — soft-blocks tools at `maxTurns`, hard-kills at `maxTurns + graceTurns`. Default (when omitted): `{"maxTurns": 50, "graceTurns": 2}`; project settings can change or disable this default (see `defaultTurnBudget` in the settings section) |
+| `turnBudget` | `{"maxTurns": N, "graceTurns": N}` — soft-blocks tools at `maxTurns`, hard-kills at `maxTurns + graceTurns`. Default (when omitted): `{"maxTurns": 50, "graceTurns": 2}`; project settings can change or disable this default (see "Project-wide settings" below) |
 | `toolBudget` | `{"hard": N, "soft": N, "block": [...] \| "*"}` — caps tool calls, not turns |
 | `timeoutMs` | Hard wall-clock timeout for the whole subagent run, in milliseconds |
 | `acceptance.level` | none, checked, or auto |
 | `acceptance.evidence` | Required evidence kinds |
 | `defaultContext` | `fresh` or `fork` (global default: `fork`) — see Context section below |
+
+### Project-wide settings (`.pi-workflow/settings.json`)
+
+Independent of any individual agent's frontmatter, a few extension-wide safety behaviors can be
+tuned or disabled by placing a settings file at `.pi-workflow/settings.json` (project scope) or
+`pi-workflow-settings.json` in the agent directory (user scope, project wins). Read once at
+process start, for the main agent and every subagent — commit the file to git if worktree-isolated
+subagent runs need to see it too.
+
+```json
+{
+  "blankStopGuard": false,
+  "bashTimeoutGuard": false,
+  "bashTimeoutSeconds": 900,
+  "defaultTurnBudget": { "maxTurns": 30, "graceTurns": 3 }
+}
+```
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `blankStopGuard` | `true` | Auto-"continue" nudge when a model returns a genuinely empty or thinking-only completion. Set `false` to disable. |
+| `bashTimeoutGuard` | `true` | Injects a default `timeout` into `bash` calls that don't set one. Set `false` to disable. Never touches `ask_user_question`/`ask_supervisor` — those stay unbounded regardless of this setting. |
+| `bashTimeoutSeconds` | `600` (10 min) | The default injected by `bashTimeoutGuard`. A model-specified `timeout` on an individual `bash` call always wins over this. |
+| `defaultTurnBudget` | `{"maxTurns": 50, "graceTurns": 2}` | Applied to any subagent run (graph node or plain `subagent` call) whose agent frontmatter declares no `turnBudget`. An agent's own frontmatter `turnBudget` always wins over this. Set to `null` to disable the default entirely (agents with no frontmatter `turnBudget` then run unbounded). |
 
 ## Context: Fresh vs Fork
 
