@@ -124,7 +124,7 @@ g.edge("a", (state, result) => result.status === "ok" ? "b" : "c");  // conditio
 A node normally has **one** outgoing edge, and a conditional edge is how you choose between
 targets. Give a node **several** outgoing edges and those branches run **in parallel** instead.
 
-Cycles are legal — the escalation loop *is* a cycle. A run stops at `maxIterations` (default 35)
+Cycles are legal — the escalation loop *is* a cycle. A run stops at `maxIterations` (default 45)
 if a loop never resolves.
 
 ### Parallel branches
@@ -636,7 +636,7 @@ All tools are available to every agent and subagent automatically — no frontma
 |---|---|
 | `script` | The graph script (or use `loadWorkflow`) |
 | `args` | Values available as `args`; must be JSON-serialisable |
-| `maxIterations` | Node-execution cap. Default 35 |
+| `maxIterations` | Node-execution cap. Default 45 |
 | `tokenBudget` | Soft budget — warns at 80% and 100%, never kills a run |
 | `useWorktree` | Run agents in an isolated git worktree |
 | `resumeRunId` | Resume a run, skipping completed nodes |

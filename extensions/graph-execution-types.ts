@@ -83,7 +83,7 @@ export type NodeRunner = (
 	context: { step: number; runId: string; signal?: AbortSignal },
 ) => Promise<NodeRunOutcome>;
 
-export const DEFAULT_MAX_ITERATIONS = 35;
+export const DEFAULT_MAX_ITERATIONS = 45;
 
 /** Reserved state keys the executor writes; node ids may not collide. */
 export const RESERVED_STATE_KEYS = new Set(["__error", "__lastNode", "__step"]);

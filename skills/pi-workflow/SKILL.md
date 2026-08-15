@@ -181,7 +181,7 @@ g.edge('test', (state, result) => result.status === 'ok' ? END : 'worker');
 ```
 
 **Revisiting a node overwrites its state entry.** A node is not single-use: an edge can route
-back to it any number of times (a run is capped at `maxIterations`, default 35). But when a node
+back to it any number of times (a run is capped at `maxIterations`, default 45). But when a node
 runs again, `s.<nodeId>` is replaced with the **latest** result — earlier results are dropped from
 state (the full visit sequence is still recorded in the run's history/path). This is deliberate:
 cycles are for *iterative refinement* where each pass only needs the most recent state (red finds
@@ -200,7 +200,7 @@ g.edge('green', (state, result) => {
 });
 ```
 
-Cycles are allowed and are how escalation works. A run stops at `maxIterations` (default 35) if a
+Cycles are allowed and are how escalation works. A run stops at `maxIterations` (default 45) if a
 loop never resolves.
 
 ### Interactive Gates vs. In-Flight Tools
