@@ -219,3 +219,112 @@ g.run({});`;
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 });
+
+describe("e2e: staggered wave-reset resume through the real tool", () => {
+  it("crashes after the first retry back-edge, resumes via resumeRunId, and still completes", async () => {
+    // A fan-out/fan-in graph with two conditional retry back-edges. Track
+    // "machine" retries once and resolves EARLY; track "messstelle" (behind
+    // an extra hop) retries once and resolves LATE, in a different round.
+    // This is the production shape the wave-reset claim fix targets: the
+    // pre-fix executor deadlocked assemble here after the second reset.
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pw-stagger-resume-"));
+    const script = `export const meta = { name: "stagger_resume", description: "staggered reset resume" };
+const g = graph();
+g.node("plan", agent("planner", () => "plan"));
+
+g.node("scout_machine", agent("scout", () => "s"));
+g.node("extract_machine", agent("worker", (s) => "extract machine"));
+g.node("extract_machine_retry", agent("worker", (s) => "retry machine"));
+g.edge("plan", "scout_machine");
+g.edge("scout_machine", "extract_machine");
+g.edge("extract_machine", (s, r) => (r.status === "blocked" ? "extract_machine_retry" : "assemble"));
+g.edge("extract_machine_retry", "extract_machine");
+
+g.node("scout_client", agent("scout", () => "s"));
+g.node("extract_client", agent("worker", (s) => "extract client"));
+g.edge("plan", "scout_client");
+g.edge("scout_client", "extract_client");
+g.edge("extract_client", "assemble");
+
+g.node("scout_messstelle", agent("scout", () => "s"));
+g.node("delay1_messstelle", (s) => "d1");
+g.node("extract_messstelle", agent("worker", (s) => "extract messstelle"));
+g.node("extract_messstelle_retry", agent("worker", (s) => "retry messstelle"));
+g.edge("plan", "scout_messstelle");
+g.edge("scout_messstelle", "delay1_messstelle");
+g.edge("delay1_messstelle", "extract_messstelle");
+g.edge("extract_messstelle", (s, r) => (r.status === "blocked" ? "extract_messstelle_retry" : "assemble"));
+g.edge("extract_messstelle_retry", "extract_messstelle");
+
+g.node("assemble", agent("worker", (s) => "assembled: " + s.extract_machine + " | " + s.extract_client + " | " + s.extract_messstelle));
+g.edge("assemble", END);
+g.run({});
+`;
+
+    // Each extractor blocks (asks to retry) on its FIRST call, then succeeds.
+    // extract_machine_retry / extract_messstelle_retry just echo through.
+    const calls: Record<string, number> = {};
+    let crashNow = false;
+    const spawnAgent = (async (_cwd: string, agentDef: any, prompt: string) => {
+      const name = agentDef?.name ?? "unknown";
+      calls[name] = (calls[name] ?? 0) + 1;
+
+      if (name === "worker" && /extract machine/.test(prompt) && calls["worker:machine"] === undefined) {
+        calls["worker:machine"] = 1;
+        return {
+          exitCode: 0,
+          messages: [{ role: "assistant", content: [{ type: "text", text: "STATUS: blocked\nBLOCKED_ON: data" }] }],
+          durationMs: 1,
+        };
+      }
+      if (name === "worker" && /extract messstelle/.test(prompt) && calls["worker:messstelle"] === undefined) {
+        calls["worker:messstelle"] = 1;
+        if (crashNow) throw new Error("boom: simulated crash right after messstelle's first (blocking) attempt");
+        return {
+          exitCode: 0,
+          messages: [{ role: "assistant", content: [{ type: "text", text: "STATUS: blocked\nBLOCKED_ON: data" }] }],
+          durationMs: 1,
+        };
+      }
+      return {
+        exitCode: 0,
+        messages: [{ role: "assistant", content: [{ type: "text", text: `${name}-ok` }] }],
+        durationMs: 1,
+      };
+    }) as any;
+
+    const tracker = trackDetached();
+    const tool = createGraphWorkflowTool({ cwd, spawnAgent, ...tracker });
+    const run = async (params: any) => {
+      await (tool as any).execute("c", params, undefined, undefined, {
+        cwd, model: undefined, sessionManager: undefined, modelRegistry: undefined,
+      });
+      return tracker.settled();
+    };
+
+    // First attempt: crashes right when messstelle's extractor first blocks,
+    // i.e. right before its retry back-edge would resolve. Machine's retry
+    // has ALREADY resolved by then (fewer hops to its extractor).
+    crashNow = true;
+    const first: any = await run({ script, args: {} });
+    const runId = /Run ID: (\S+)/.exec(first.text)?.[1];
+    expect(runId).toBeDefined();
+    expect(first.status).toBe("aborted");
+
+    // Second attempt: resume. Reset the retry bookkeeping for messstelle so
+    // its extractor blocks once more on resume (a real crash also loses
+    // in-flight decisions), then succeeds.
+    crashNow = false;
+    delete calls["worker:messstelle"];
+    const resumed: any = await run({ script, args: {}, resumeRunId: runId });
+
+    // The point: assemble genuinely ran (the fan-in it deadlocked on
+    // pre-fix), reached END, and the run's path shows both retry back-edges
+    // resolved in different rounds before it.
+    expect(resumed.status).toBe("completed");
+    expect(resumed.text).toMatch(/assemble \(worker\) -> END/);
+    expect(resumed.text).toMatch(/extract_machine_retry/);
+    expect(resumed.text).toMatch(/extract_messstelle_retry/);
+    fs.rmSync(cwd, { recursive: true, force: true });
+  });
+});

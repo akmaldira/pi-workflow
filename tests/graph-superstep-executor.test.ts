@@ -3,6 +3,7 @@ import { agent, END, GraphBuilder } from "../extensions/graph-dsl.ts";
 import type { BuiltGraph, GraphState } from "../extensions/graph-dsl.ts";
 import type { NodeRunner } from "../extensions/graph-executor.ts";
 import { runSuperstepGraph, type SuperstepRunOptions } from "../extensions/graph-executor.ts";
+import { buildGraphFromScript } from "../extensions/graph-validator.ts";
 
 type ScriptedFn = (state: GraphState, call: number) => unknown;
 type ScriptedResponse = ScriptedFn | string | number | boolean | null | object;
@@ -397,5 +398,321 @@ describe("runSuperstepGraph: readiness edge cases", () => {
 		const res = await runSuperstepGraph(g.build(), { runId:"x", runNode: scriptedRunner({}), signal: ac.signal });
 		expect(res.status).toBe("aborted");
 		expect(res.nodeExecutions).toBe(0);
+	});
+});
+
+
+/**
+ * Wave reset with claims tracked PER SOURCE.
+ *
+ * The production failure this section pins: a fan-out/fan-in graph where two
+ * retry back-edges resolve in DIFFERENT rounds. The flat-counter version of
+ * the wave reset restored a fan-in node's full static in-degree on every
+ * reset, erasing releases from earlier rounds whose sources had already run
+ * — the fan-in node never re-earned those claims, the frontier emptied, and
+ * the run "completed" without it ever having run.
+ *
+ * These graphs are built from a SCRIPT (buildGraphFromScript), not raw
+ * GraphBuilder: conditional edge targets are recovered from the AST there,
+ * which is the path the real workflow tool always uses. Raw GraphBuilder use
+ * falls back to a conservative reach estimate for conditional edges (see
+ * tests/graph-conditional-routing.test.ts's documented, unrelated
+ * limitation) and would not exercise the fix this section is pinning.
+ *
+ * plan → 5 × (scout → extract → [pass] → assemble), with conditional
+ * extract → retry|assemble back-edges. One track resolves its retry early,
+ * another (staggered behind delay nodes) resolves late.
+ */
+function staggeredResetScript(withPassNodes: boolean): string {
+	const mk = (name: string) => (withPassNodes ? `pass_${name}` : "assemble");
+	const passNode = (name: string) =>
+		withPassNodes ? `g.node("pass_${name}", (s) => "pass");\n` : "";
+	const passEdge = (name: string) => (withPassNodes ? `g.edge("pass_${name}", "assemble");\n` : "");
+
+	const fastTracks = ["client", "schulung", "mp"];
+
+	return `export const meta = { name: "staggered_reset", description: "staggered reset repro" };
+const g = graph();
+g.node("plan", agent("planner", () => "plan"));
+
+g.node("scout_machine", agent("scout", () => "s"));
+g.node("extract_machine", agent("w", () => "e"));
+g.node("extract_machine_retry", agent("w", () => "r"));
+${passNode("machine")}g.edge("plan", "scout_machine");
+g.edge("scout_machine", "extract_machine");
+g.edge("extract_machine", (s) => ((s.__a_machine || 0) === 0 ? "extract_machine_retry" : "${mk("machine")}"));
+g.edge("extract_machine_retry", "extract_machine");
+${passEdge("machine")}
+${fastTracks
+	.map(
+		(t) => `
+g.node("scout_${t}", agent("scout", () => "s"));
+g.node("extract_${t}", agent("w", () => "e"));
+${passNode(t)}g.edge("plan", "scout_${t}");
+g.edge("scout_${t}", "extract_${t}");
+g.edge("extract_${t}", "${mk(t)}");
+${passEdge(t)}`,
+	)
+	.join("\n")}
+
+g.node("scout_messstelle", agent("scout", () => "s"));
+g.node("delay1_messstelle", (s) => "d1");
+g.node("delay2_messstelle", (s) => "d2");
+g.node("extract_messstelle", agent("w", () => "e"));
+g.node("extract_messstelle_retry", agent("w", () => "r"));
+${passNode("messstelle")}g.edge("plan", "scout_messstelle");
+g.edge("scout_messstelle", "delay1_messstelle");
+g.edge("delay1_messstelle", "delay2_messstelle");
+g.edge("delay2_messstelle", "extract_messstelle");
+g.edge("extract_messstelle", (s) => ((s.__a_messstelle || 0) === 0 ? "extract_messstelle_retry" : "${mk("messstelle")}"));
+g.edge("extract_messstelle_retry", "extract_messstelle");
+${passEdge("messstelle")}
+g.node("assemble", agent("w", (s) => "assembled"));
+g.edge("assemble", END);
+g.run({});
+`;
+}
+
+/** Runner that fails each extractor once (attempt counter in state), echoing ids. */
+function retryOnceRunner(): NodeRunner {
+	const attempts: Record<string, number> = {};
+	return async (node, state) => {
+		const id = node.id;
+		if (id.startsWith("extract_") && !id.endsWith("_retry")) {
+			const t = id.replace("extract_", "");
+			attempts[t] = (attempts[t] ?? 0) + 1;
+			(state as Record<string, unknown>)[`__a_${t}`] = attempts[t] - 1;
+			return { result: `${t}#${attempts[t]}` };
+		}
+		return { result: id };
+	};
+}
+
+describe("runSuperstepGraph: wave reset — staggered resets (per-source claims)", () => {
+	it("two back-edges in different rounds no longer deadlock the fan-in (pass nodes)", async () => {
+		const { graph } = buildGraphFromScript(staggeredResetScript(true), { args: {} });
+		const result = await runSuperstepGraph(graph, {
+			runId: "stagger-pass",
+			runNode: retryOnceRunner(),
+		});
+
+		expect(result.status).toBe("completed");
+		expect(result.state.assemble).toBe("assemble");
+	});
+
+	it("two back-edges in different rounds no longer deadlock the fan-in (direct conditional edges)", async () => {
+		const { graph } = buildGraphFromScript(staggeredResetScript(false), { args: {} });
+		const result = await runSuperstepGraph(graph, {
+			runId: "stagger-direct",
+			runNode: retryOnceRunner(),
+		});
+
+		expect(result.status).toBe("completed");
+		expect(result.state.assemble).toBe("assemble");
+	});
+
+	it("a reset restores only claims whose source re-runs: assemble claims never exceed the truly-pending count", async () => {
+		const { graph } = buildGraphFromScript(staggeredResetScript(true), { args: {} });
+		const snapshots: Array<Record<string, number>> = [];
+		const result = await runSuperstepGraph(graph, {
+			runId: "stagger-claims",
+			runNode: retryOnceRunner(),
+			onRoundComplete: (info) => snapshots.push(info.remainingInDegree),
+		});
+
+		expect(result.status).toBe("completed");
+		// After the EARLY reset, the three fast tracks' releases survive it;
+		// after the LATE reset, the machine track's release survives too. The
+		// flat version snapped back up after the late reset; the fixed one
+		// never exceeds what is genuinely still pending.
+		for (const snap of snapshots) {
+			expect(snap.assemble).toBeLessThanOrEqual(5);
+		}
+		// The round right before assemble finally runs must show 0 claims.
+		const assembleRoundIndex = result.history.find((h) => h.nodeId === "assemble")?.round;
+		expect(assembleRoundIndex).toBeDefined();
+		const beforeAssemble = snapshots[(assembleRoundIndex as number) - 2];
+		expect(beforeAssemble.assemble).toBe(0);
+	});
+
+	it("three staggered resets also complete", async () => {
+		// machine (early), mp-with-1-hop-delay (middle), messstelle (2-hop
+		// delay, late) each retry once — three back-edges resolving in three
+		// different rounds.
+		const mk = (t: string, delayHops: number): string => {
+			let prev = `scout_${t}`;
+			const delays = Array.from({ length: delayHops }, (_, i) => `delay${i}_${t}`);
+			const delayDecls = delays
+				.map((d, i) => `g.node("${d}", (s) => "d");\ng.edge("${i === 0 ? prev : delays[i - 1]}", "${d}");\n`)
+				.join("");
+			const entryPoint = delays.length > 0 ? delays[delays.length - 1] : prev;
+			return `
+g.node("scout_${t}", agent("scout", () => "s"));
+g.edge("plan", "scout_${t}");
+${delayDecls}g.node("extract_${t}", agent("w", () => "e"));
+g.node("extract_${t}_retry", agent("w", () => "r"));
+g.edge("${entryPoint}", "extract_${t}");
+g.edge("extract_${t}", (s) => ((s.__a_${t} || 0) === 0 ? "extract_${t}_retry" : "assemble"));
+g.edge("extract_${t}_retry", "extract_${t}");
+`;
+		};
+
+		const script = `export const meta = { name: "three_stagger", description: "three staggered resets" };
+const g = graph();
+g.node("plan", agent("planner", () => "plan"));
+${mk("machine", 0)}
+${mk("mp", 1)}
+${mk("messstelle", 2)}
+g.node("assemble", agent("w", () => "assembled"));
+g.edge("assemble", END);
+g.run({});
+`;
+
+		const { graph } = buildGraphFromScript(script, { args: {} });
+		const result = await runSuperstepGraph(graph, {
+			runId: "stagger-3way",
+			runNode: retryOnceRunner(),
+		});
+		expect(result.status).toBe("completed");
+		expect(result.state.assemble).toBe("assemble");
+	});
+});
+
+describe("runSuperstepGraph: duplicate edges from one source", () => {
+	it("a duplicate direct edge releases with its source and does not deadlock the target", async () => {
+		const g = new GraphBuilder();
+		g.node("a", agent("w", () => "a"));
+		g.node("b", agent("w", () => "b"));
+		g.edge("a", "b");
+		g.edge("a", "b"); // duplicate: same source, same target
+		g.edge("b", END);
+		g.run();
+
+		const result = await runSuperstepGraph(g.build(), {
+			runId: "dup",
+			runNode: scriptedRunner({ a: "a", b: "b" }),
+		});
+
+		// The flat counter deadlocked here: 2 claims, 1 release. Per-source
+		// tracking releases every claim a source holds when it fires.
+		expect(result.status).toBe("completed");
+		expect(result.state.b).toBe("b");
+	});
+});
+
+describe("runSuperstepGraph: resume claim fidelity", () => {
+	it("onRoundComplete emits per-source claim detail alongside the flat total", async () => {
+		const { graph } = buildGraphFromScript(staggeredResetScript(true), { args: {} });
+		const bySourceSnapshots: Array<Record<string, Record<string, number>> | undefined> = [];
+		const flatSnapshots: Array<Record<string, number>> = [];
+		const first = await runSuperstepGraph(graph, {
+			runId: "resume-detail",
+			runNode: retryOnceRunner(),
+			onRoundComplete: (info) => {
+				bySourceSnapshots.push(info.remainingClaimsBySource);
+				flatSnapshots.push(info.remainingInDegree);
+			},
+		});
+		expect(first.status).toBe("completed");
+		expect(bySourceSnapshots.some((s) => s !== undefined)).toBe(true);
+
+		// The flat journal field and the sum of the per-source field agree —
+		// the compatibility invariant between the two journal formats.
+		for (let i = 0; i < bySourceSnapshots.length; i++) {
+			const bySource = bySourceSnapshots[i];
+			if (!bySource?.assemble) continue;
+			const summed = Object.values(bySource.assemble).reduce((a, b) => a + b, 0);
+			expect(summed).toBe(flatSnapshots[i].assemble);
+		}
+	});
+
+	it("resume without per-source detail (legacy journal) folds to the flat total and still runs", async () => {
+		// Legacy journals have only remainingInDegree. Resume must still work
+		// exactly as before the fix: the flat total becomes one opaque bucket.
+		const { graph: graph1 } = buildGraphFromScript(staggeredResetScript(true), { args: {} });
+		const flatSnapshots: Array<Record<string, number>> = [];
+		const first = await runSuperstepGraph(graph1, {
+			runId: "resume-legacy",
+			runNode: retryOnceRunner(),
+			onRoundComplete: (info) => flatSnapshots.push(info.remainingInDegree),
+		});
+		expect(first.status).toBe("completed");
+
+		// Simulate a legacy resume from round 2 (frontier = extract tracks),
+		// passing ONLY the flat snapshot as the resume input — no
+		// remainingClaimsBySource, as a pre-fix journal would have.
+		const { graph: graph2 } = buildGraphFromScript(staggeredResetScript(true), { args: {} });
+		const result = await runSuperstepGraph(graph2, {
+			runId: "resume-legacy-2",
+			resume: {
+				state: first.state,
+				resumeFromFrontier: [
+					"extract_machine",
+					"extract_client",
+					"extract_schulung",
+					"extract_mp",
+					"delay1_messstelle",
+				],
+				remainingInDegree: flatSnapshots[1],
+				completedRounds: 2,
+				completedNodeExecutions: 6,
+				executedNodeIds: [
+					"plan",
+					"scout_machine",
+					"scout_client",
+					"scout_schulung",
+					"scout_mp",
+					"scout_messstelle",
+				],
+			},
+			runNode: retryOnceRunner(),
+		});
+
+		// Legacy resume keeps pre-fix behaviour: no per-source detail, so this
+		// snapshot's frontier runs onward. The run must complete.
+		expect(result.status).toBe("completed");
+		expect(result.state.assemble).toBe("assemble");
+	});
+
+	it("a fresh (non-legacy) resume seeded with per-source detail also completes", async () => {
+		const { graph: graph1 } = buildGraphFromScript(staggeredResetScript(true), { args: {} });
+		const bySourceSnapshots: Array<Record<string, Record<string, number>> | undefined> = [];
+		const flatSnapshots: Array<Record<string, number>> = [];
+		const executedByRound: string[][] = [];
+		const first = await runSuperstepGraph(graph1, {
+			runId: "resume-fresh",
+			runNode: retryOnceRunner(),
+			onRoundComplete: (info) => {
+				bySourceSnapshots.push(info.remainingClaimsBySource);
+				flatSnapshots.push(info.remainingInDegree);
+				executedByRound.push(info.nodeIds);
+			},
+		});
+		expect(first.status).toBe("completed");
+
+		const { graph: graph2 } = buildGraphFromScript(staggeredResetScript(true), { args: {} });
+		const executedNodeIds = [...new Set(executedByRound.slice(0, 2).flat())];
+		const result = await runSuperstepGraph(graph2, {
+			runId: "resume-fresh-2",
+			resume: {
+				state: first.state,
+				resumeFromFrontier: [
+					"extract_machine",
+					"extract_client",
+					"extract_schulung",
+					"extract_mp",
+					"delay1_messstelle",
+				],
+				remainingInDegree: flatSnapshots[1],
+				remainingClaimsBySource: bySourceSnapshots[1],
+				completedRounds: 2,
+				completedNodeExecutions: executedNodeIds.length,
+				executedNodeIds,
+			},
+			runNode: retryOnceRunner(),
+		});
+
+		expect(result.status).toBe("completed");
+		expect(result.state.assemble).toBe("assemble");
 	});
 });

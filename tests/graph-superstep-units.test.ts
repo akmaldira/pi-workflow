@@ -151,6 +151,52 @@ describe("journal: rounds and superstep resume", () => {
 		});
 	});
 
+	it("records and resumes remainingClaimsBySource when the executor supplies it", () => {
+		const j = journalFor("r1b");
+		j.recordNode(node(1, 1, "scout", "a,b"));
+		j.recordRoundComplete({
+			round: 1,
+			nodeIds: ["scout"],
+			nextFrontier: ["a", "b"],
+			remainingInDegree: { scout: 0, a: 0, b: 0, sum: 2 },
+			remainingClaimsBySource: { sum: { a: 1, b: 1 } },
+		});
+
+		const records = readGraphJournal(path.join(dir, "r1b.jsonl"));
+		const roundRec = records.find((r) => r.type === "round_complete");
+		expect(roundRec).toMatchObject({
+			remainingInDegree: { sum: 2 },
+			remainingClaimsBySource: { sum: { a: 1, b: 1 } },
+		});
+
+		const resume = loadGraphSuperstepResumeState({
+			journalDir: dir,
+			runId: "r1b",
+			scriptHash: "hash-1",
+		});
+		expect(resume.remainingClaimsBySource).toEqual({ sum: { a: 1, b: 1 } });
+	});
+
+	it("leaves remainingClaimsBySource undefined for a legacy round record without it", () => {
+		const j = journalFor("r1c");
+		j.recordNode(node(1, 1, "scout", "a,b"));
+		// A legacy caller omits remainingClaimsBySource entirely (pre-fix journal).
+		j.recordRoundComplete({
+			round: 1,
+			nodeIds: ["scout"],
+			nextFrontier: ["a", "b"],
+			remainingInDegree: { scout: 0, a: 0, b: 0, sum: 2 },
+		});
+
+		const resume = loadGraphSuperstepResumeState({
+			journalDir: dir,
+			runId: "r1c",
+			scriptHash: "hash-1",
+		});
+		expect(resume.remainingClaimsBySource).toBeUndefined();
+		expect(resume.remainingInDegree).toEqual({ scout: 0, a: 0, b: 0, sum: 2 });
+	});
+
 	it("resumes from the last completed round's frontier", () => {
 		const j = journalFor("r2");
 		j.recordNode(node(1, 1, "scout", "a,b"));

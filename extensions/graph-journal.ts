@@ -91,6 +91,16 @@ export interface GraphJournalRoundRecord {
 	 * to get subtly wrong. Snapshotting it makes resume exact.
 	 */
 	remainingInDegree: Record<string, number>;
+	/**
+	 * Per-source breakdown of the same claims: node → source → pending count.
+	 *
+	 * Optional and additive: journals written before per-source tracking carry
+	 * only `remainingInDegree`, and resume then falls back to the flat total
+	 * (folded into one opaque bucket — the pre-fix behaviour). Written by the
+	 * executor's `onRoundComplete` since the wave-reset claim fix, so a resumed
+	 * run restores exact per-source fidelity instead of a degraded snapshot.
+	 */
+	remainingClaimsBySource?: Record<string, Record<string, number>>;
 }
 
 export interface GraphJournalResultRecord {
@@ -264,6 +274,7 @@ export class GraphJournal {
 		nodeIds: string[];
 		nextFrontier: string[];
 		remainingInDegree: Record<string, number>;
+		remainingClaimsBySource?: Record<string, Record<string, number>>;
 	}): void {
 		this.append({
 			type: "round_complete",
@@ -271,6 +282,7 @@ export class GraphJournal {
 			nodeIds: info.nodeIds,
 			nextFrontier: info.nextFrontier,
 			remainingInDegree: info.remainingInDegree,
+			remainingClaimsBySource: info.remainingClaimsBySource,
 		});
 	}
 
@@ -481,6 +493,13 @@ export interface GraphSuperstepResumeState {
 	frontier: string[];
 	/** Remaining in-degree snapshot to continue readiness tracking from. */
 	remainingInDegree: Record<string, number>;
+	/**
+	 * Per-source breakdown of the same claims (node → source → pending),
+	 * present when the journal recorded it. Absent for legacy journals —
+	 * callers then rely on `remainingInDegree` alone and resume keeps the
+	 * pre-fix (flat) behaviour.
+	 */
+	remainingClaimsBySource?: Record<string, Record<string, number>>;
 	/** Rounds already completed, so the round cap stays meaningful. */
 	completedRounds: number;
 	/** Node executions already done (work-amount counter). */
@@ -515,7 +534,6 @@ export function loadGraphSuperstepResumeState(options: {
 		executedNodeIds: [],
 		isValid: false,
 	};
-
 	const records = readGraphJournal(journalPath(options.journalDir, options.runId));
 	if (records.length === 0) {
 		return { ...empty, invalidReason: `No journal found for run "${options.runId}".` };
@@ -577,6 +595,7 @@ export function loadGraphSuperstepResumeState(options: {
 		state,
 		frontier,
 		remainingInDegree: lastRound?.remainingInDegree ?? {},
+		remainingClaimsBySource: lastRound?.remainingClaimsBySource,
 		completedRounds: lastCompletedRound,
 		completedNodeExecutions: executions.length,
 		executedNodeIds: [...new Set(executions.map((e) => e.nodeId))],

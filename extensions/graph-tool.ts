@@ -336,6 +336,7 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 					state: resumeState.state,
 					resumeFromFrontier: resumeState.frontier,
 					remainingInDegree: resumeState.remainingInDegree,
+					remainingClaimsBySource: resumeState.remainingClaimsBySource,
 					completedRounds: resumeState.completedRounds,
 					completedNodeExecutions: resumeState.completedNodeExecutions,
 					executedNodeIds: resumeState.executedNodeIds,

@@ -26,6 +26,17 @@
  * executed — so the next wave restarts cleanly from the target. Siblings in
  * that subgraph re-run; pi-session resume makes those re-runs cheap.
  *
+ * Claims are tracked PER SOURCE, not as one flat counter (see
+ * `computeStaticClaims` / `PendingClaims`). A reset restores only the claims
+ * whose source is itself inside the reset subgraph — those sources will
+ * re-run and re-release. Claims from sources outside the reset subgraph keep
+ * whatever state they already had (released or still pending): that source
+ * already ran (or hasn't yet) and a reset elsewhere does not change that.
+ * Flattening claims to one number per node — the original design — loses
+ * exactly this distinction and re-armed already-released claims whenever two
+ * back-edges resolved in different rounds, deadlocking a fan-in that should
+ * have completed. See docs/PARALLEL-OPTIONA-GAP-ANALYSIS.md.
+ *
  * Two counters: `iterations` (rounds) feeds the safety cap; `nodeExecutions`
  * (nodes run) feeds display and budget. They were identical in the linear
  * executor but diverge here because a round can run N nodes.
@@ -86,6 +97,12 @@ export interface SuperstepRunOptions {
 		nextFrontier: string[];
 		/** Remaining in-degree per node — the readiness ground truth for resume. */
 		remainingInDegree: Record<string, number>;
+		/**
+		 * Per-source breakdown of the same claims: node → source → pending
+		 * count. Written so resume can restore per-source fidelity; readers
+		 * that only need the flat view (display) ignore it.
+		 */
+		remainingClaimsBySource?: Record<string, Record<string, number>>;
 	}) => void;
 	/** Continue a previous run instead of starting from the entry node. */
 	resume?: SuperstepResumeInput;
@@ -98,6 +115,13 @@ export interface SuperstepResumeInput {
 	resumeFromFrontier: string[];
 	/** Remaining in-degree per node, snapshotted at the last completed round. */
 	remainingInDegree: Record<string, number>;
+	/**
+	 * Per-source breakdown of the same claims (node → source → pending),
+	 * snapshotted at the last completed round by a newer journal. Optional:
+	 * legacy snapshots carry only the flat total, and resume then folds that
+	 * total into one opaque bucket — old behaviour, exactly.
+	 */
+	remainingClaimsBySource?: Record<string, Record<string, number>>;
 	/** Rounds already completed, so the cap covers the whole run. */
 	completedRounds: number;
 	/** Node executions already completed (work-amount counter). */
@@ -155,20 +179,49 @@ type EdgeResolution =
 	| { error: string };
 
 /**
- * Static claims: how many edges could route to each node.
+ * A node's pending claims, broken down by which source each claim came from.
+ *
+ * `count` is how many still-unresolved edges from that source could route to
+ * this node (almost always 1; can exceed 1 only for a duplicate edge — see
+ * `computeStaticClaims`). The map's KEY SET is itself meaningful: a source
+ * that has released is not removed but zeroed, so "is this source inside the
+ * reset subgraph" can still be answered after the fact (see
+ * `computeNextFrontier` step 3).
+ */
+type PendingClaims = Map<string, Map<string, number>>;
+
+/** Sentinel source key used to fold journaled/resumed claims that predate
+ * per-source tracking into one opaque bucket (see `runSuperstepGraph`'s
+ * resume path). It can never collide with a real node id — `NODE_ID_PATTERN`
+ * in graph-dsl.ts requires starting with a letter or underscore and forbids
+ * spaces, so a space-containing key is not a valid node id by construction. */
+const RESUME_SNAPSHOT_SOURCE = "(resumed)";
+
+/**
+ * Static claims: how many edges could route to each node, broken down by
+ * source.
  *
  * A claim is released when the edge that made it resolves, whatever it chose.
  * Claims answer "is anything still able to route here?" — which, paired with
  * whether an edge actually selected the node, is what readiness needs. Edges to
  * END claim nothing.
+ *
+ * Per-source (not a flat count): a wave reset needs to know exactly which
+ * claims to restore — only the ones whose source will itself re-run — and a
+ * flat total cannot answer that (see `computeNextFrontier`).
  */
-function computeStaticClaims(graph: BuiltGraph): Map<string, number> {
-	const claims = new Map<string, number>();
-	for (const id of graph.nodes.keys()) claims.set(id, 0);
+function computeStaticClaims(graph: BuiltGraph): PendingClaims {
+	const claims: PendingClaims = new Map();
+	for (const id of graph.nodes.keys()) claims.set(id, new Map());
 
-	const add = (target: string): void => {
-		if (!claims.has(target)) return;
-		claims.set(target, (claims.get(target) ?? 0) + 1);
+	const add = (from: string, target: string): void => {
+		const bySource = claims.get(target);
+		if (!bySource) return;
+		// A duplicate edge from the same source legitimately claims more than
+		// once: resolveEdges fires that source's edges together and releases
+		// every claim it made in one pass (see computeNextFrontier step 4),
+		// so over-counting here is exactly cancelled there, never a deadlock.
+		bySource.set(from, (bySource.get(from) ?? 0) + 1);
 	};
 
 	for (const [from, edgeList] of graph.edges) {
@@ -180,7 +233,7 @@ function computeStaticClaims(graph: BuiltGraph): Map<string, number> {
 				// deadlock, since the claim is released only by a node that is
 				// itself waiting on the target.
 				if (edge.to !== END && !isDownstreamOf(graph, from, edge.to as string)) {
-					add(edge.to as string);
+					add(from, edge.to as string);
 				}
 				continue;
 			}
@@ -196,12 +249,24 @@ function computeStaticClaims(graph: BuiltGraph): Map<string, number> {
 			// is itself waiting on the target.
 			for (const target of conditionalTargetsOf(graph, from)) {
 				if (isDownstreamOf(graph, from, target)) continue;
-				add(target);
+				add(from, target);
 			}
 		}
 	}
 
 	return claims;
+}
+
+/** Sums a node's per-source claims into the flat total the public API and
+ * journal format expose. This is the entire compatibility boundary: nothing
+ * outside this file (journal, display, resume input/output) ever sees a
+ * per-source breakdown, only this flattened total — unchanged from before
+ * per-source tracking existed. */
+function totalClaims(bySource: Map<string, number> | undefined): number {
+	if (!bySource) return 0;
+	let total = 0;
+	for (const count of bySource.values()) total += count;
+	return total;
 }
 
 /**
@@ -365,14 +430,14 @@ function resolveEdges(
  * Computes the next frontier after a round, applying edge firings, AND fan-in
  * readiness, and wave reset on back-edges.
  *
- * Mutates `remainingInDegree` and `executed` in place.
+ * Mutates `remainingClaims` (per source), `executed`, and `selected` in place.
  */
 function computeNextFrontier(
 	firedEdges: FiredEdge[],
 	executed: Set<string>,
 	selected: Set<string>,
-	remainingClaims: Map<string, number>,
-	staticClaims: Map<string, number>,
+	remainingClaims: PendingClaims,
+	staticClaims: PendingClaims,
 	forwardReachable: Map<string, Set<string>>,
 	entry: string,
 ): Set<string> {
@@ -398,17 +463,44 @@ function computeNextFrontier(
 		}
 	}
 
-	// 3. Apply the reset: restore claims, and forget both prior execution and
-	//    prior selection so the next wave starts clean. Leaving `selected` set
-	//    would let a node fire again without being routed to.
+	// 3. Apply the reset. Per node N in the reset subgraph, per incoming
+	//    source S of N:
+	//      - S inside the reset subgraph  → restore N's claim on S to static
+	//        (S will re-run and re-release it)
+	//      - S outside the reset subgraph → keep N's claim on S exactly as it
+	//        is. S already ran and released (count 0 → stays 0), or S has not
+	//        fired yet (pending → stays pending). A reset elsewhere must not
+	//        re-arm either.
+	//    This per-source split is the fix: the flat-counter version restored
+	//    the FULL static total, erasing outside releases that happened in
+	//    earlier rounds and could never be re-earned (their source had already
+	//    run), permanently over-claiming N after the second of two
+	//    differently-timed back-edges — a fan-in node then never became ready
+	//    and the run "completed" with it never having run.
+	//    The RESUME_SNAPSHOT_SOURCE bucket (a legacy-resumed node's folded
+	//    claims) is never inside resetNodes (it is not a node id), so it is
+	//    never restored — a resumed run keeps the journal's snapshot for
+	//    pre-crash state, which is exactly what the snapshot recorded.
+	//    Also forget prior execution/selection so the wave starts clean;
+	//    leaving `selected` set would let a node fire without being routed to.
 	for (const node of resetNodes) {
-		remainingClaims.set(node, staticClaims.get(node) ?? 0);
+		const remaining = remainingClaims.get(node);
+		const staticBySource = staticClaims.get(node);
+		if (remaining && staticBySource) {
+			for (const source of remaining.keys()) {
+				if (resetNodes.has(source)) {
+					remaining.set(source, staticBySource.get(source) ?? 0);
+				}
+				// Outside the subgraph (or the resume sentinel): keep as-is.
+			}
+		}
 		executed.delete(node);
 		selected.delete(node);
 	}
 	for (const target of resetTargets) {
 		// The escalation target re-runs now: it is routed to and ready.
-		remainingClaims.set(target, 0);
+		const bySource = remainingClaims.get(target);
+		if (bySource) for (const source of bySource.keys()) bySource.set(source, 0);
 		executed.delete(target);
 		selected.add(target);
 	}
@@ -417,14 +509,23 @@ function computeNextFrontier(
 	// reset target is explicitly selected, and force-selecting the entry as
 	// well would run two nodes where the graph routed to one.
 
-	// 4. Release claims. Skip an edge whose SOURCE is in the reset subgraph:
-	//    that source will re-run, so its edge has not really resolved. Skip
-	//    reset targets, already forced ready above.
+	// 4. Release claims. A source fires all its outgoing edges together, so
+	//    one firing releases EVERY claim that source holds on the target —
+	//    duplicates included (the counterpart of the duplicate-edge count in
+	//    computeStaticClaims). Skip an edge whose SOURCE is in the reset
+	//    subgraph: that source will re-run, so its edge has not really
+	//    resolved. Skip reset targets, already forced ready above.
 	for (const fired of normalFired) {
 		if (resetNodes.has(fired.from)) continue;
 		if (resetTargets.has(fired.to)) continue;
-		const current = remainingClaims.get(fired.to) ?? 0;
-		remainingClaims.set(fired.to, Math.max(0, current - 1));
+		const bySource = remainingClaims.get(fired.to);
+		if (bySource && bySource.has(fired.from)) {
+			bySource.set(fired.from, 0);
+		} else if (bySource) {
+			// The source never statically claimed this target (possible for a
+			// conditional edge routing somewhere new after a resume, or a
+			// duplicate edge whose claim was collapsed). Nothing to release.
+		}
 		// Only an edge that actually routed here marks the node selected.
 		if (fired.selected) selected.add(fired.to);
 	}
@@ -437,15 +538,30 @@ function computeNextFrontier(
 	//    conditional has no claims to wait on and would run immediately,
 	//    whether or not any edge chose it.
 	const next = new Set<string>();
-	for (const [node, claims] of remainingClaims) {
-		if (claims === 0 && selected.has(node) && !executed.has(node)) next.add(node);
+	for (const [node, bySource] of remainingClaims) {
+		if (totalClaims(bySource) === 0 && selected.has(node) && !executed.has(node)) next.add(node);
 	}
 	return next;
 }
 
-function toRecord(map: Map<string, number>): Record<string, number> {
+/** Flattens per-source claims to the flat per-node totals the journal and
+ * public API expose. */
+function toRecord(map: PendingClaims): Record<string, number> {
 	const record: Record<string, number> = {};
-	for (const [k, v] of map) record[k] = v;
+	for (const [k, bySource] of map) record[k] = totalClaims(bySource);
+	return record;
+}
+
+/** Serialises the per-source breakdown for journaling (resume fidelity). */
+function toBySourceRecord(map: PendingClaims): Record<string, Record<string, number>> {
+	const record: Record<string, Record<string, number>> = {};
+	for (const [node, bySource] of map) {
+		const inner: Record<string, number> = {};
+		for (const [source, count] of bySource) {
+			if (count > 0) inner[source] = count;
+		}
+		if (Object.keys(inner).length > 0) record[node] = inner;
+	}
 	return record;
 }
 
@@ -483,7 +599,7 @@ export async function runSuperstepGraph(
 	const history: NodeExecution[] = resume?.history ? [...resume.history] : [];
 	const path: string[] = history.map((execution) => execution.nodeId);
 
-	const remainingClaims = new Map<string, number>();
+	const remainingClaims: PendingClaims = new Map();
 	/** Nodes an edge actually routed to. Ready requires this, not just claims 0. */
 	const selected = new Set<string>();
 	const executed = new Set<string>();
@@ -493,8 +609,28 @@ export async function runSuperstepGraph(
 	let finalResult: unknown = resume ? history[history.length - 1]?.result : undefined;
 
 	if (resume) {
+		// Resume seeds claims from whatever the journal snapshot carried:
+		// per-source detail when the run journaled it (post-fix runs), or the
+		// legacy flat total folded into one opaque sentinel bucket when it did
+		// not. The sentinel can never be inside a reset subgraph (it is not a
+		// node id), so a legacy-resumed node keeps the snapshotted total for
+		// its pre-crash life — exactly the old behaviour, no better, no worse.
+		for (const id of graph.nodes.keys()) remainingClaims.set(id, new Map());
 		for (const [k, v] of Object.entries(resume.remainingInDegree)) {
-			remainingClaims.set(k, v);
+			const bySource = remainingClaims.get(k);
+			if (!bySource || v <= 0) continue;
+			bySource.set(RESUME_SNAPSHOT_SOURCE, v);
+		}
+		// Per-source detail from a newer journal replaces the flat snapshot.
+		// Sources present there are authoritative; the sentinel bucket is
+		// dropped entirely (it exists only for legacy snapshots).
+		for (const [k, bySource] of Object.entries(resume.remainingClaimsBySource ?? {})) {
+			const target = remainingClaims.get(k);
+			if (!target) continue;
+			target.clear();
+			for (const [source, count] of Object.entries(bySource)) {
+				if (count > 0) target.set(source, count);
+			}
 		}
 		// The frontier was computed before the crash, so those nodes were
 		// selected by definition.
@@ -509,9 +645,18 @@ export async function runSuperstepGraph(
 		// as settled (a crashed round's nodes are journaled but not complete).
 		for (const nodeId of resume.resumeFromFrontier) executed.delete(nodeId);
 	} else {
-		for (const [k, v] of staticClaims) remainingClaims.set(k, v);
+		// Copy the static per-source claims: each node starts with every claim
+		// its incoming edges statically hold, keyed by source.
+		for (const [id, bySource] of staticClaims) {
+			remainingClaims.set(
+				id,
+			new Map((function* () {
+					for (const [source, count] of bySource) yield [source, count] as const;
+				})()),
+			);
+		}
 		// The entry is unconditionally ready: nothing routes to it to begin with.
-		remainingClaims.set(graph.entry, 0);
+		remainingClaims.get(graph.entry)?.clear();
 		selected.add(graph.entry);
 		frontier = new Set([graph.entry]);
 		iterations = 0;
@@ -723,6 +868,7 @@ export async function runSuperstepGraph(
 			nodeIds: roundNodeIds,
 			nextFrontier: [...frontier],
 			remainingInDegree: toRecord(remainingClaims),
+			remainingClaimsBySource: toBySourceRecord(remainingClaims),
 		});
 	}
 
