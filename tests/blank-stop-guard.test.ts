@@ -19,6 +19,7 @@ import {
 	BLANK_STOP_CONTINUE_MESSAGE,
 	MAX_CONSECUTIVE_BLANK_CONTINUES,
 	isBlankStop,
+	isThinkingOnlyStop,
 	registerBlankStopGuard,
 } from "../extensions/blank-stop-guard.ts";
 
@@ -30,6 +31,25 @@ const OBSERVED_BLANK = {
 	provider: "9router",
 	model: "erica-flash",
 	usage: { input: 7414, output: 0, cacheRead: 16304, cacheWrite: 0, reasoning: 0, totalTokens: 23718 },
+	stopReason: "stop",
+	rawStopReason: "stop",
+};
+
+/** The exact thinking-only failure shape from the reviewer-stall report. */
+const OBSERVED_THINKING_ONLY = {
+	role: "assistant",
+	content: [
+		{
+			type: "thinking",
+			thinking:
+				"**Analyzing API Interaction**\n\nI've initiated an API call to read a specific file, \"simple.md,\" associated with an OCR result. My current focus is validating the initial connection and the request parameters.",
+			thinkingSignature: "reasoning",
+		},
+	],
+	api: "openai-completions",
+	provider: "9router",
+	model: "erica-flash",
+	usage: { input: 4723, output: 47, cacheRead: 57065, cacheWrite: 0, reasoning: 47, totalTokens: 61835 },
 	stopReason: "stop",
 	rawStopReason: "stop",
 };
@@ -75,6 +95,77 @@ describe("isBlankStop", () => {
 	});
 });
 
+describe("isThinkingOnlyStop", () => {
+	it("matches the exact observed production shape (output tokens > 0)", () => {
+		expect(isThinkingOnlyStop(OBSERVED_THINKING_ONLY)).toBe(true);
+	});
+
+	it("matches with zero output tokens too — the shape is structural, not usage-based", () => {
+		expect(isThinkingOnlyStop({ role: "assistant", content: [{ type: "thinking", thinking: "hmm" }], stopReason: "stop", usage: { output: 0 } })).toBe(true);
+	});
+
+	it("matches multiple thinking blocks", () => {
+		expect(
+			isThinkingOnlyStop({
+				role: "assistant",
+				content: [
+				{ type: "thinking", thinking: "part one" },
+				{ type: "thinking", thinking: "part two" },
+			],
+				stopReason: "stop",
+				usage: { output: 99 },
+			}),
+		).toBe(true);
+	});
+
+	it("rejects thinking + text — a real answer with visible reasoning", () => {
+		expect(
+			isThinkingOnlyStop({
+				role: "assistant",
+				content: [
+				{ type: "thinking", thinking: "let me think" },
+				{ type: "text", text: "The answer is 42." },
+			],
+				stopReason: "stop",
+				usage: { output: 50 },
+			}),
+		).toBe(false);
+	});
+
+	it("rejects thinking + toolCall — a mid-run turn, not an ending", () => {
+		expect(
+			isThinkingOnlyStop({
+				role: "assistant",
+				content: [
+				{ type: "thinking", thinking: "I should read the file" },
+				{ type: "toolCall" },
+			],
+				stopReason: "stop",
+				usage: { output: 30 },
+			}),
+		).toBe(false);
+	});
+
+	it("rejects whitespace-only thinking — not the observed shape", () => {
+		expect(isThinkingOnlyStop({ role: "assistant", content: [{ type: "thinking", thinking: "   " }], stopReason: "stop", usage: { output: 5 } })).toBe(false);
+	});
+
+	it("rejects empty content with output tokens — neither the blank nor the thinking-only shape", () => {
+		// Billed-but-empty with no thinking block at all: outside both
+		// predicates by design (don't guess beyond the evidence).
+		expect(isThinkingOnlyStop({ role: "assistant", content: [], stopReason: "stop", usage: { output: 7 } })).toBe(false);
+		expect(isBlankStop({ role: "assistant", content: [], stopReason: "stop", usage: { output: 7 } })).toBe(false);
+	});
+
+	it("rejects non-stop stop reasons and non-assistant roles", () => {
+		for (const stopReason of ["error", "aborted", "length", "toolUse"]) {
+			expect(isThinkingOnlyStop({ role: "assistant", content: [{ type: "thinking", thinking: "x" }], stopReason, usage: { output: 5 } })).toBe(false);
+		}
+		expect(isThinkingOnlyStop({ role: "user", content: "hello" })).toBe(false);
+		expect(isThinkingOnlyStop(undefined)).toBe(false);
+	});
+});
+
 /** Minimal pi stub capturing hook registrations and sendUserMessage calls. */
 function makePi() {
 	const handlers = new Map<string, Array<(event: unknown) => void>>();
@@ -114,6 +205,32 @@ describe("registerBlankStopGuard", () => {
 		expect(pi.sendCalls[0].options?.deliverAs).toBe("followUp");
 	});
 
+	it("sends a visible 'continue' as followUp when the run ends on a thinking-only turn", () => {
+		const pi = makePi();
+		registerBlankStopGuard(pi as never);
+
+		pi.emit("turn_end", turnEnd(OBSERVED_THINKING_ONLY));
+		pi.emit("agent_end", agentEnd());
+
+		expect(pi.sendCalls.length).toBe(1);
+		expect(pi.sendCalls[0].content).toBe("continue");
+		expect(pi.sendCalls[0].options?.deliverAs).toBe("followUp");
+	});
+
+	it("shares one nudge budget across blank and thinking-only stalls", () => {
+		const pi = makePi();
+		registerBlankStopGuard(pi as never);
+
+		// Alternating stall shapes: still one shared budget of 3.
+		const stalls = [OBSERVED_BLANK, OBSERVED_THINKING_ONLY, OBSERVED_BLANK, OBSERVED_THINKING_ONLY, OBSERVED_BLANK, OBSERVED_THINKING_ONLY];
+		for (const stall of stalls) {
+			pi.emit("turn_end", turnEnd(stall));
+		pi.emit("agent_end", agentEnd());
+		}
+
+		expect(pi.sendCalls.length).toBe(MAX_CONSECUTIVE_BLANK_CONTINUES);
+	});
+
 	it("sends nothing for a healthy run", () => {
 		const pi = makePi();
 		registerBlankStopGuard(pi as never);
@@ -130,6 +247,20 @@ describe("registerBlankStopGuard", () => {
 
 		pi.emit("turn_end", turnEnd(OBSERVED_BLANK));
 		pi.emit("turn_end", turnEnd({ role: "assistant", content: [{ type: "text", text: "resumed" }], stopReason: "stop", usage: { output: 8 } }));
+		pi.emit("agent_end", agentEnd());
+
+		expect(pi.sendCalls.length).toBe(0);
+	});
+
+	it("sends nothing when a thinking+text turn follows a thinking-only stall", () => {
+		// The recovery path in real life: the nudge lands, the model answers
+		// with reasoning AND text. That healthy turn must clear the flag so a
+		// later agent_end does not fire a stale nudge.
+		const pi = makePi();
+		registerBlankStopGuard(pi as never);
+
+		pi.emit("turn_end", turnEnd(OBSERVED_THINKING_ONLY));
+		pi.emit("turn_end", turnEnd({ role: "assistant", content: [{ type: "thinking", thinking: "now I know" }, { type: "text", text: "recovered" }], stopReason: "stop", usage: { output: 20 } }));
 		pi.emit("agent_end", agentEnd());
 
 		expect(pi.sendCalls.length).toBe(0);

@@ -538,7 +538,8 @@ Top-level keys (outside `agents`) control extension behaviour. Currently support
 }
 ```
 
-- `blankStopGuard`: disables the auto-"continue" guard for empty model completions
+- `blankStopGuard`: disables the auto-"continue" guard for empty or thinking-only model
+  completions
   (see "Production behaviour"). Defaults to enabled when absent. Read once at process
   start from the directory pi runs in; commit the file to git so worktree-isolated
   subagent runs also see it.
@@ -898,14 +899,16 @@ closes cleanly. `ask_supervisor` has a 10-minute timeout after which the child p
 autonomously.
 
 **Blank model stops are auto-continued.** Some models (notably Gemini Flash tiers) occasionally
-return a "successful" turn with nothing in it — `content: []`, zero output tokens,
-`stopReason: "stop"` — which pi-coding-agent treats as a clean completion (its auto-retry only
-fires on `stopReason: "error"`). The guard detects this shape and sends a visible `continue`
-user message, exactly as you would by hand; the model resumes with its full context intact.
-It runs in the main agent and in every subagent (the extension is injected into each child),
-sends at most 3 times for consecutive blanks, resets after any healthy turn, and never
-interferes with retry/compaction — those are checked before the guard's queued message. If the
-model stays blank after 3 nudges, the empty result flows out unchanged and workflow-level
+return a "successful" turn with nothing usable in it. Two shapes are covered: a genuinely empty
+turn (`content: []`, zero output tokens, `stopReason: "stop"`) and a thinking-only turn (the model
+streams reasoning, then stops without ever emitting an answer — no text, no tool calls, output
+tokens > 0 because thinking burns output tokens). pi-coding-agent treats both as clean completions
+(its auto-retry only fires on `stopReason: "error"`). The guard detects both shapes and sends a
+visible `continue` user message, exactly as you would by hand; the model resumes with its full
+context intact. It runs in the main agent and in every subagent (the extension is injected into
+each child), sends at most 3 times for consecutive stalls, resets after any healthy turn, and
+never interferes with retry/compaction — those are checked before the guard's queued message. If
+the model stays stalled after 3 nudges, the empty result flows out unchanged and workflow-level
 backstops (retry edges) remain the last line of defense.
 
 Set `"blankStopGuard": false` in `.pi-workflow/settings.json` to disable it for the whole

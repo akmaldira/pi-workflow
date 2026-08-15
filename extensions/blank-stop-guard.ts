@@ -1,13 +1,20 @@
 /**
  * Blank-stop guard: auto-"continue" when a model returns a genuinely empty
- * completion.
+ * or thinking-only completion.
  *
  * Some models (notably Gemini Flash tiers via proxies) occasionally emit a
- * "successful" turn that contains nothing: content: [], usage.output: 0,
- * stopReason: "stop". pi-coding-agent treats this as a clean completion —
- * its auto-retry only fires on stopReason "error", so this shape falls
- * through every built-in safety net and surfaces as an empty agent reply.
- * Observed in both the main interactive agent and spawned subagents.
+ * "successful" turn that contains nothing usable. Two observed shapes:
+ *
+ * 1. Blank: content: [], usage.output: 0, stopReason: "stop".
+ * 2. Thinking-only: content: [thinking block(s), no text, no tool calls],
+ *    usage.output > 0 (thinking burns output tokens), stopReason: "stop".
+ *    Observed from erica-flash: reasoning streams, then the model just
+ *    stops without ever emitting an answer.
+ *
+ * pi-coding-agent treats both as clean completions — its auto-retry only
+ * fires on stopReason "error", so these shapes fall through every built-in
+ * safety net and surface as an empty agent reply. Observed in both the main
+ * interactive agent and spawned subagents.
  *
  * The fix is what the user does by hand in this situation: send "continue"
  * as a visible user message. pi-coding-agent has first-class support for
@@ -22,10 +29,11 @@
  *
  * Safety: bounded at MAX_CONSECUTIVE_BLANK_CONTINUES consecutive sends per
  * process; the counter resets the moment any turn produces real content
- * (any text, tool call, or usage.output > 0), so a long-lived session
+ * (any text or tool call — usage.output alone does not count, because a
+ * thinking-only stop burns output tokens too), so a long-lived session
  * always has its full retry budget available again after a healthy turn.
- * If the model is persistently blank, the guard stays silent and the empty
- * result flows out exactly as before this guard existed (workflow-level
+ * If the model stays stalled after 3 nudges, the guard stays silent and the
+ * empty result flows out exactly as before this guard existed (workflow-level
  * backstops like retry edges remain the last line of defense).
  */
 
@@ -44,7 +52,7 @@ export const BLANK_STOP_CONTINUE_MESSAGE = "continue";
  */
 interface AssistantMessageLike {
 	role?: string;
-	content?: string | Array<{ type?: string; text?: string }>;
+	content?: string | Array<{ type?: string; text?: string; thinking?: string }>;
 	stopReason?: string;
 	usage?: { output?: number };
 }
@@ -77,6 +85,36 @@ export function isBlankStop(message: AssistantMessageLike | undefined | null): b
 }
 
 /**
+ * True when a completed assistant message is the thinking-only failure
+ * shape: a "successful" stop where the model streamed reasoning but never
+ * produced an answer — non-empty thinking content, no text part, no tool
+ * call, stopReason "stop" (observed from erica-flash: output: 47,
+ * reasoning: 47, content: [one thinking block]).
+ *
+ * Unlike isBlankStop there is NO usage.output check here — thinking burns
+ * output tokens, so this shape legitimately reports output > 0. The
+ * structural check carries the discrimination instead, and it is safe:
+ * pi's loop continues past a message only via tool calls, and a finished
+ * answer requires a text part, so a stop message with thinking but neither
+ * of those can never be a legitimate turn ending.
+ *
+ * Equally strict in what it rejects: thinking + text (a real answer with
+ * visible reasoning) is not a failure; thinking + toolCall is a mid-run
+ * turn, not an ending; empty/whitespace thinking with nothing else is left
+ * alone (not the observed shape — don't guess beyond the evidence); and
+ * non-"stop" stop reasons are handled by pi's own retry/truncation paths.
+ */
+export function isThinkingOnlyStop(message: AssistantMessageLike | undefined | null): boolean {
+	if (!message || message.role !== "assistant") return false;
+	if (message.stopReason !== "stop") return false;
+	if (typeof message.content === "string") return false;
+	const content = message.content ?? [];
+	if (content.some((part) => part.type === "toolCall")) return false;
+	if (content.some((part) => part.type === "text" && typeof part.text === "string" && part.text.trim() !== "")) return false;
+	return content.some((part) => part.type === "thinking" && typeof part.thinking === "string" && part.thinking.trim() !== "");
+}
+
+/**
  * Register the blank-stop guard on a pi instance.
  *
  * State (the consecutive-blank counter) is closure-scoped per call, so each
@@ -93,14 +131,16 @@ export function registerBlankStopGuard(pi: ExtensionAPI, options?: { enabled?: b
 
 	pi.on("turn_end", (event: TurnEndEvent) => {
 		const message = event.message;
-		if (isBlankStop(message)) {
+		if (isBlankStop(message) || isThinkingOnlyStop(message)) {
 			consecutiveBlanks++;
 			lastTurnBlank = true;
 			return;
 		}
-		// Any turn with real content (text, tool calls, output tokens, or a
-		// non-stop outcome) proves the model is healthy again — restore the
-		// full nudge budget.
+		// Any turn with real content (text, tool calls) or a non-stop
+		// outcome proves the model is healthy again — restore the full
+		// nudge budget. Note output tokens alone no longer prove health:
+		// a thinking-only stop burns output tokens too, which is why it
+		// is checked structurally above rather than by usage.
 		consecutiveBlanks = 0;
 		lastTurnBlank = false;
 	});
