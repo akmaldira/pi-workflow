@@ -78,7 +78,10 @@ g.run({});
 `;
 
 			const badArgs: unknown[] = [
-				'{"caseId": "8907"}', // JSON string — the observed production failure shape
+				"not json at all", // invalid JSON — no recovery possible
+				'"just a string"', // valid JSON, but decodes to a string, not an object
+				"[1,2,3]", // valid JSON, decodes to an array
+				"null", // valid JSON, decodes to null
 				1,
 				false,
 				null,
@@ -104,7 +107,10 @@ g.edge("a", END);
 g.run({});
 `;
 			const cases: Array<[unknown, RegExp]> = [
-				['{"a": 1}', /received a string/],
+				["not json at all", /string that is not valid JSON/],
+				["[1,2,3]", /decodes to an array/],
+				["null", /decodes to null/],
+				['"hi"', /decodes to a string/],
 				[1, /received a number/],
 				[false, /received a boolean/],
 				[null, /received null/],
@@ -115,6 +121,30 @@ g.run({});
 				expect(result.failed).toBe(true);
 				expect(result.text).toMatch(pattern);
 			}
+		});
+
+		it("recovers args sent as a JSON string that decodes to a plain object", async () => {
+			// The exact production failure shape this guard was built to catch —
+			// but recoverable, unlike genuinely malformed input: a JSON-encoded
+			// object round-trips losslessly, so this decodes rather than rejects.
+			const spawn = vi
+				.fn()
+				.mockResolvedValue({ exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }], durationMs: 1 });
+			const script = `${META}
+const g = graph();
+g.node("a", (s) => "case=" + args.caseId);
+g.edge("a", END);
+g.run({});
+`;
+			const result = await run(script, { args: '{"caseId": "8907"}' }, spawn);
+			expect(result.failed).toBe(false);
+			// The tool must warn this happened rather than staying silent about
+			// it, in the call-time receipt text (the report that lands later
+			// once the run finishes has no reason to repeat it).
+			expect(result.receiptText).toMatch(/arrived as a JSON string/);
+			expect(
+				(result.result?.details as { argsWasDecodedFromString?: boolean } | undefined)?.argsWasDecodedFromString,
+			).toBe(true);
 		});
 
 		it("accepts args as an object and as undefined (omitted)", async () => {

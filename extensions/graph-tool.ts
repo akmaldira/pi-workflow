@@ -217,15 +217,47 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 			// `args.x` as undefined with no error anywhere — e.g. the observed
 			// "case undefined" failure. Fail fast here with an actionable
 			// message instead.
+			//
+			// One shape gets a recovery instead of a rejection: a string that
+			// decodes to a plain object. Every live reproduction attempted
+			// against real model backends sent a genuine object — this branch
+			// exists for corruption between validation and here that isn't the
+			// model's tool call, e.g. another extension's `tool_call` hook
+			// mutating `event.input` in place (pi's contract explicitly allows
+			// this and skips re-validation after it). A JSON-encoded object is
+			// losslessly recoverable, unlike the other rejected shapes, so this
+			// is a targeted decode, not a general leniency — numbers, booleans,
+			// null, arrays, and non-object or invalid-JSON strings still fail
+			// exactly as before.
+			let argsWasDecodedFromString = false;
+			if (typeof params.args === "string") {
+				let decoded: unknown;
+				try {
+					decoded = JSON.parse(params.args);
+				} catch {
+					throw new Error(
+						`workflow args must be an object of key/value pairs (e.g. args: { caseId: "8907" }), but received a string that is not valid JSON. ` +
+							`Pass the values as an object literal — not a JSON string, number, boolean, array, or null.`,
+					);
+				}
+				if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) {
+					const decodedAs = decoded === null ? "null" : Array.isArray(decoded) ? "an array" : `a ${typeof decoded}`;
+					throw new Error(
+						`workflow args must be an object of key/value pairs (e.g. args: { caseId: "8907" }), but received a JSON string that decodes to ${decodedAs}. ` +
+							`Pass the values as an object literal — not a JSON string, number, boolean, array, or null.`,
+					);
+				}
+				params.args = decoded as Record<string, unknown>;
+				argsWasDecodedFromString = true;
+			}
+
 			if (params.args !== undefined) {
 				const received =
 					params.args === null
 						? "null"
 						: Array.isArray(params.args)
 							? "an array"
-							: typeof params.args === "string"
-								? "a string"
-								: `a ${typeof params.args}`;
+							: `a ${typeof params.args}`;
 				if (typeof params.args !== "object" || params.args === null || Array.isArray(params.args)) {
 					throw new Error(
 						`workflow args must be an object of key/value pairs (e.g. args: { caseId: "8907" }), but received ${received}. ` +
@@ -453,18 +485,36 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 				? `Resumed workflow "${meta.name}" in the background.`
 				: `Workflow "${meta.name}" started in the background.`;
 
+			// The decode path recovers a losslessly-recoverable shape, but a
+			// well-formed tool call should never need it — surface it rather
+			// than let it stay silent, in case it's a symptom of something
+			// upstream (e.g. another extension's tool_call hook) mutating
+			// args between validation and here.
+			if (argsWasDecodedFromString) {
+				console.warn(
+					`[pi-workflow] workflow tool received args as a JSON string for "${meta.name}" (runId: ${runId}) and decoded it. ` +
+						"This should not normally happen — args should already be an object by the time a tool call reaches execute(). " +
+						"If this keeps happening, something between the model and this tool is stringifying object arguments.",
+				);
+			}
+
 			return {
 				content: [
 					{
 						type: "text" as const,
 						text: [
 							started,
+							argsWasDecodedFromString
+								? "  note: args arrived as a JSON string, not an object, and was decoded. This should not normally happen — pass args as an object literal."
+								: undefined,
 							`  runId: ${runId}`,
 							`  nodes: ${nodeList}`,
 							"",
 							"The run continues after this turn ends. You will be notified with the full report when it finishes,",
 							"so end your turn now rather than polling. Use workflow_status if the user asks about progress.",
-						].join("\n"),
+						]
+							.filter((line): line is string => line !== undefined)
+							.join("\n"),
 					},
 				],
 				details: {
@@ -473,6 +523,7 @@ export function createGraphWorkflowTool(options: GraphToolOptions = {}): ToolDef
 					background: true,
 					nodeIds,
 					resumed: Boolean(params.resumeRunId),
+					argsWasDecodedFromString,
 				},
 			};
 		},
