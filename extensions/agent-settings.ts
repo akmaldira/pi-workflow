@@ -57,6 +57,26 @@ export interface AgentSettings {
 	 * loads this extension in a directory where the settings file exists.
 	 */
 	blankStopGuard?: boolean;
+	/**
+	 * Disable the bash-timeout guard (default timeout injected into `bash`
+	 * tool calls that don't specify one). Defaults to enabled when absent.
+	 * Same process-wide, read-once-at-start semantics as blankStopGuard.
+	 */
+	bashTimeoutGuard?: boolean;
+	/**
+	 * Default timeout, in seconds, injected into `bash` tool calls that
+	 * don't specify their own `timeout`. Defaults to 600 (10 minutes) when
+	 * absent. A model-specified timeout always wins over this default.
+	 */
+	bashTimeoutSeconds?: number;
+	/**
+	 * Default turn budget applied to subagent runs (graph nodes and plain
+	 * `subagent` tool calls alike) whose agent frontmatter declares none.
+	 * Defaults to `{maxTurns: 50, graceTurns: 2}` when absent. Set to `null`
+	 * to disable enforcement entirely (agents without frontmatter turnBudget
+	 * run unbounded, as before this feature existed).
+	 */
+	defaultTurnBudget?: { maxTurns: number; graceTurns?: number } | null;
 }
 
 export interface ResolvedAgentSettings extends AgentSettings {
@@ -123,6 +143,18 @@ export function loadAgentSettings(cwd: string, options: { userSettingsPath?: str
 
 		if (settings.blankStopGuard !== undefined) {
 			resolved.blankStopGuard = settings.blankStopGuard;
+		}
+
+		if (settings.bashTimeoutGuard !== undefined) {
+			resolved.bashTimeoutGuard = settings.bashTimeoutGuard;
+		}
+
+		if (settings.bashTimeoutSeconds !== undefined) {
+			resolved.bashTimeoutSeconds = settings.bashTimeoutSeconds;
+		}
+
+		if (settings.defaultTurnBudget !== undefined) {
+			resolved.defaultTurnBudget = settings.defaultTurnBudget;
 		}
 
 		if (settings.agents && typeof settings.agents === "object") {

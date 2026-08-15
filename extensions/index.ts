@@ -53,6 +53,7 @@ import { openWorkflowNavigator } from "./workflow-ui.ts";
 import { registerTaskPanel } from "./task-panel.ts";
 import { registerWorkflowMode } from "./workflow-mode.ts";
 import { registerBlankStopGuard } from "./blank-stop-guard.ts";
+import { registerBashTimeoutGuard } from "./bash-timeout-guard.ts";
 import { planCreate, planGet, planList, planEdit, planDelete } from "./plan-tool.ts";
 import { openPlansNavigator } from "./plan-ui.ts";
 import {
@@ -1314,6 +1315,16 @@ export default function (pi: ExtensionAPI) {
 	// settings file can never break extension load.
 	const blankStopSettings = loadAgentSettings(process.cwd());
 	registerBlankStopGuard(pi, { enabled: blankStopSettings.blankStopGuard !== false });
+
+	// --- Bash-timeout guard: default timeout on unbounded `bash` calls ---
+	// Same factory-level, read-once-at-process-start rationale as the
+	// blank-stop guard above. Scoped to the `bash` tool only — never touches
+	// ask_user_question/ask_supervisor or agent/process lifetime. See
+	// bash-timeout-guard.ts for the full incident writeup and design notes.
+	registerBashTimeoutGuard(pi, {
+		enabled: blankStopSettings.bashTimeoutGuard !== false,
+		timeoutSeconds: blankStopSettings.bashTimeoutSeconds,
+	});
 
 	// --- Session start: activate workflow tool & task panel ---
 	pi.on("session_start", (_event, ctx) => {

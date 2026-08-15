@@ -179,6 +179,38 @@ describe("loadAgentSettings", () => {
 		expect(result.blankStopGuard).toBeUndefined();
 	});
 
+	it("copies bashTimeoutGuard and bashTimeoutSeconds through the merge loop", () => {
+		writeProjectSettings({ bashTimeoutGuard: false, bashTimeoutSeconds: 120 });
+
+		const result = loadAgentSettings(tempDir, { userSettingsPath });
+
+		expect(result.bashTimeoutGuard).toBe(false);
+		expect(result.bashTimeoutSeconds).toBe(120);
+	});
+
+	it("resolves bashTimeoutGuard/bashTimeoutSeconds as undefined when no file sets them", () => {
+		const result = loadAgentSettings(tempDir, { userSettingsPath });
+
+		expect(result.bashTimeoutGuard).toBeUndefined();
+		expect(result.bashTimeoutSeconds).toBeUndefined();
+	});
+
+	it("copies defaultTurnBudget through the merge loop, including explicit null to disable", () => {
+		writeProjectSettings({ defaultTurnBudget: { maxTurns: 30, graceTurns: 5 } });
+
+		const result = loadAgentSettings(tempDir, { userSettingsPath });
+
+		expect(result.defaultTurnBudget).toEqual({ maxTurns: 30, graceTurns: 5 });
+	});
+
+	it("copies defaultTurnBudget: null through the merge loop (disables the default)", () => {
+		writeProjectSettings({ defaultTurnBudget: null });
+
+		const result = loadAgentSettings(tempDir, { userSettingsPath });
+
+		expect(result.defaultTurnBudget).toBeNull();
+	});
+
 	it("merges user and project settings per-agent, project winning", () => {
 		fs.writeFileSync(
 			userSettingsPath,

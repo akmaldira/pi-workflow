@@ -5,6 +5,9 @@
 import { describe, expect, it } from "vitest";
 import {
 	appendTurnBudgetSystemPrompt,
+	decodeTurnBudgetEnv,
+	DEFAULT_TURN_BUDGET,
+	encodeTurnBudgetEnv,
 	formatTurnBudgetOutput,
 	initialTurnBudgetState,
 	resolveTurnBudgetConfig,
@@ -12,6 +15,7 @@ import {
 	turnBudgetDeferredNote,
 	turnBudgetDeferredState,
 	turnBudgetExceededMessage,
+	turnBudgetSoftBlockMessage,
 	turnBudgetSoftNote,
 	turnBudgetState,
 } from "../extensions/turn-budget.ts";
@@ -168,6 +172,54 @@ describe("turn-budget", () => {
 			expect(note).toContain("13");
 			expect(note).toContain("10");
 			expect(note).toContain("2");
+		});
+	});
+
+	describe("DEFAULT_TURN_BUDGET", () => {
+		it("is a well-formed ResolvedTurnBudget, generous relative to every bundled agent's own budget", () => {
+			expect(DEFAULT_TURN_BUDGET).toEqual({ maxTurns: 50, graceTurns: 2 });
+		});
+	});
+
+	describe("turnBudgetSoftBlockMessage", () => {
+		it("mentions the turn count and limit, and instructs the model to stop and answer", () => {
+			const msg = turnBudgetSoftBlockMessage({ maxTurns: 10, graceTurns: 2 }, 10);
+			expect(msg).toContain("10");
+			expect(msg).toContain("blocked");
+			expect(msg).toContain("final answer");
+		});
+
+		it("uses singular turn phrasing for turnCount 1", () => {
+			const msg = turnBudgetSoftBlockMessage({ maxTurns: 1, graceTurns: 0 }, 1);
+			expect(msg).toContain("1 assistant turn ");
+			expect(msg).not.toContain("1 assistant turns");
+		});
+	});
+
+	describe("encodeTurnBudgetEnv / decodeTurnBudgetEnv", () => {
+		it("round-trips a resolved budget through JSON encode/decode", () => {
+			const budget = { maxTurns: 50, graceTurns: 2 };
+			const encoded = encodeTurnBudgetEnv(budget);
+			expect(encoded).toBeDefined();
+			expect(decodeTurnBudgetEnv(encoded)).toEqual(budget);
+		});
+
+		it("encodeTurnBudgetEnv returns undefined for an undefined budget", () => {
+			expect(encodeTurnBudgetEnv(undefined)).toBeUndefined();
+		});
+
+		it("decodeTurnBudgetEnv returns undefined for an empty/whitespace value", () => {
+			expect(decodeTurnBudgetEnv(undefined)).toBeUndefined();
+			expect(decodeTurnBudgetEnv("")).toBeUndefined();
+			expect(decodeTurnBudgetEnv("   ")).toBeUndefined();
+		});
+
+		it("decodeTurnBudgetEnv throws on invalid JSON", () => {
+			expect(() => decodeTurnBudgetEnv("not json")).toThrow();
+		});
+
+		it("decodeTurnBudgetEnv throws on a malformed budget shape (surfaces resolveTurnBudgetConfig's error)", () => {
+			expect(() => decodeTurnBudgetEnv(JSON.stringify({ maxTurns: 0 }))).toThrow(/maxTurns/);
 		});
 	});
 });

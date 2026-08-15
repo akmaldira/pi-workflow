@@ -29,6 +29,7 @@ import {
 	type ControlEvent,
 	type MaxOutputConfig,
 	type ResolvedAcceptanceConfig,
+	type ResolvedTurnBudget,
 	type RunSyncOptions,
 	truncateOutput,
 	checkSubagentDepth,
@@ -83,7 +84,8 @@ import {
 	summarizeRecentMutatingFailures,
 } from "./long-running-guard.ts";
 import { acceptanceFailureMessage, buildSkippedAcceptanceLedger, evaluateAcceptance, formatAcceptancePrompt, resolveEffectiveAcceptance, stripAcceptanceReport } from "./acceptance.ts";
-import { appendTurnBudgetSystemPrompt, formatTurnBudgetOutput, initialTurnBudgetState, turnBudgetDecision, turnBudgetDeferredNote, turnBudgetDeferredState, turnBudgetExceededMessage, turnBudgetSoftNote, turnBudgetState } from "./turn-budget.ts";
+import { appendTurnBudgetSystemPrompt, DEFAULT_TURN_BUDGET, formatTurnBudgetOutput, initialTurnBudgetState, resolveTurnBudgetConfig, turnBudgetDecision, turnBudgetDeferredNote, turnBudgetDeferredState, turnBudgetExceededMessage, turnBudgetSoftNote, turnBudgetState } from "./turn-budget.ts";
+import { loadAgentSettings } from "./agent-settings.ts";
 import { initialToolBudgetState, toolBudgetState } from "./tool-budget.ts";
 import { agentDefinitionDigest, launchBindingDigest } from "./launch-contract.ts";
 import { createBoundedByteTail, createBoundedLineReader, formatProtocolOutputLimit, MAX_CHILD_STDERR_BYTES, projectChildLifecycle, type ChildLifecycleAction, type ProtocolOutputLimit as ProtocolOutputLimitType } from "./child-protocol.ts";
@@ -246,6 +248,7 @@ async function runSingleAttempt(
 		structuredOutput: options.structuredOutput,
 		toolBudget: options.toolBudget,
 		allowZeroToolBudget: options.allowZeroToolBudget,
+		turnBudget: options.turnBudget,
 		waitToolEnabled: options.waitToolEnabled,
 		capabilityCeiling: options.capabilityCeiling,
 	});
@@ -334,6 +337,8 @@ async function runSingleAttempt(
 		lastActivityAt: startTime,
 	};
 	result.progress = progress;
+	const turnBudget = options.turnBudget;
+	let turnBudgetExceededFired = false;
 	const attemptTimeout = resolveAttemptTimeout(options);
 	if (attemptTimeout?.remainingMs === 0) {
 		cleanupTempDir(tempDir);
@@ -431,8 +436,23 @@ async function runSingleAttempt(
 				if (event.type === "turn_end") {
 					result.usage = event.message?.usage || result.usage;
 					result.stopReason = event.message?.stopReason || "end";
-					if (event.turnCount !== undefined) progress.turnCount = event.turnCount;
+					// pi's real TurnEndEvent carries `turnIndex` (0-based), not
+					// `turnCount` — turnIndex + 1 is the number of turns completed
+					// so far. (`event.turnCount` is kept as a back-compat read for
+					// fixtures/tests that predate this fix; real pi never sets it.)
+					if (typeof event.turnIndex === "number") progress.turnCount = event.turnIndex + 1;
+					else if (event.turnCount !== undefined) progress.turnCount = event.turnCount;
 					progress.tokens = (result.usage?.input ?? 0) + (result.usage?.output ?? 0);
+					if (turnBudget && !turnBudgetExceededFired && (progress.turnCount ?? 0) >= turnBudget.maxTurns + turnBudget.graceTurns) {
+						// Hard backstop: the child-side soft-block (subagent-prompt-runtime.ts)
+						// should already have stopped the model from calling further tools at
+						// maxTurns, letting it wrap up normally within the grace turns. This
+						// only fires if the model ignored that block and kept going anyway.
+						turnBudgetExceededFired = true;
+						result.turnBudgetExceeded = true;
+						result.error = turnBudgetExceededMessage(turnBudget, progress.turnCount ?? 0);
+						trySignalChild(proc, "SIGTERM");
+					}
 				}
 				if (event.type === "agent_end") {
 					// event.messages replays the *entire* session history in one event —
@@ -515,8 +535,10 @@ async function runSingleAttempt(
 	options.signal?.addEventListener("abort", abortHandler);
 	options.interruptSignal?.addEventListener("abort", abortHandler);
 
+	let timedOutMidRun = false;
 	const timeoutHandle = attemptTimeout
 		? setTimeout(() => {
+			timedOutMidRun = true;
 			trySignalChild(proc, "SIGKILL");
 		}, attemptTimeout.remainingMs)
 		: undefined;
@@ -609,6 +631,19 @@ async function runSingleAttempt(
 	result.exitCode = exitCode ?? 1;
 	result.exitSignal = exitSignal;
 
+	if (timedOutMidRun) {
+		// Fixes a pre-existing gap: this path previously only SIGKILLed the
+		// child without setting timedOut/error, so the resulting SIGKILL
+		// exitSignal fell through to FATAL_KILL_SIGNALS in the classifier and
+		// was reported as "likely an out-of-memory kill or crash" — a
+		// misleading technical-failure abort for what is actually an ordinary,
+		// routable agent-level timeout. See failure-classifier.ts's timedOut
+		// check, which is ordered before that signal check specifically to
+		// catch this.
+		result.timedOut = true;
+		result.error = attemptTimeout?.message ?? formatTimeoutMessage(options.timeoutMs ?? 0);
+	}
+
 	if (options.signal?.aborted) {
 		result.interrupted = true;
 		result.exitCode = 130;
@@ -667,6 +702,15 @@ async function runSingleAttempt(
 		};
 	}
 
+	if (result.turnBudgetExceeded && result.error) {
+		// Fold in whatever partial output the child produced before the
+		// backstop kill — result.finalOutput is already fully assembled at
+		// this point (from incrementally-collected messages), so the model's
+		// last, ignored wrap-up attempt (if any) is preserved rather than
+		// lost behind the budget-exceeded message alone.
+		result.error = formatTurnBudgetOutput(result.error, result.finalOutput || "");
+	}
+
 	// Evaluate acceptance
 	if (options.acceptance) {
 		const effective = resolveEffectiveAcceptance({
@@ -713,8 +757,52 @@ export async function runSingleAgent(
 	runtimeCwd: string,
 	agent: AgentConfig,
 	task: string,
-	options: RunSyncOptions,
+	callOptions: RunSyncOptions,
 ): Promise<SingleResult> {
+	// Turn budget: resolved once here, at the single choke point every
+	// subagent spawn path (graph nodes and plain `subagent` tool calls alike)
+	// funnels through. This matters for three reasons:
+	//
+	// 1. Coverage: graph-node-runner.ts explicitly forwards
+	//    resolved.agent.turnBudget into callOptions, but the plain `subagent`
+	//    tool call sites in index.ts never did — agent frontmatter turnBudget
+	//    was silently ignored there. Reading `agent.turnBudget` directly here
+	//    (not just callOptions.turnBudget) closes that gap for every caller at
+	//    once, instead of requiring each call site to remember to forward it.
+	//
+	// 2. Normalization: both callOptions.turnBudget and agent.turnBudget carry
+	//    an OPTIONAL graceTurns (TurnBudgetConfig, straight from parsed
+	//    frontmatter) — a custom agent declaring only
+	//    `turnBudget: {"maxTurns": 10}` would otherwise carry graceTurns:
+	//    undefined all the way into arithmetic (maxTurns + graceTurns) below
+	//    and produce NaN. Harmless while turnBudget was purely advisory;
+	//    load-bearing now that it's enforced. resolveTurnBudgetConfig fills
+	//    in DEFAULT_TURN_BUDGET_GRACE_TURNS, idempotently, for any shape.
+	//
+	// 3. Default: only applies when nothing above declared one. Precedence:
+	//    explicit callOptions.turnBudget > agent frontmatter > project/user
+	//    settings' defaultTurnBudget > DEFAULT_TURN_BUDGET.
+	//    `defaultTurnBudget: null` in settings disables the default outright,
+	//    restoring pre-feature unbounded behavior for agents with no
+	//    frontmatter turnBudget.
+	let resolvedTurnBudget: ResolvedTurnBudget | undefined;
+	const declaredTurnBudget = callOptions.turnBudget ?? agent.turnBudget;
+	if (declaredTurnBudget !== undefined) {
+		const { turnBudget: normalized } = resolveTurnBudgetConfig(declaredTurnBudget, "turnBudget");
+		resolvedTurnBudget = normalized ?? (declaredTurnBudget as ResolvedTurnBudget);
+	} else {
+		const settings = loadAgentSettings(runtimeCwd);
+		if (settings.defaultTurnBudget === null) {
+			resolvedTurnBudget = undefined;
+		} else if (settings.defaultTurnBudget !== undefined) {
+			const { turnBudget: parsed } = resolveTurnBudgetConfig(settings.defaultTurnBudget, "defaultTurnBudget");
+			resolvedTurnBudget = parsed ?? DEFAULT_TURN_BUDGET;
+		} else {
+			resolvedTurnBudget = DEFAULT_TURN_BUDGET;
+		}
+	}
+	const options: RunSyncOptions = resolvedTurnBudget === callOptions.turnBudget ? callOptions : { ...callOptions, turnBudget: resolvedTurnBudget };
+
 	// PI_SUBAGENT_DEPTH tracks how many subagent layers deep the *current*
 	// process already is; checked before spawning another layer so a chain
 	// of subagents delegating to more subagents cannot recurse unbounded.

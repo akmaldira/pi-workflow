@@ -7,6 +7,19 @@ import type { ResolvedTurnBudget, TurnBudgetState } from "./types.ts";
 
 export const DEFAULT_TURN_BUDGET_GRACE_TURNS = 1;
 
+/**
+ * Default turn budget applied to any subagent run (graph node or plain
+ * `subagent` tool call) whose agent frontmatter declares none, and whose
+ * project settings don't override it. Chosen to be generous — well above
+ * any bundled agent's own budget — so it only bounds genuinely runaway
+ * sessions, not normal ones. Agent frontmatter and project settings
+ * (`defaultTurnBudget` in .pi-workflow/settings.json) both take precedence
+ * over this; `defaultTurnBudget: null` in settings disables the default
+ * entirely (agents with no frontmatter turnBudget run unbounded, as before
+ * this feature existed).
+ */
+export const DEFAULT_TURN_BUDGET: ResolvedTurnBudget = { maxTurns: 50, graceTurns: 2 };
+
 export function resolveTurnBudgetConfig(
 	raw: unknown,
 	label = "turnBudget",
@@ -116,4 +129,31 @@ export function turnBudgetDecision(
 	if (toolWorkActiveOrStarting && !enforceHardLimit) return "defer";
 	if (turnCount === hardLimit && terminalAssistantStop) return "continue";
 	return "abort";
+}
+
+/** Env var carrying a JSON-encoded ResolvedTurnBudget to a spawned child, mirroring tool-budget.ts's TOOL_BUDGET_ENV. */
+export const TURN_BUDGET_ENV = "PI_SUBAGENT_TURN_BUDGET";
+
+export function encodeTurnBudgetEnv(budget: ResolvedTurnBudget | undefined): string | undefined {
+	return budget ? JSON.stringify(budget) : undefined;
+}
+
+export function decodeTurnBudgetEnv(value: string | undefined): ResolvedTurnBudget | undefined {
+	if (!value?.trim()) return undefined;
+	const parsed = JSON.parse(value) as unknown;
+	const normalized = resolveTurnBudgetConfig(parsed, TURN_BUDGET_ENV);
+	if (normalized.error) throw new Error(normalized.error);
+	return normalized.turnBudget;
+}
+
+/**
+ * Message injected (as a blocking tool_call reason) once the child reaches
+ * maxTurns via the child-side soft-block mechanism. Mirrors
+ * toolBudgetBlockedMessage's shape and intent: the model sees an ordinary
+ * tool-call-blocked reason, not a kill, and can wrap up normally with real
+ * output. The hard parent-side kill at maxTurns + graceTurns remains only
+ * as a backstop for a model that ignores this and keeps calling tools.
+ */
+export function turnBudgetSoftBlockMessage(budget: ResolvedTurnBudget, turnCount: number): string {
+	return `Turn budget reached after ${turnCount} assistant turn${turnCount === 1 ? "" : "s"} (limit ${budget.maxTurns}). Tool calls are now blocked — stop working and produce your final answer now, using the context you already have. No further tool calls will be allowed.`;
 }

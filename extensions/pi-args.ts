@@ -11,9 +11,10 @@ import { encodeNestedPathEnv, parseNestedPathEnv, type NestedPathEntry } from ".
 import { resolveMcpDirectToolSelections, type ResolvedMcpDirectToolSelection } from "./mcp-direct-tool-allowlist.ts";
 import { resolvePiPackageRoot, PI_CODING_AGENT_PACKAGE_ROOT_ENV } from "./pi-spawn.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./structured-output.ts";
-import { TEMP_ROOT_DIR, type JsonSchemaObject, type ResolvedToolBudget } from "./types.ts";
+import { TEMP_ROOT_DIR, type JsonSchemaObject, type ResolvedToolBudget, type ResolvedTurnBudget } from "./types.ts";
 import { THINKING_LEVELS } from "./model-info.ts";
 import { TOOL_BUDGET_ENV, TOOL_BUDGET_ZERO_AUTH_ENV, encodeToolBudgetEnv } from "./tool-budget.ts";
+import { TURN_BUDGET_ENV, encodeTurnBudgetEnv } from "./turn-budget.ts";
 import { CHILD_TOOL_DIAGNOSTIC_PATH_ENV, MCP_DIRECT_CHILD_TOOLS_ENV, REQUIRED_CHILD_TOOLS_ENV } from "./tool-availability.ts";
 import { SUBAGENT_CAPABILITY_CEILING_ENV, decodeSubagentCapabilityCeiling, encodeSubagentCapabilityCeiling, intersectSubagentCapabilityCeilings, type ResolvedSubagentCapabilityCeiling, type SubagentCapabilityAudit } from "./capability-ceiling.ts";
 
@@ -83,6 +84,7 @@ export interface BuildPiArgsInput {
 	};
 	toolBudget?: ResolvedToolBudget;
 	allowZeroToolBudget?: boolean;
+	turnBudget?: ResolvedTurnBudget;
 	capabilityCeiling?: ResolvedSubagentCapabilityCeiling | Partial<ResolvedSubagentCapabilityCeiling>;
 	waitToolEnabled?: boolean;
 }
@@ -374,6 +376,8 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	const encodedToolBudget = encodeToolBudgetEnv(input.toolBudget);
 	if (encodedToolBudget) env[TOOL_BUDGET_ENV] = encodedToolBudget;
 	env[TOOL_BUDGET_ZERO_AUTH_ENV] = input.allowZeroToolBudget ? "1" : undefined;
+	const encodedTurnBudget = encodeTurnBudgetEnv(input.turnBudget);
+	if (encodedTurnBudget) env[TURN_BUDGET_ENV] = encodedTurnBudget;
 
 	env[SUBAGENT_PARENT_SESSION_ENV] = input.parentSessionId ?? process.env[SUBAGENT_PARENT_SESSION_ENV] ?? "";
 

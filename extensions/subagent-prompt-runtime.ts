@@ -19,6 +19,8 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createStructuredOutputToolParameters, STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, validateStructuredOutputValue } from "./structured-output.ts";
 import { TOOL_BUDGET_ENV, TOOL_BUDGET_ZERO_AUTH_ENV, decodeToolBudgetEnv, shouldBlockToolForBudget, toolBudgetBlockedMessage, toolBudgetSoftNudge } from "./tool-budget.ts";
+import { TURN_BUDGET_ENV, decodeTurnBudgetEnv, turnBudgetSoftBlockMessage } from "./turn-budget.ts";
+import type { ResolvedTurnBudget } from "./types.ts";
 import { CHILD_TOOL_DIAGNOSTIC_PATH_ENV, MCP_DIRECT_CHILD_TOOLS_ENV, REQUIRED_CHILD_TOOLS_ENV, writeChildToolDiagnostic, type ChildToolDiagnostic } from "./tool-availability.ts";
 import { SUBAGENT_CHILD_AGENT_ENV, SUBAGENT_CHILD_INDEX_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "./pi-args.ts";
 import { registerChildWatchdog } from "./watchdog/child-status.ts";
@@ -212,7 +214,7 @@ function refreshChildToolDiagnostic(pi: ExtensionAPI): ChildToolDiagnostic | und
 	return writeChildToolDiagnostic(filePath, required, available, process.env[SUBAGENT_CHILD_AGENT_ENV]?.trim(), readMcpDirectChildTools());
 }
 
-function registerToolBudget(pi: ExtensionAPI, budget: ResolvedToolBudget | undefined): void {
+export function registerToolBudget(pi: ExtensionAPI, budget: ResolvedToolBudget | undefined): void {
 	if (!budget) return;
 	let toolCount = 0;
 	let softNudged = false;
@@ -234,8 +236,33 @@ function registerToolBudget(pi: ExtensionAPI, budget: ResolvedToolBudget | undef
 	});
 }
 
+/**
+ * Child-side turn-budget enforcement, mirroring registerToolBudget's shape:
+ * count turns from `turn_end` (turnIndex is 0-based, so turnIndex + 1 =
+ * number of turns completed), then once at or past `maxTurns`, block EVERY
+ * tool call with a wrap-up instruction so the model finishes normally with
+ * real output — no kill in the common case. `graceTurns` intentionally has
+ * no effect here: the child-side block already gives the model however many
+ * turns it needs to write its final answer once tools are blocked, so
+ * graceTurns is reserved for the parent-side hard backstop (execution.ts)
+ * that exists only for a model that ignores this block entirely.
+ */
+export function registerTurnBudget(pi: ExtensionAPI, budget: ResolvedTurnBudget | undefined): void {
+	if (!budget) return;
+	let turnsCompleted = 0;
+	const onRuntimeEvent = pi.on as unknown as (event: string, handler: (event: { turnIndex?: number }) => unknown) => void;
+	onRuntimeEvent("turn_end", (event) => {
+		if (typeof event.turnIndex === "number") turnsCompleted = event.turnIndex + 1;
+	});
+	onRuntimeEvent("tool_call", () => {
+		if (turnsCompleted < budget.maxTurns) return undefined;
+		return { block: true, reason: turnBudgetSoftBlockMessage(budget, turnsCompleted) };
+	});
+}
+
 export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 	registerToolBudget(pi, decodeToolBudgetEnv(process.env[TOOL_BUDGET_ENV], { allowZero: process.env[TOOL_BUDGET_ZERO_AUTH_ENV] === "1" }));
+	registerTurnBudget(pi, decodeTurnBudgetEnv(process.env[TURN_BUDGET_ENV]));
 	registerChildWatchdog(pi);
 
 	const onRuntimeEvent = pi.on as unknown as (event: string, handler: (event: unknown) => unknown) => void;

@@ -135,4 +135,53 @@ describe("classifySingleResultFailure", () => {
 		);
 		expect(result.class).toBe("agent");
 	});
+
+	describe("timedOut and turnBudgetExceeded routability (checked before aborted/process-killed)", () => {
+		it("classifies a timed-out result as agent-level (routable), not technical", () => {
+			const result = classifySingleResultFailure(makeResult({ exitCode: 1, timedOut: true, error: "Subagent timed out after 600000ms." }));
+			expect(result.class).toBe("agent");
+			expect(result.code).toBe("timed-out");
+			expect(result.reason).toContain("timed out");
+		});
+
+		it("classifies a turn-budget-exceeded result as agent-level (routable), not technical", () => {
+			const result = classifySingleResultFailure(makeResult({ exitCode: 1, turnBudgetExceeded: true, error: "Subagent exceeded turn budget after 52 assistant turns (soft limit 50 + grace 2)." }));
+			expect(result.class).toBe("agent");
+			expect(result.code).toBe("turn-budget-exceeded");
+			expect(result.reason).toContain("turn budget");
+		});
+
+		it("a timed-out result stays agent-level even when the kill also produced a SIGKILL exit signal", () => {
+			// Regression guard for the exact pre-existing bug this fix closes: a
+			// mid-run timeout kills the child with SIGKILL, which on its own
+			// trips FATAL_KILL_SIGNALS → "process-killed (likely OOM)". The
+			// timedOut check must win because it's checked first.
+			const result = classifySingleResultFailure(makeResult({ exitCode: 1, timedOut: true, error: "Subagent timed out after 600000ms." }), "SIGKILL");
+			expect(result.class).toBe("agent");
+			expect(result.code).toBe("timed-out");
+		});
+
+		it("a turn-budget-exceeded result stays agent-level even when stopReason is aborted", () => {
+			// Regression guard: the backstop kill (SIGTERM) can leave stopReason
+			// "aborted" on the child's own last message. The turnBudgetExceeded
+			// check must win over the aborted check because it's checked first.
+			const result = classifySingleResultFailure(makeResult({ exitCode: 130, turnBudgetExceeded: true, stopReason: "aborted", error: "Subagent exceeded turn budget after 52 assistant turns (soft limit 50 + grace 2)." }));
+			expect(result.class).toBe("agent");
+			expect(result.code).toBe("turn-budget-exceeded");
+		});
+
+		it("falls back to a generic message when timedOut is set but error text is missing", () => {
+			const result = classifySingleResultFailure(makeResult({ exitCode: 1, timedOut: true }));
+			expect(result.class).toBe("agent");
+			expect(result.code).toBe("timed-out");
+			expect(result.reason).toBeTruthy();
+		});
+
+		it("falls back to a generic message when turnBudgetExceeded is set but error text is missing", () => {
+			const result = classifySingleResultFailure(makeResult({ exitCode: 1, turnBudgetExceeded: true }));
+			expect(result.class).toBe("agent");
+			expect(result.code).toBe("turn-budget-exceeded");
+			expect(result.reason).toBeTruthy();
+		});
+	});
 });

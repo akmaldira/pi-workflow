@@ -30,7 +30,9 @@ export interface FailureClassification {
 		| "protocol-limit"
 		| "aborted"
 		| "no-model-available"
-		| "agent-error";
+		| "agent-error"
+		| "timed-out"
+		| "turn-budget-exceeded";
 }
 
 /** Exit signals that indicate the OS killed the process (OOM-killer, etc). */
@@ -87,6 +89,23 @@ export class TechnicalFailureError extends Error {
  * error is otherwise present; a clean success is always "none".
  */
 export function classifySingleResultFailure(result: SingleResult, exitSignal?: string | null): FailureClassification {
+	// Checked before aborted/FATAL_KILL_SIGNALS deliberately: both a bash-call
+	// timeout kill (bash-timeout-guard.ts) and a turn-budget backstop kill
+	// (execution.ts's turn_end handler) terminate the child process the same
+	// way a technical abort does — SIGTERM/SIGKILL, exitSignal set, sometimes
+	// stopReason "aborted" too — but both are *routable, agent-level* outcomes
+	// by design (the graph edge / calling agent decides what happens next),
+	// never a reason to hard-abort the whole workflow. Without this ordering,
+	// a turn-budget kill would be misclassified as "process-killed (likely an
+	// OOM crash)" or "aborted", exactly the bug found in the pre-existing
+	// timeout path this fix also covers.
+	if (result.timedOut) {
+		return { class: "agent", reason: result.error || "Subagent timed out.", code: "timed-out" };
+	}
+	if (result.turnBudgetExceeded) {
+		return { class: "agent", reason: result.error || "Subagent exceeded its turn budget.", code: "turn-budget-exceeded" };
+	}
+
 	if (result.stopReason === "aborted" || result.interrupted) {
 		return { class: "technical", reason: "The run was aborted (user cancellation or workflow-level abort).", code: "aborted" };
 	}

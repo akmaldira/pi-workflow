@@ -419,6 +419,30 @@ describe("pi-args", () => {
 			expect(JSON.parse(result.env.PI_SUBAGENT_TOOL_BUDGET!)).toEqual({ hard: 50, block: ["read"] });
 		});
 
+		it("should set turn budget env var", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				inheritProjectContext: true,
+				inheritSkills: true,
+				turnBudget: { maxTurns: 50, graceTurns: 2 },
+			});
+			expect(result.env.PI_SUBAGENT_TURN_BUDGET).toBeDefined();
+			expect(JSON.parse(result.env.PI_SUBAGENT_TURN_BUDGET!)).toEqual({ maxTurns: 50, graceTurns: 2 });
+		});
+
+		it("should not set turn budget env var when turnBudget is absent", () => {
+			const result = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task: "test",
+				sessionEnabled: false,
+				inheritProjectContext: true,
+				inheritSkills: true,
+			});
+			expect(result.env.PI_SUBAGENT_TURN_BUDGET).toBeUndefined();
+		});
+
 		it("should set run ID env var", () => {
 			const result = buildPiArgs({
 				baseArgs: ["--mode", "json", "-p"],

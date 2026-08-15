@@ -534,7 +534,10 @@ Top-level keys (outside `agents`) control extension behaviour. Currently support
 
 ```json
 {
-  "blankStopGuard": false
+  "blankStopGuard": false,
+  "bashTimeoutGuard": false,
+  "bashTimeoutSeconds": 900,
+  "defaultTurnBudget": { "maxTurns": 30, "graceTurns": 3 }
 }
 ```
 
@@ -543,6 +546,17 @@ Top-level keys (outside `agents`) control extension behaviour. Currently support
   (see "Production behaviour"). Defaults to enabled when absent. Read once at process
   start from the directory pi runs in; commit the file to git so worktree-isolated
   subagent runs also see it.
+- `bashTimeoutGuard`: disables the default `bash`-call timeout (see "Bash-call timeout"
+  below). Defaults to enabled when absent. Same read-once-at-start semantics as
+  `blankStopGuard`.
+- `bashTimeoutSeconds`: overrides the default `bash`-call timeout, in seconds. Defaults to
+  `600` (10 minutes) when absent. A model-specified `timeout` on an individual `bash` call
+  always wins over this default.
+- `defaultTurnBudget`: overrides the turn budget applied to any subagent run (graph node or
+  plain `subagent` tool call) whose agent frontmatter declares none. Defaults to
+  `{"maxTurns": 50, "graceTurns": 2}` when absent. Set to `null` to disable enforcement
+  entirely for agents with no frontmatter `turnBudget` (restores unbounded pre-feature
+  behavior). An agent's own frontmatter `turnBudget` always wins over this default.
 
 ### 3. Shadowing (Full file replacement)
 
@@ -564,7 +578,7 @@ name: migrator
 description: Writes database migrations from a schema diff.
 model: claude-sonnet-4
 tools: read, write, edit, bash, grep
-maxTurns: 15
+turnBudget: {"maxTurns": 15, "graceTurns": 2}
 acceptance:
   level: checked
 defaultContext: fork
@@ -915,6 +929,31 @@ Set `"blankStopGuard": false` in `.pi-workflow/settings.json` to disable it for 
 project (default: enabled). The setting is read once at process start from the directory pi
 runs in — main agent and every subagent — so commit the file to git if you want the toggle to
 apply inside worktree-isolated runs.
+
+**Bash calls have a default timeout.** A subagent's `bash` tool call with no explicit `timeout`
+parameter is capped at 600 seconds (10 minutes) by default. This closes a real production gap: a
+subagent that runs an unbounded command (e.g. `find /` searching the entire filesystem) can hang
+forever — no further turns fire, so nothing else in the stack (the blank-stop guard, turn budgets)
+ever gets a chance to react. The fix is deliberately narrow: it only fills in `timeout` when the
+model didn't set one — an explicit `timeout` from the model always wins — and it never touches
+agent/process lifetime, `ask_user_question`, or `ask_supervisor` in any way (human questions stay
+unbounded, as documented above). When it fires, the model just sees an ordinary tool-result error
+("Command timed out after 600 seconds"), the same shape as "exited with code 1", and can react —
+not lose the whole session. Set `"bashTimeoutGuard": false` to disable, or `"bashTimeoutSeconds"`
+to change the default, in `.pi-workflow/settings.json`.
+
+**Runaway subagents are bounded by a turn budget.** Every subagent run (graph node or plain
+`subagent` tool call) has a turn budget, even when its agent frontmatter declares none: default
+`{"maxTurns": 50, "graceTurns": 2}`. At `maxTurns`, tool calls are blocked with a wrap-up
+instruction so the model finishes normally with real output — no kill in the common case. A
+parent-side kill at `maxTurns + graceTurns` exists only as a backstop for a model that ignores the
+block and keeps calling tools anyway. Either way, the outcome is a routable, agent-level result —
+never a workflow-aborting technical failure — so a graph's retry/escalation edges (or the calling
+agent, for a plain `subagent` call) decide what happens next, exactly like any other agent-level
+failure. An agent's own frontmatter `turnBudget` always wins over the default. Set
+`"defaultTurnBudget": null` in `.pi-workflow/settings.json` to disable the default entirely
+(agents with no frontmatter `turnBudget` run unbounded, as before this feature existed), or
+provide `{"maxTurns": N, "graceTurns": N}` to change it project-wide.
 
 ## Compatibility
 

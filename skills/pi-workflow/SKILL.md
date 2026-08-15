@@ -25,7 +25,7 @@ subagent(tasks=[{"agent": "scout", "task": "Find security issues in the authenti
 
 The tool will:
 1. Discover the agent file (e.g., `scout.md`) from the agent scope
-2. Apply the agent's frontmatter (model, tools, maxTurns, etc.)
+2. Apply the agent's frontmatter (model, tools, turnBudget, etc.)
 3. Spawn a child pi process with the agent's configuration
 4. Return the subagent's output
 
@@ -552,7 +552,7 @@ name: scout
 description: Lightweight exploration agent that finds security issues and code smells.
 model: google/gemini-2.5-flash
 tools: read, grep, bash
-maxTurns: 5
+turnBudget: {"maxTurns": 5, "graceTurns": 1}
 acceptance:
   level: none
 ---
@@ -613,9 +613,9 @@ safety net.
 | `description` | **Required.** Short description of what the agent does |
 | `model` | Model to use (e.g., google/gemini-2.5-pro) |
 | `tools` | Tool allowlist (comma-separated or YAML list) |
-| `maxTurns` | Maximum conversation turns |
-| `maxToolCalls` | Maximum tool calls |
-| `temperature` | Model temperature (0.0-1.0) |
+| `turnBudget` | `{"maxTurns": N, "graceTurns": N}` — soft-blocks tools at `maxTurns`, hard-kills at `maxTurns + graceTurns`. Default (when omitted): `{"maxTurns": 50, "graceTurns": 2}`; project settings can change or disable this default (see `defaultTurnBudget` in the settings section) |
+| `toolBudget` | `{"hard": N, "soft": N, "block": [...] \| "*"}` — caps tool calls, not turns |
+| `timeoutMs` | Hard wall-clock timeout for the whole subagent run, in milliseconds |
 | `acceptance.level` | none, checked, or auto |
 | `acceptance.evidence` | Required evidence kinds |
 | `defaultContext` | `fresh` or `fork` (global default: `fork`) — see Context section below |
