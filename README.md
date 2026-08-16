@@ -105,7 +105,7 @@ g.run(initialState);        // required, once
 | `agent(name, promptFn)` | Spawn a subagent. `promptFn(state) => string` |
 | `human(prompt \| promptFn, opts?)` | Ask the user. `opts: { options?, default? }` |
 | `(state) => string` | Plain function node — pure JS, no LLM, instant |
-| `command(cmdString, opts?)` | Fixed shell command, no LLM. `opts: { timeoutMs?, cwd?, env?, allowFailure? }` |
+| `command(cmdString \| (state) => cmd, opts?)` | Shell command, no LLM. Literal string (auditable default) or a state-built dynamic form. `opts: { timeoutMs?, cwd?, env?, allowFailure? }` |
 
 ### Interactive Gates vs. In-Flight Tools
 
@@ -162,7 +162,7 @@ Four kinds of node, one API:
 g.node('worker',   agent('worker', (state) => `Implement: ${state.plan}`)); // LLM agent
 g.node('approve',  human('Ship it?', { options: ['yes', 'no'], default: 'yes' })); // human gate
 g.node('dispatch', (state) => 'ready'); // fn node — pure JS, no LLM, instant
-g.node('test',     command('npm test')); // command node — fixed shell command, no LLM
+g.node('test',     command('npm test')); // command node — shell command, no LLM (literal, or (state) => "..." for dynamic)
 ```
 
 **Function nodes** are the new addition. Pass a plain arrow function as the second argument: it
@@ -216,11 +216,11 @@ g.edge('test', 'review');
 g.edge('review', END);
 ```
 
-The command **must be a literal string** — not a variable, not built with `+`, not a template
-literal with `${}` substitutions. This is enforced by the script validator at build time, not
-left to convention: the whole safety property of a command node is that a human reviewing the
-script sees the exact command that will execute, with nothing computed at runtime that could
-change it.
+The command must be a **literal string** or a **function `(state) => "..."`** — nothing else. A
+variable, `+` concatenation, a call result, or a template literal with `${}` as the direct
+argument is rejected by the script validator at build time, not left to convention: the safety
+property of a command node is that a human reviewing the script sees either the exact command
+that will execute or the exact function that will build it, with nothing hidden in between.
 
 ```js
 // Rejected — validator throws before the graph ever runs
@@ -231,12 +231,23 @@ g.node('test', command('npm ' + suite));
 
 g.node('test', command(`npm test ${args.suite}`));
 
-// If a command genuinely needs to vary, let an edge choose between two
-// literal command nodes — the choice is dynamic, the commands are not
+// Preferred when a command genuinely needs to vary: let an edge choose
+// between two literal command nodes — the choice is dynamic, the commands are not
 g.edge('gate', (state, result) => args.ci ? 'test_ci' : 'test_local');
 g.node('test_ci',    command('npm test -- --ci'));
 g.node('test_local', command('npm test -- --watch=false'));
+
+// When the command truly cannot be enumerated up front, the dynamic form
+// receives the full graph state — same shape as a prompt function
+g.node('test', command((state) => `npm test -- ${state.scout.data.testFile}`));
 ```
+
+**The dynamic form trades audit for flexibility, and the risk is yours.** The function's return
+value is handed to the shell verbatim — no escaping, no quoting. Anything an upstream agent
+placed into state (including shell metacharacters from its free-text output) executes as-is.
+Prefer routing between literal commands when you can; reach for the dynamic form only when you
+must. A dynamic command whose function throws or returns an empty/non-string result is a
+technical failure: the run aborts with a clear error rather than routing on garbage.
 
 Result shape matches an agent's, so an edge written for agent results reads a command node's
 result unmodified:
@@ -326,9 +337,11 @@ intrinsics (`JSON`, `Object`, `Array`, `String`, `Math` for arithmetic, and so o
 No `fs`, `process`, `require`, `import`, `fetch`, `Date`, or `Math.random`. A graph describes
 routing; it does not need ambient authority, and non-determinism would mean a rerun of the same
 graph could take a different path. `command()` is not a loophole here — it does not give script
-code a callable exec function; it declares one node whose fixed, literal command string is visible
-in the script text a human reviews. There is no way to reach a shell from a fn node, an edge
-condition, or a prompt function.
+code a callable exec function; it declares one node whose command is either a fixed, literal
+string visible in the script text a human reviews, or a single function `(state) => "..."` whose
+body the validator still polices (forbidden identifiers and nondeterminism are rejected inside
+it too). There is no way to reach a shell from a fn node, an edge condition, or a prompt
+function.
 
 **`plan` and `contract` are also available** — synchronous access to the same store that
 the `plan` and `contract` tools use, bound to the project's `cwd` at script load time.

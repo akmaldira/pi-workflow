@@ -337,20 +337,32 @@ export function validateGraphAst(ast: AnyNode, options: AstValidationOptions = {
 			problems.push(NONDETERMINISM_ERROR);
 		}
 
-		// command()'s whole safety story is that the command a human reviews in
-		// the script is the command that runs — no runtime computation between
-		// them. Enforced here, at parse time, rather than left to convention: an
-		// argument built from anything other than a plain string literal (or a
-		// template literal with no ${} substitutions) is rejected outright.
+		// command() accepts exactly two forms for its first argument, enforced
+		// here at parse time rather than left to convention:
+		//
+		//   1. a static string literal (or a template literal with no ${}
+		//      substitutions) — the auditable default, where a human reviewing
+		//      the script sees the exact command that will run;
+		//   2. a function literal ((state) => `...` or function(state) { ... }) —
+		//      the dynamic form, which receives graph state at execution time.
+		//      Interpolation happens inside the function body; the body itself
+		//      is still walked by this validator, so forbidden identifiers and
+		//      nondeterminism (Date.now, Math.random) are rejected there too.
+		//
+		// Everything else — variables, concatenation, call results, template
+		// literals containing ${} as the direct argument, ternaries — is
+		// rejected outright.
 		if (node.type === "CallExpression" && node.callee?.type === "Identifier" && node.callee.name === "command") {
 			const firstArg = node.arguments?.[0] as AnyNode | undefined;
 			const isStaticString =
 				firstArg?.type === "Literal" && typeof firstArg.value === "string"
 					? true
 					: firstArg?.type === "TemplateLiteral" && (firstArg.expressions?.length ?? 0) === 0;
-			if (!isStaticString) {
+			const isFunction =
+				firstArg?.type === "ArrowFunctionExpression" || firstArg?.type === "FunctionExpression";
+			if (!isStaticString && !isFunction) {
 				problems.push(
-					"command() requires a literal string as its first argument — not a variable, template with ${} substitutions, or any computed expression. A human reviewing the script must be able to see the exact command that will run.",
+					"command() requires a literal string or a function (state) => \"...\" as its first argument — not a variable, template with ${} substitutions, or any other computed expression. To interpolate state, pass a function and build the command inside it: command((state) => `...`).",
 				);
 			}
 		}

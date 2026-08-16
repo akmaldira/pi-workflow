@@ -99,7 +99,7 @@ const GraphToolParams = Type.Object({
 		Type.String({
 			description:
 				"Graph workflow script. Must begin with `export const meta = { name, description }`. " +
-			"Create a graph with graph(), define nodes with g.node(id, agent(name, promptFn) | human(prompt, opts) | command(cmdString, opts) | (state) => result), " +
+			"Create a graph with graph(), define nodes with g.node(id, agent(name, promptFn) | human(prompt, opts) | command(cmdString | (state) => cmd, opts) | (state) => result), " +
 				"route with g.edge(from, to | (state, result) => target), and start it with g.run({ ... }). " +
 				"Required unless loadWorkflow names a saved graph.",
 		}),

@@ -26,6 +26,12 @@ export type PromptFn = (state: GraphState) => string;
 /** A pure synchronous function node — no agent, no LLM, instant execution. */
 export type FnNodeFn = (state: GraphState) => string;
 
+/**
+ * Builds a command node's shell command from the state available when it
+ * runs — the same shape as an agent node's PromptFn.
+ */
+export type CommandFn = (state: GraphState) => string;
+
 export interface CommandNodeOptions {
 	/** Working directory for the command. Defaults to the run's cwd. */
 	cwd?: string;
@@ -99,14 +105,24 @@ export interface FnNodeDef {
 /**
  * A declarative shell command node.
  *
- * Unlike a fn node, the command a `command` node runs is a literal string
- * fixed at script-authoring time — never a function, never built from state
- * at runtime. That is the whole point: a human reviewing the script sees
- * the exact command that will execute, with nothing else reachable. Mixing
- * in interpolated state (`command(`npm test ${state.worker.data.arg}`)`) is
- * exactly the pattern this node type refuses to support; if a command truly
- * needs to vary by state, that variation belongs in an edge choosing which
- * (fixed) command node to route to, not in the command string itself.
+ * Two forms, deliberately ranked:
+ *
+ * 1. **Static (default, preferred):** `command("npm test")` — a literal
+ *    string fixed at script-authoring time. A human reviewing the script sees
+ *    the exact command that will execute, with nothing else reachable. When a
+ *    command needs to vary by state, the preferred pattern is an edge
+ *    choosing between fixed command nodes, so every variant stays auditable.
+ *
+ * 2. **Dynamic:** `command((state) => `pytest ${state.scout.data.file}`)` —
+ *    a function receiving the full graph state at execution time, identical
+ *    in shape to an agent node's prompt function. For when the command
+ *    genuinely cannot be enumerated up front.
+ *
+ *    No escaping or quoting is applied to interpolated values. The string the
+ *    function returns is handed to the shell verbatim — anything an agent
+ *    placed in state (including shell metacharacters) is executed as-is. That
+ *    risk is the script author's to own; route between fixed commands when
+ *    possible.
  *
  * Runs synchronously via the host's shell, same execution shape as an
  * acceptance verify command (see acceptance.ts's runVerifyCommand): bounded
@@ -114,7 +130,8 @@ export interface FnNodeDef {
  */
 export interface CommandNodeDef {
 	type: "command";
-	command: string;
+	/** Literal string, or a function evaluated against state when it runs. */
+	command: string | CommandFn;
 	cwd?: string;
 	timeoutMs?: number;
 	env?: Record<string, string>;
@@ -244,18 +261,33 @@ export function human(prompt: string | PromptFn, options: HumanNodeOptions = {})
 }
 
 /**
- * Declares a command node: runs a fixed shell command, no LLM involved.
+ * Declares a command node: runs a shell command, no LLM involved.
  *
- * The command must be a string literal, not built from state at runtime —
- * see CommandNodeDef's doc comment for why. This is enforced structurally
- * by the type signature (command() takes a string, not a function), and by
- * the graph script validator, which rejects a non-literal argument to
- * command() at parse time so a script author gets the error immediately
- * rather than a confusing runtime failure.
+ * Two accepted forms (see CommandNodeDef's doc comment for the ranking):
+ *
+ *   command("npm test")                        // static — auditable default
+ *   command((state) => `pytest ${state.x}`)     // dynamic — built from state
+ *
+ * The static form must be a string literal and the dynamic form a function —
+ * this is enforced structurally here, and by the graph script validator,
+ * which rejects any other expression (variable, concatenation, call result,
+ * or a template literal containing ${}) at parse time so a script author
+ * gets the error immediately rather than a confusing runtime failure.
+ * Interpolation of state happens inside the function body, never in the
+ * direct argument.
  */
-export function command(commandString: string, options: CommandNodeOptions = {}): CommandNodeDef {
-	if (typeof commandString !== "string" || commandString.trim().length === 0) {
-		throw new GraphDefinitionError("command() requires a non-empty command string");
+export function command(
+	commandSpec: string | CommandFn,
+	options: CommandNodeOptions = {},
+): CommandNodeDef {
+	if (typeof commandSpec === "string") {
+		if (commandSpec.trim().length === 0) {
+			throw new GraphDefinitionError("command() requires a non-empty command string");
+		}
+	} else if (typeof commandSpec !== "function") {
+		throw new GraphDefinitionError(
+			'command() requires a command string or a function (state) => "..."',
+		);
 	}
 	if (options.timeoutMs !== undefined && (typeof options.timeoutMs !== "number" || options.timeoutMs <= 0)) {
 		throw new GraphDefinitionError("command() timeoutMs must be a positive number");
@@ -268,7 +300,7 @@ export function command(commandString: string, options: CommandNodeOptions = {})
 	}
 	return {
 		type: "command",
-		command: commandString,
+		command: commandSpec,
 		cwd: options.cwd,
 		timeoutMs: options.timeoutMs,
 		env: options.env ? { ...options.env } : undefined,

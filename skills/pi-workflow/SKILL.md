@@ -60,7 +60,8 @@ g.run({ target: args.target });", args={ target: "auth module" })
 - `g.node(id, agent(name, (state) => prompt))` — an agent node
 - `g.node(id, human(prompt | promptFn, { options, default }))` — ask the user; always give a `default`
 - `g.node(id, (state) => 'result')` — a function node: pure JS, no LLM, instant
-- `g.node(id, command('shell command', { timeoutMs, cwd, env, allowFailure }))` — a fixed shell command, no LLM
+- `g.node(id, command('shell command', { timeoutMs, cwd, env, allowFailure }))` — a shell command from a literal string, no LLM
+- `g.node(id, command((state) => "shell " + state.x))` — dynamic command: built from state at run time, no LLM (use it sparingly; see Command nodes below)
 - `g.edge(from, to)` / `g.edge(from, END)` — direct routing
 - `g.edge(from, (state, result) => target)` — conditional routing
 - `g.run(initialState)` — start it
@@ -137,7 +138,7 @@ g.node('dispatch', (state) => `running plan: ${state.plan}`);
 g.node('check',    (state) => plan.get('sprint-plan').ok ? 'found' : 'missing');
 ```
 
-**Command nodes — a fixed shell command, no LLM.** `command(cmdString, options)` runs a real
+**Command nodes — a shell command, no LLM.** `command(cmdString, options)` runs a real
 shell command synchronously, with no agent involved. Use it for deterministic, mechanical checks
 that don't need judgement — `npm test`, a linter, a build step:
 
@@ -150,18 +151,30 @@ g.edge('test', 'review');
 g.edge('review', END);
 ```
 
-**The command string must be a literal — never built from state.** This is enforced by the
-script validator, not just convention: `command(someVariable)`, `command('npm ' + suite)`, and
-`command(\`npm test ${suite}\`)` are all rejected at build time. The whole point of a
-command node is that a human reviewing the script sees the exact command that will run, with
-nothing computed at runtime that could change it. If a command genuinely needs to vary, write two
-command nodes and have an edge choose between them — the *choice* is dynamic, the commands
-themselves are not:
+**The direct argument must be a literal string or a function — nothing in between.** This is
+enforced by the script validator, not just convention: `command(someVariable)`,
+`command('npm ' + suite)`, and a template literal containing `${}` as the direct argument are
+all rejected at build time. The default and preferred form stays the literal: a human reviewing
+the script sees the exact command that will run. If a command genuinely needs to vary, prefer
+two literal command nodes with an edge choosing between them — the *choice* is dynamic, the
+commands themselves are not:
 
 ```js
 g.edge('gate', (state, result) => args.ci ? 'test_ci' : 'test_local');
 g.node('test_ci',    command('npm test -- --ci'));
 g.node('test_local', command('npm test -- --watch=false'));
+```
+
+**Dynamic form — `command((state) => ...)` — use it only when the command cannot be enumerated
+up front.** The function receives the full graph state (same shape as a prompt function) and
+its return value is handed to the shell **verbatim — no escaping, no quoting**. Anything an
+upstream agent placed in state, including shell metacharacters in its free-text output,
+executes as-is. That risk is yours. A function that throws, or returns an empty/non-string
+result, is a technical failure — the run aborts with a clear error:
+
+```js
+// Acceptable when the target file genuinely cannot be known ahead of time
+g.node('test', command((state) => `npm test -- ${state.scout.data.testFile}`));
 ```
 
 **Result shape matches an agent's.** `result.status` is `"ok"` on exit code 0, `"blocked"` on a

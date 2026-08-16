@@ -366,7 +366,7 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 			}
 
 			case "command":
-				return runCommandNode(node.id, node.def, options.cwd);
+				return runCommandNode(node.id, node.def, state, options.cwd);
 
 			case "agent":
 				return runAgentNode(node, node.def.agentName, node.def.promptFn(state), signal);
@@ -447,11 +447,49 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 	async function runCommandNode(
 		nodeId: string,
 		def: CommandNodeDef,
+		state: GraphState,
 		defaultCwd: string,
 	): Promise<NodeRunOutcome> {
 		const timeout = def.timeoutMs ?? COMMAND_NODE_DEFAULT_TIMEOUT_MS;
 		const cwd = def.cwd ?? defaultCwd;
 		const env = { ...process.env, ...(def.env ?? {}) };
+
+		// Dynamic form: evaluate the command function against the current graph
+		// state — the same state a prompt function would receive. A throw or a
+		// non-string/empty result is a bug in the script, not a routable outcome:
+		// like a prompt function that throws, it is classified technical so the
+		// graph aborts with a clear message instead of routing on garbage.
+		let commandString: string;
+		if (typeof def.command === "function") {
+			let evaluated: unknown;
+			try {
+				evaluated = def.command(state);
+			} catch (error) {
+				return {
+					result: withResultText({
+						status: "blocked",
+						text: "",
+						data: { exitCode: null, stdout: "", stderr: "" },
+					}),
+					technicalFailure: true,
+					error: `command node "${nodeId}" function threw: ${error instanceof Error ? error.message : String(error)}`,
+				};
+			}
+			if (typeof evaluated !== "string" || evaluated.trim().length === 0) {
+				return {
+					result: withResultText({
+						status: "blocked",
+						text: "",
+						data: { exitCode: null, stdout: "", stderr: "" },
+					}),
+					technicalFailure: true,
+					error: `command node "${nodeId}" function returned ${evaluated === null ? "null" : typeof evaluated} instead of a non-empty command string`,
+				};
+			}
+			commandString = evaluated;
+		} else {
+			commandString = def.command;
+		}
 
 		// spawnSync does NOT throw for ENOENT, a bad cwd, a timeout, or an
 		// overflowed maxBuffer — all of those land in result.error with
@@ -459,7 +497,7 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 		// must be checked explicitly, which is what distinguishes "infrastructure
 		// could not even run the command" from "the command ran and exited
 		// nonzero" below.
-		const spawnResult = spawnSync(def.command, {
+		const spawnResult = spawnSync(commandString, {
 			cwd,
 			env,
 			timeout,
@@ -487,7 +525,7 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 					data: { exitCode: null, stdout, stderr, timedOut: true },
 				}),
 				technicalFailure: !def.allowFailure,
-				error: `command node "${nodeId}" timed out after ${timeout}ms: ${def.command}`,
+				error: `command node "${nodeId}" timed out after ${timeout}ms: ${commandString}`,
 			};
 		}
 

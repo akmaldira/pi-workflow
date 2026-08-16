@@ -187,10 +187,10 @@ describe("args are isolated from the host", () => {
 });
 
 describe("sandbox escape: command() with a computed command string", () => {
-	// command()'s whole safety story is that the command a human reviews in
-	// the script text is the command that runs. These attempts try to make
-	// the executed command depend on something other than a literal, which
-	// would silently break that guarantee if any of them were allowed to build.
+	// The direct argument to command() stays auditable: a human reviewing the
+	// script sees either the literal that will run or the function that will
+	// build it. These attempts try to make the executed command depend on
+	// something hidden, which would silently break that guarantee.
 	const attempts: [string, string][] = [
 		["variable", `const cmd = "npm test"; g.node("t", command(cmd)); g.edge("t", END);`],
 		["string concatenation", `g.node("t", command("npm " + "test")); g.edge("t", END);`],
@@ -215,6 +215,26 @@ describe("sandbox escape: command() with a computed command string", () => {
 	it("allows a template literal with no substitutions", () => {
 		const script = `${META}\nconst g = graph();\ng.node("t", command(\`npm test\`));\ng.edge("t", END);\ng.run();`;
 		expect(() => buildGraphFromScript(script)).not.toThrow();
+	});
+
+	it("allows the dynamic form: an arrow function receiving state", () => {
+		const script = `${META}\nconst g = graph();\ng.node("w", agent("worker", (s) => \`go \${s.w}\`));\ng.node("t", command((state) => \`npm test \${state.w ? "--changed" : ""}\`));\ng.edge("w", "t");\ng.edge("t", END);\ng.run();`;
+		expect(() => buildGraphFromScript(script)).not.toThrow();
+	});
+
+	it("allows the dynamic form with a function expression", () => {
+		const script = `${META}\nconst g = graph();\ng.node("t", command(function (state) { return "npm test " + state.t; }));\ng.edge("t", END);\ng.run();`;
+		expect(() => buildGraphFromScript(script)).not.toThrow();
+	});
+
+	it("still rejects a forbidden identifier inside a dynamic command's body", () => {
+		const script = `${META}\nconst g = graph();\ng.node("t", command((state) => \`echo \${process.env.SECRET}\`));\ng.edge("t", END);\ng.run();`;
+		expect(() => buildGraphFromScript(script)).toThrow(/"process" is not available/);
+	});
+
+	it("still rejects nondeterminism inside a dynamic command's body", () => {
+		const script = `${META}\nconst g = graph();\ng.node("t", command(() => \`echo \${Math.random()}\`));\ng.edge("t", END);\ng.run();`;
+		expect(() => buildGraphFromScript(script)).toThrow(/Graph scripts must be deterministic/);
 	});
 });
 

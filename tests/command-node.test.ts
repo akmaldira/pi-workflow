@@ -78,6 +78,34 @@ describe("command() constructor", () => {
 			GraphDefinitionError,
 		);
 	});
+
+	it("builds a CommandNodeDef from a command function", () => {
+		const fn = (state: Record<string, unknown>) => `npm test ${String(state.arg)}`;
+		const def = command(fn);
+		expect(def.type).toBe("command");
+		expect(def.command).toBe(fn);
+		expect(def.allowFailure).toBe(false);
+	});
+
+	it("accepts options alongside a command function", () => {
+		const fn = () => "npm test";
+		const def = command(fn, { timeoutMs: 5000, cwd: "/tmp", allowFailure: true });
+		expect(def.command).toBe(fn);
+		expect(def.timeoutMs).toBe(5000);
+		expect(def.cwd).toBe("/tmp");
+		expect(def.allowFailure).toBe(true);
+	});
+
+	it("rejects a non-string non-function command spec", () => {
+		expect(() => command(42 as unknown as string)).toThrow(GraphDefinitionError);
+		expect(() => command(null as unknown as string)).toThrow(GraphDefinitionError);
+		expect(() => command(undefined as unknown as string)).toThrow(GraphDefinitionError);
+	});
+
+	it("still rejects an empty string command", () => {
+		expect(() => command("")).toThrow(GraphDefinitionError);
+		expect(() => command("   ")).toThrow(GraphDefinitionError);
+	});
 });
 
 // ── GraphBuilder ──────────────────────────────────────────────────────────────
@@ -282,6 +310,77 @@ describe("createNodeRunner: command nodes", () => {
 		expect((result.data.stdout as string).length).toBeLessThan(100000);
 		expect(result.data.stdout).toContain("output truncated");
 	});
+
+	// ── Dynamic form: command((state) => ...) ────────────────────────────────
+
+	it("a command function receives the graph state at execution time", async () => {
+		const runner = runnerWith();
+		const worker = { status: "ok", text: "", data: { target: "auth.spec.ts" } };
+		const state = { worker };
+		const outcome = await runner(
+			commandNode("test", command((s) => `echo target=${(s.worker as typeof worker).data.target}`)),
+			state,
+			{ step: 1, runId: "r1" },
+		);
+
+		const result = outcome.result as { status: string; text: string };
+		expect(result.status).toBe("ok");
+		expect(result.text).toBe("target=auth.spec.ts");
+		expect(outcome.technicalFailure).toBeUndefined();
+	});
+
+	it("a thrown command function is a technical failure, never routed", async () => {
+		const runner = runnerWith();
+		const outcome = await runner(
+			commandNode("test", command(() => {
+				throw new Error("boom");
+			})),
+			{},
+			{ step: 1, runId: "r1" },
+		);
+
+		expect(outcome.technicalFailure).toBe(true);
+		expect(outcome.error).toContain('command node "test" function threw');
+		expect(outcome.error).toContain("boom");
+	});
+
+	it("a command function returning an empty string is a technical failure", async () => {
+		const runner = runnerWith();
+		for (const bad of ["", "   ", null, 42]) {
+			const outcome = await runner(
+				commandNode("test", command(() => bad as unknown as string)),
+			{},
+			{ step: 1, runId: "r1" },
+		);
+			expect(outcome.technicalFailure, `returned ${String(bad)}`).toBe(true);
+			expect(outcome.error).toContain("instead of a non-empty command string");
+		}
+	});
+
+	it("allowFailure + a command function still routes a nonzero exit as ok", async () => {
+		const runner = runnerWith();
+		const outcome = await runner(
+			commandNode("test", command((s) => `exit ${s.code ? "1" : "1"}`, { allowFailure: true })),
+			{ code: 1 },
+			{ step: 1, runId: "r1" },
+		);
+
+		const result = outcome.result as { status: string; data: Record<string, unknown> };
+		expect(result.status).toBe("ok");
+		expect(result.data.exitCode).toBe(1);
+	});
+
+	it("a timeout error message reports the evaluated command, not the function", async () => {
+		const runner = runnerWith();
+		const outcome = await runner(
+			commandNode("test", command((s) => `sleep 5 # ${String(s.tag)}`, { timeoutMs: 100 })),
+			{ tag: "nightly" },
+			{ step: 1, runId: "r1" },
+		);
+
+		expect(outcome.technicalFailure).toBe(true);
+		expect(outcome.error).toContain("# nightly");
+	});
 });
 
 // ── Full executor walk ────────────────────────────────────────────────────────
@@ -357,6 +456,49 @@ describe("command node in full graph walk", () => {
 		expect(result.status).toBe("completed");
 		expect(visited).toContain("fix");
 		expect(visited).not.toContain("done");
+	});
+
+	it("worker → test (dynamic): the command is built from upstream state at run time", async () => {
+		const { graph: graphFn } = createGraphFactory();
+		const g = graphFn();
+		g.node("worker", agent("worker", () => "implement"));
+		g.node("test", command((state) => {
+			const worker = state.worker as { data?: { file?: string } } | undefined;
+			return `echo ran-tests-for ${worker?.data?.file ?? "unknown"}`;
+		}));
+		g.node("review", agent("worker", (s) => `result: ${s.test}`));
+		g.edge("worker", "test");
+		g.edge("test", "review");
+		g.edge("review", END);
+		g.run({});
+		const builtGraph = g.build();
+
+		const prompts: string[] = [];
+		const result = await runSuperstepGraph(builtGraph, {
+			runId: "test",
+			runNode: async (node, state) => {
+				if (node.def.type === "command") {
+					const runner = createNodeRunner({
+						cwd: process.cwd(),
+						runId: "test",
+						spawnAgent: (async () => ({}) as never) as never,
+					});
+					return runner(node, state, { step: 0, runId: "test" });
+				}
+				if (node.id === "worker" && (state.worker as object | undefined) === undefined) {
+					// First visit: emit a node_state-shaped result the dynamic command reads.
+					return { result: withResultText({ status: "ok" as const, text: "picked auth.spec.ts", data: { file: "auth.spec.ts" } }) };
+				}
+				const promptFn = (node.def as { promptFn: (s: unknown) => string }).promptFn;
+				const prompt = promptFn(state);
+				prompts.push(prompt);
+				return { result: withResultText({ status: "ok" as const, text: "done", data: {} }) };
+			},
+		});
+
+		expect(result.status).toBe("completed");
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]).toBe("result: ran-tests-for auth.spec.ts");
 	});
 });
 
@@ -448,5 +590,45 @@ g.edge('test', END);
 g.run({});
 `;
 		expect(() => buildGraphFromScript(script)).toThrow(GraphValidationError);
+	});
+
+	it("accepts command() with an arrow function receiving state", () => {
+		const script = `
+export const meta = { name: 'test', description: 'test' };
+const g = graph();
+g.node('worker', agent('worker', () => 'go'));
+g.node('test', command((state) => \`npm test \${state.worker ? '--with-worker' : ''}\`));
+g.edge('worker', 'test');
+g.edge('test', END);
+g.run({});
+`;
+		expect(() => buildGraphFromScript(script)).not.toThrow();
+		const { graph } = buildGraphFromScript(script);
+		const def = graph.nodes.get("test")!.def as CommandNodeDef;
+		expect(def.type).toBe("command");
+		expect(typeof def.command).toBe("function");
+	});
+
+	it("accepts command() with a function expression", () => {
+		const script = `
+export const meta = { name: 'test', description: 'test' };
+const g = graph();
+g.node('test', command(function (state) { return 'npm test'; }));
+g.edge('test', END);
+g.run({});
+`;
+		expect(() => buildGraphFromScript(script)).not.toThrow();
+	});
+
+	it("still rejects a template literal with ${} as the direct argument", () => {
+		const script = `
+export const meta = { name: 'test', description: 'test' };
+const g = graph();
+g.node('test', command(\`npm test \${args.suite}\`));
+g.edge('test', END);
+g.run({});
+`;
+		expect(() => buildGraphFromScript(script)).toThrow(GraphValidationError);
+		expect(() => buildGraphFromScript(script)).toThrow(/literal string or a function/);
 	});
 });
