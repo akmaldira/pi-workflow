@@ -31,6 +31,10 @@ export interface BrokerQuestion {
 	header: string;
 	options?: Array<{ label: string; description?: string; preview?: string }>;
 	multiSelect?: boolean;
+	artifacts?: {
+		plans?: Array<{ id: string; name: string; content: string }>;
+		contracts?: Array<{ id: string; title: string; type: string; status: string; content: string }>;
+	};
 }
 
 export type RequestKind = "human" | "supervisor" | "state";

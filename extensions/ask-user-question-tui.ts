@@ -38,6 +38,10 @@ export interface TUIQuestion {
 	header: string;
 	options?: TUIOption[];
 	multiSelect?: boolean;
+	artifacts?: {
+		plans?: Array<{ id: string; name: string; content: string }>;
+		contracts?: Array<{ id: string; title: string; type: string; status: string; content: string }>;
+	};
 }
 
 export interface TUIAnswer {
@@ -129,6 +133,7 @@ export async function runAskUserQuestionTUI(
 		let currentTab = 0; // 0..questions.length (last is Submit)
 		let optionIndex = 0; // active index in options list
 		let focusArea: "options" | "note" | "other" | "chat" = "options";
+		let overlayViewer: { title: string; content: string; scroll: number } | null = null;
 
 		// Answers state
 		// Key: questionIndex
@@ -323,6 +328,36 @@ export async function runAskUserQuestionTUI(
 		};
 
 		function handleInput(data: string) {
+			// Overlay modal viewer (Plan / Contract reader)
+			if (overlayViewer) {
+				if (matchesKey(data, Key.escape) || data === "q" || data === "p" || data === "c") {
+					overlayViewer = null;
+					refresh();
+					return;
+				}
+				if (matchesKey(data, Key.up) || data === "k") {
+					overlayViewer.scroll = Math.max(0, overlayViewer.scroll - 1);
+					refresh();
+					return;
+				}
+				if (matchesKey(data, Key.down) || data === "j") {
+					overlayViewer.scroll++;
+					refresh();
+					return;
+				}
+				if (matchesKey(data, Key.pageUp)) {
+					overlayViewer.scroll = Math.max(0, overlayViewer.scroll - 15);
+					refresh();
+					return;
+				}
+				if (matchesKey(data, Key.pageDown)) {
+					overlayViewer.scroll += 15;
+					refresh();
+					return;
+				}
+				return;
+			}
+
 			// Note editor focus
 			if (focusArea === "note") {
 				if (matchesKey(data, Key.escape)) {
@@ -429,8 +464,32 @@ export async function runAskUserQuestionTUI(
 				return;
 			}
 
+			// View Plan shortcut
+			if (data === "p" && focusArea === "options" && q.artifacts?.plans && q.artifacts.plans.length > 0) {
+				const fullPlanText = q.artifacts.plans.map((p) => p.content).join("\n\n---\n\n");
+				overlayViewer = {
+					title: `📋 Implementation Plan (${q.artifacts.plans.map((p) => p.name).join(", ")})`,
+					content: fullPlanText,
+					scroll: 0,
+				};
+				refresh();
+				return;
+			}
+
+			// View Contract shortcut
+			if (data === "c" && focusArea === "options" && q.artifacts?.contracts && q.artifacts.contracts.length > 0) {
+				const fullContractText = q.artifacts.contracts.map((c) => c.content).join("\n\n---\n\n");
+				overlayViewer = {
+					title: `📜 Contracts (${q.artifacts.contracts.map((c) => c.title).join(", ")})`,
+					content: fullContractText,
+					scroll: 0,
+				};
+				refresh();
+				return;
+			}
+
 			// Chat shortcut
-			if (data === "c" && focusArea === "options") {
+			if (data === "c" && focusArea === "options" && (!q.artifacts?.contracts || q.artifacts.contracts.length === 0)) {
 				focusArea = "chat";
 				chatEditor.setText(chatTexts.get(currentTab) ?? "");
 				refresh();
@@ -519,6 +578,36 @@ export async function runAskUserQuestionTUI(
 				for (let i = 0; i < wrapped.length; i++) {
 					lines.push(`${i === 0 ? prefix : continuationPrefix}${wrapped[i]}`);
 				}
+			}
+
+			// ── Full-width Modal Overlay Viewer (Plan / Contract Reader) ────
+			if (overlayViewer) {
+				lines.push(theme.fg("accent", "─".repeat(renderWidth)));
+				lines.push(theme.bold(`  ${overlayViewer.title}`));
+				lines.push(theme.fg("accent", "─".repeat(renderWidth)));
+				lines.push("");
+
+				const docLines = wrapTextWithAnsi(overlayViewer.content, renderWidth - 4);
+				const maxVisibleRows = 24;
+				const start = Math.min(overlayViewer.scroll, Math.max(0, docLines.length - maxVisibleRows));
+				const slice = docLines.slice(start, start + maxVisibleRows);
+
+				for (const dl of slice) {
+					lines.push(`  ${dl}`);
+				}
+
+				lines.push("");
+				lines.push(theme.fg("accent", "─".repeat(renderWidth)));
+				lines.push(
+					theme.fg(
+						"dim",
+						`  ↑/↓ scroll • PageUp/PageDown fast scroll • [Esc] or [${overlayViewer.title.includes("Plan") ? "p" : "c"}] Back to Decision`,
+					),
+				);
+				lines.push(theme.fg("accent", "─".repeat(renderWidth)));
+
+				cachedLines = lines;
+				return lines;
 			}
 
 			lines.push(theme.fg("accent", "─".repeat(renderWidth)));
@@ -718,7 +807,12 @@ export async function runAskUserQuestionTUI(
 			const selectHelp = isMulti ? "Space toggle" : "Enter select";
 			const noteHelp = "n note";
 			const chatHelp = "c chat";
-			addLeft("  ", theme.fg("dim", `↑↓ navigate • ${selectHelp} • ${noteHelp} • ${chatHelp} • Tab switch • Esc cancel`));
+			const hasPlan = q.artifacts?.plans && q.artifacts.plans.length > 0;
+			const hasContract = q.artifacts?.contracts && q.artifacts.contracts.length > 0;
+			const planHelp = hasPlan ? "• p View Plan " : "";
+			const contractHelp = hasContract ? "• c View Contracts " : "";
+
+			addLeft("  ", theme.fg("dim", `↑↓ navigate • ${selectHelp} • ${noteHelp} ${planHelp}${contractHelp}• Tab switch • Esc cancel`));
 
 			// Side-by-side or stacked rendering
 			if (rightLines.length > 0) {

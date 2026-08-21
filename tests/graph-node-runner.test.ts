@@ -722,7 +722,7 @@ describe("createNodeRunner: interactive nodes", () => {
 		expect(`${outcome.result}`).toBe("thorough");
 	});
 
-	it("attaches artifact previews when artifacts option is specified", async () => {
+	it("attaches artifact documents when artifacts option is specified", async () => {
 		const broker = new RequestBroker({ coalesceMs: 0 });
 		const tempCwd = `/tmp/test-wf-${Date.now()}`;
 		fs.mkdirSync(`${tempCwd}/.pi-workflow/plans`, { recursive: true });
@@ -735,9 +735,9 @@ describe("createNodeRunner: interactive nodes", () => {
 			broker,
 		});
 
-		let brokerReceivedOptions: Array<{ label: string; preview?: string }> | undefined;
+		let brokerReceivedQuestion: any;
 		broker.onBatch((batch) => {
-			brokerReceivedOptions = batch[0].questions[0].options;
+			brokerReceivedQuestion = batch[0].questions[0];
 			broker.resolve(batch[0].id, {
 				source: "human",
 				text: "yes",
@@ -760,7 +760,7 @@ describe("createNodeRunner: interactive nodes", () => {
 		broker.tick();
 		await outcomePromise;
 
-		expect(brokerReceivedOptions?.[0].preview).toContain("Sample Plan");
+		expect(brokerReceivedQuestion?.artifacts?.plans?.[0].content).toContain("Sample Plan");
 		fs.rmSync(tempCwd, { recursive: true, force: true });
 	});
 });

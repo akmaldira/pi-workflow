@@ -377,10 +377,11 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 				const def = node.def;
 				const prompt = def.promptFn(state);
 
-				// Prepare artifact preview if requested
-				let artifactPreview: string | undefined;
+				// Prepare artifact documents if requested
+				const artifactPlans: Array<{ id: string; name: string; content: string }> = [];
+				const artifactContracts: Array<{ id: string; title: string; type: string; status: string; content: string }> = [];
+
 				if (def.artifacts && def.artifacts.length > 0) {
-					const sections: string[] = [];
 					for (const art of def.artifacts) {
 						if (art === "plan") {
 							const pDir = plansDir(options.cwd);
@@ -389,7 +390,13 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 								for (const f of files) {
 									try {
 										const content = fs.readFileSync(path.join(pDir, f), "utf-8");
-										sections.push(`### 📋 Plan: ${f.slice(0, -3)}\n\n${content}`);
+										const id = f.slice(0, -3);
+										const nameMatch = /^#\s+(.+)$/m.exec(content);
+										artifactPlans.push({
+											id,
+											name: nameMatch ? nameMatch[1].trim() : id,
+											content,
+										});
 									} catch {
 										// ignore unreadable files
 									}
@@ -402,7 +409,15 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 								for (const f of files) {
 									try {
 										const content = fs.readFileSync(path.join(cDir, f), "utf-8");
-										sections.push(`### 📜 Contract: ${f.slice(0, -3)}\n\n${content}`);
+										const id = f.slice(0, -3);
+										const titleMatch = /^#\s+(.+)$/m.exec(content);
+										artifactContracts.push({
+											id,
+											title: titleMatch ? titleMatch[1].trim() : id,
+											type: "contract",
+											status: "proposed",
+											content,
+										});
 									} catch {
 										// ignore unreadable files
 									}
@@ -410,17 +425,12 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 							}
 						}
 					}
-					if (sections.length > 0) {
-						artifactPreview = sections.join("\n\n---\n\n");
-					}
 				}
 
 				// Route through RequestBroker if present (for background execution / IPC).
 				if (options.broker) {
-					const optionsList = def.options?.map((o, idx) => ({
+					const optionsList = def.options?.map((o) => ({
 						label: o,
-						// Attach artifact preview to the first option (typically "Approve") if present
-						preview: idx === 0 && artifactPreview ? artifactPreview : undefined,
 					}));
 
 					const result = await options.broker.ask({
@@ -432,6 +442,10 @@ export function createNodeRunner(options: CreateNodeRunnerOptions): NodeRunner {
 								question: prompt,
 								header: node.id,
 								options: optionsList,
+								artifacts: (artifactPlans.length > 0 || artifactContracts.length > 0) ? {
+									plans: artifactPlans.length > 0 ? artifactPlans : undefined,
+									contracts: artifactContracts.length > 0 ? artifactContracts : undefined,
+								} : undefined,
 							},
 						],
 						default: def.default,
