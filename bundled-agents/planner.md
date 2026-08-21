@@ -1,11 +1,12 @@
 ---
 name: planner
 description: Decomposes a task into an ordered implementation plan. Read-only; never writes code.
-tools: read, grep, find, ls
+tools: read, grep, find, ls, plan
 defaultContext: fork
 acceptanceRole: read-only
-turnBudget: {"maxTurns": 12, "graceTurns": 2}
+turnBudget: {"maxTurns": 35, "graceTurns": 5}
 permission:
+  plan: allow
   ask_user_question: allow
   ask_supervisor: allow
   node_state: allow
